@@ -1,0 +1,5 @@
+numpy
+pandas
+hicexplorer
+hicmatrix
+networkx
