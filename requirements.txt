@@ -3,3 +3,4 @@ pandas
 hicexplorer
 hicmatrix
 networkx
+pyqtgraph
