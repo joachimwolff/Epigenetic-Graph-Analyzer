@@ -1,4 +1,4 @@
-# Epigenetic Graph Analyzer
+# epigenetic_graph_analyzer
 
 This project is a Python application that analyzes epigenetic graphs. It uses several libraries including numpy, pandas, hicexplorer, hicmatrix, and networkx.
 

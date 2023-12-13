@@ -13,12 +13,12 @@ import pyBigWig
 import pandas as pd
 import pyranges as pr
 from scipy.sparse import dok_matrix
-# This is the main script for the Epigenetic Graph Analyzer project.
+# This is the main script for the epigenetic_graph_analyzer project.
 
 
 
 def parse_arguments():
-    parser = argparse.ArgumentParser(description='Epigenetic Graph Analyzer')
+    parser = argparse.ArgumentParser(description='epigenetic_graph_analyzer')
     parser.add_argument('interactions_sample_1', type=str, nargs='+', help='Path to the text file with interactions')
     parser.add_argument('interactions_sample_2', type=str, nargs='+', help='Path to the text file with interactions')
 
@@ -35,7 +35,7 @@ def parse_arguments():
     parser.add_argument('enhancer_region_file', type=str, help='Path to the enhancer region file')
 
     parser.add_argument('-t', '--threads', type=int, default=1, help='Number of threads to use (default: 1)')
-    parser.add_argument('-v', '--version', action='version', version='Epigenetic Graph Analyzer 1.0')
+    parser.add_argument('-v', '--version', action='version', version='epigenetic_graph_analyzer 1.0')
     return parser.parse_args()
 
 # provide a function to read bigwig files
