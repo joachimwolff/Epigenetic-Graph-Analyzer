@@ -3,4 +3,9 @@ pandas
 hicexplorer
 hicmatrix
 networkx
-pyqtgraph
+scipy
+matplotlib
+seaborn
+scikit-learn
+icecream
+pyranges
