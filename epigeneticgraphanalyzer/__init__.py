@@ -10,6 +10,8 @@ logging.getLogger('matplotlib').setLevel(logging.ERROR)
 logging.getLogger('cooler').setLevel(logging.ERROR)
 logging.getLogger('hicmatrix').setLevel(logging.ERROR)
 logging.getLogger('h5py').setLevel(logging.ERROR)
+logging.getLogger('adjustText').setLevel(logging.ERROR)
+
 
 
 logging.getLogger('numexpr').setLevel(logging.ERROR)

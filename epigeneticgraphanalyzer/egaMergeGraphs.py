@@ -17,13 +17,14 @@ import scipy.sparse as sp
 
 import os
 import plotly.graph_objects as go
-import plotly.express as px
+# import plotly.express as px
 
+import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 from adjustText import adjust_text 
 import matplotlib.patheffects as path_effects
-
+import copy
 
 import logging
 log = logging.getLogger(__name__)
@@ -39,12 +40,14 @@ def parse_arguments():
     parser.add_argument('-p1', '--partitions1', type=str, required=True, help='Path to the first partitions file')
     parser.add_argument('-p2', '--partitions2', type=str, required=True, help='Path to the second partitions file')
 
+    parser.add_argument('-pr', '--promoters', type=str, required=True, help='Path to the promoters file')
     parser.add_argument('-r', '--rnaseq', type=str, required=True, help='Path to the RNAseq DESeq file')
     parser.add_argument('-m', '--manorm', type=str, nargs='+', required=True, help='List of paths to the MANorm ChIP-seq files')
     parser.add_argument('-mn', '--manorm_names', type=str, nargs='+', required=True, help='List of names for the MANorm ChIP-seq files')
 
     parser.add_argument('-p', '--pvalue', type=float, default=0.05, help='P-value threshold for RNA-seq analysis')
     parser.add_argument('-l', '--level', type=int, default=100, help='Number of up and downregulated genes to be considered')
+    parser.add_argument('-o', '--outputFolder', type=str, required=True, help='Path to the output folder')
 
     parser.add_argument('-t', '--threads', type=int, default=8, help='Number of threads to use (default: 1)')
     parser.add_argument('-v', '--version', action='version', version='epigenetic_graph_analyzer 1.0')
@@ -171,12 +174,21 @@ def writePlotlyGraphs(cluster_of_regulated_genes, output_path, graph_sample_1, p
         if not os.path.exists(os.path.join(output_path, str(partition_id))):
             # Create the path
             os.makedirs(os.path.join(output_path, str(partition_id)))
+        # ic(partition_id)
+        # ic(genes)
+        # ic(graph_sample_1.nodes)
+        # ic(partition_of_graph_sample_1[partition_id])
+        # ic(partition_of_graph_sample_2[partition_id])
+
         writePlotlyGraph(partition_id, os.path.join(output_path, str(partition_id)), graph_sample_1.subgraph(partition_of_graph_sample_1[partition_id]), genes, sample_1_name_prefix)
         intersection = jaccardSimilarityCommunities[0][partition_id]
         
         for id in intersection:
             # writePlotlyGraph(id, os.path.join(output_path, str(partition_id)), graph_sample_2.subgraph(partition_of_graph_sample_2[id]), genes, sample_2_name_prefix)
+           
             merged_graph = mergeSubgraphs(graph_sample_1.subgraph(partition_of_graph_sample_1[partition_id]), graph_sample_2.subgraph(partition_of_graph_sample_2[id]), genes, chip_data_list_pyrange)
+            ic(merged_graph)
+            ic(merged_graph.nodes)
             analyseMergedGraphResult =  createSiginficantTestingTable(merged_graph, output_path, 3, chip_data_list_pyrange, partition_id, id)
             createGraphsBasedOnRNA(merged_graph, 3, os.path.join(output_path, str(partition_id)), str(partition_id) + '_' + str(id) , [x[1] for x in chip_data_list_pyrange], jaccardSimilarityCommunities[1][partition_id, id], jaccardSimilarityCommunities[2][partition_id, id])
             if jaccardSimilarityCommunities[2][partition_id, id] >= pBaitSimilarity:
@@ -372,12 +384,12 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
 
     return df
 
-def normalize_and_color(nodes, attribute):
-    values = [data[attribute] for _, data in nodes]
-    norm_values = [np.nan_to_num((value - min(values)) / (max(values) - min(values))) for value in values]
-    colors = px.colors.sequential.Plasma
-    node_color = [colors[int(norm * (len(colors) - 1))] for norm in norm_values]
-    return node_color
+# def normalize_and_color(nodes, attribute):
+#     values = [data[attribute] for _, data in nodes]
+#     norm_values = [np.nan_to_num((value - min(values)) / (max(values) - min(values))) for value in values]
+#     colors = px.colors.sequential.Plasma
+#     node_color = [colors[int(norm * (len(colors) - 1))] for norm in norm_values]
+#     return node_color
 
 def plotGraph(pGraph, pNodeColor, pEdgeColor, pBaitName, pOutputPath, pPartitionString, pJaccardSimilarityCommunities=None, pJaccardSimilarityBaitCommunities=None, pFigureSize=(8, 6), pFileFormat='pdf', pSeed=42):
     G=pGraph
@@ -470,7 +482,7 @@ def plotGraph(pGraph, pNodeColor, pEdgeColor, pBaitName, pOutputPath, pPartition
     plt.savefig(pOutputPath + '.' + pFileFormat, bbox_inches='tight')
     plt.close()
 
-def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartitionsIdString, pChipNamesToPlotList, pJaccardSimilarityCommunities, pJaccardSimilarityBaitCommunities, pPlot=False):
+def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartitionsIdString, pChipNamesToPlotList, pJaccardSimilarityCommunities, pJaccardSimilarityBaitCommunities, pPlot=True):
 
     connected_nodes, connected_edges = getConnectedNodes(pMergedGraph, pNumberOfSteps)
 
@@ -514,12 +526,10 @@ def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartition
     # plot merged graph
     for chip_name in pChipNamesToPlotList:
         if pPlot:
-            plotGraph(pMergedGraph, chip_name, "log2FC", 'Full partition.', os.path.join(pOutputPath, pPartitionsIdString  + "_full_partition_" + chip_name + "_" + str(i)),
+            plotGraph(pMergedGraph, chip_name, "log2FC", 'Full partition.', os.path.join(pOutputPath, pPartitionsIdString  + "_full_partition_" + chip_name),
                   pPartitionsIdString, pFigureSize=(15,10), pSeed=39, 
                   pJaccardSimilarityCommunities=pJaccardSimilarityCommunities, pJaccardSimilarityBaitCommunities=pJaccardSimilarityBaitCommunities)
-        nx.write_graphml(pMergedGraph, os.path.join(os.path.join(pOutputPath, pPartitionsIdString + "_full_partition_" + chip_name + "_" + str(i)) + ".graphml"))
-
-    return G
+        nx.write_graphml(pMergedGraph, os.path.join(os.path.join(pOutputPath, pPartitionsIdString + "_full_partition_" + chip_name) + ".graphml"))
 
 
 def getConnectedNodes(pMergedGraph, numberOfSteps):
@@ -647,11 +657,17 @@ def writePlotlyGraphMerged(id_sample_1, id_sample_2, output_path, graph, genes_t
 
 def main():
     args = parse_arguments()
-
+    # Check if the output folder exists, if not, create it
+    if not os.path.exists(args.outputFolder):
+        os.makedirs(args.outputFolder)
     # Load the first graph
-    graph1 = nx.read_graphml(args.graph1)
+    graph1 = nx.read_graphml(args.graph1, node_type=int, edge_key_type=int)
+    # ic(graph1)
+    # ic(graph1.nodes(data=True))
     # Load the second graph
     graph2 = nx.read_graphml(args.graph2)
+    # ic(graph2)
+    # ic(graph2.nodes(data=True))
     # Load the first communities file
     communities1 = pd.read_csv(args.communities1)
     # Load the second communities file
@@ -668,8 +684,8 @@ def main():
     partitions2 = pd.read_csv(args.partitions2)
 
     # Transform partitions into a list of lists
-    partition_sample_1 = [list(map(int, entry.split(','))) for entry in partitions1['Content']]
-    partition_sample_2 = [list(map(int, entry.split(','))) for entry in partitions2['Content']]
+    partition_sample_1 = [set(map(int, entry.split(','))) for entry in partitions1['Content']]
+    partition_sample_2 = [set(map(int, entry.split(','))) for entry in partitions2['Content']]
 
     # Load the RNAseq DESeq file
     rnaseq = pd.read_csv(args.rnaseq,  sep='\t', names=['Gene', 'BaseMean', 'Log2FoldChange', 'LFCSE', 'Stat', 'PValue', 'PAdjust'])
@@ -678,9 +694,31 @@ def main():
     df_deseq_up = df_deseq_significant.sort_values(by='Log2FoldChange', ascending=False).head(args.level)
     log.info(f"Loaded rnaseq from {args.rnaseq}")
 
-    cluster_of_regulated_genes_sample_1 = getCommunituesFromDESeq2Ranks([df_deseq_up, df_deseq_down], gene_name_to_partition_mapping_sample_1, name_extension='_1')
-    cluster_of_regulated_genes_sample_2 = getCommunituesFromDESeq2Ranks([df_deseq_up, df_deseq_down], gene_name_to_partition_mapping_sample_2, name_extension='_1')
+    promoters = pd.read_csv(args.promoters, sep='\t')
 
-    jaccardSimilarity = jaccardSimiliarityCommunities(partition_sample_1, partition_sample_2, sample_matrix_sample_1.shape[0])
+    ma_norm_pyrange = []
 
-    analyseMergedGraphResult = writePlotlyGraphs(cluster_of_regulated_genes_sample_1, os.path.join(ROOT_PATH, 'FMI_data/clusterSample1/'), graph1, partition_sample_1, graph2, partition_sample_2, jaccardSimilarity, "Md_", "PA2_", [pyRange_H3K4me2_name, pyRange_H3K27ac_name, pyRange_H3K27me3_name])
+    for i, file in enumerate(args.manorm):
+        ma_norm_pyrange.append(createPyRangeObject(file, args.manorm_names[i]))
+
+
+    cluster_of_regulated_genes = getCommunituesFromDESeq2Ranks([df_deseq_up, df_deseq_down], gene_name_to_partition_mapping_sample_1, name_extension='_1')
+
+    # ic(len(cluster_of_regulated_genes))
+    # ic(cluster_of_regulated_genes)
+
+    # ic(partition_sample_1)
+    # ic(partition_sample_2)
+    jaccardSimilarity = jaccardSimiliarityCommunities(partition_sample_1, partition_sample_2, len(promoters))
+
+    # ic(jaccardSimilarity)
+    analyseMergedGraphResult = writePlotlyGraphs(cluster_of_regulated_genes, args.outputFolder, 
+                                                 graph1, partition_sample_1, graph2, partition_sample_2, jaccardSimilarity, 
+                                                 "Md_", "PA2_", ma_norm_pyrange)
+
+    analyseMergedGraphResultHigh, analyseMergedGraphResultLow = analyseMergedGraphResult
+
+    if analyseMergedGraphResultHigh is not None:
+        analyseMergedGraphResultHigh.to_csv(os.path.join(args.outputFolder, "results_high.csv"), index=False)
+    if analyseMergedGraphResultLow is not None:
+        analyseMergedGraphResultLow.to_csv(os.path.join(args.outputFolder, "results_low.csv"), index=False)
