@@ -81,7 +81,7 @@ setup(
     url='https://github.com/joachimwolff/Epigenetic-Graph-Analyzer',
     packages=find_packages(),
     install_requires=requirements,
-    scripts=['bin/egaCreateGraph', 'bin/egaMergeGraphs'],
+    scripts=['bin/egaCreateGraph', 'bin/egaMergeGraphs', 'bin/egaClusterBaits', 'bin/egaPlotlyGraph'],
     include_package_data=True,
     package_dir={'hicgan': 'hicgan'},
     license='LICENSE',

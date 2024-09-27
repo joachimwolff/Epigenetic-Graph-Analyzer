@@ -165,7 +165,7 @@ def mergeSubgraphs(pSubgraph_1, pSubgraph_2, RNA_genes, chip_data_list_pyrange):
 
 
 
-def writePlotlyGraphs(cluster_of_regulated_genes, output_path, graph_sample_1, partition_of_graph_sample_1, graph_sample_2, partition_of_graph_sample_2, jaccardSimilarityCommunities, sample_1_name_prefix, sample_2_name_prefix, chip_data_list_pyrange, pBaitSimilarity=0.5):
+def createDifferentialPartitions(cluster_of_regulated_genes, output_path, graph_sample_1, partition_of_graph_sample_1, graph_sample_2, partition_of_graph_sample_2, jaccardSimilarityCommunities, sample_1_name_prefix, sample_2_name_prefix, chip_data_list_pyrange, pBaitSimilarity=0.5):
     analyse_result_df_bait_similarity_high = None
     analyse_result_df_bait_similarity_low = None
     
@@ -174,21 +174,12 @@ def writePlotlyGraphs(cluster_of_regulated_genes, output_path, graph_sample_1, p
         if not os.path.exists(os.path.join(output_path, str(partition_id))):
             # Create the path
             os.makedirs(os.path.join(output_path, str(partition_id)))
-        # ic(partition_id)
-        # ic(genes)
-        # ic(graph_sample_1.nodes)
-        # ic(partition_of_graph_sample_1[partition_id])
-        # ic(partition_of_graph_sample_2[partition_id])
-
-        writePlotlyGraph(partition_id, os.path.join(output_path, str(partition_id)), graph_sample_1.subgraph(partition_of_graph_sample_1[partition_id]), genes, sample_1_name_prefix)
+     
         intersection = jaccardSimilarityCommunities[0][partition_id]
         
         for id in intersection:
-            # writePlotlyGraph(id, os.path.join(output_path, str(partition_id)), graph_sample_2.subgraph(partition_of_graph_sample_2[id]), genes, sample_2_name_prefix)
            
             merged_graph = mergeSubgraphs(graph_sample_1.subgraph(partition_of_graph_sample_1[partition_id]), graph_sample_2.subgraph(partition_of_graph_sample_2[id]), genes, chip_data_list_pyrange)
-            ic(merged_graph)
-            ic(merged_graph.nodes)
             analyseMergedGraphResult =  createSiginficantTestingTable(merged_graph, output_path, 3, chip_data_list_pyrange, partition_id, id)
             createGraphsBasedOnRNA(merged_graph, 3, os.path.join(output_path, str(partition_id)), str(partition_id) + '_' + str(id) , [x[1] for x in chip_data_list_pyrange], jaccardSimilarityCommunities[1][partition_id, id], jaccardSimilarityCommunities[2][partition_id, id])
             if jaccardSimilarityCommunities[2][partition_id, id] >= pBaitSimilarity:
@@ -201,13 +192,9 @@ def writePlotlyGraphs(cluster_of_regulated_genes, output_path, graph_sample_1, p
                     analyse_result_df_bait_similarity_low = analyseMergedGraphResult
                 else:
                     analyse_result_df_bait_similarity_low = pd.concat([analyse_result_df_bait_similarity_low, analyseMergedGraphResult], axis=0)
-            writePlotlyGraphMerged(partition_id, id, os.path.join(output_path, str(partition_id)), merged_graph, genes, sample_1_name_prefix + '_' + sample_1_name_prefix)
-        
-    # return analyse_result_df_bait_similarity_high, analyse_result_df_bait_similarity_low
-    if analyse_result_df_bait_similarity_high is not None:
-        analyse_result_df_bait_similarity_high.to_csv(os.path.join(output_path, "results_merged_high.csv"))
-    if analyse_result_df_bait_similarity_low is not None:
-        analyse_result_df_bait_similarity_low.to_csv(os.path.join(output_path, "results_merged_low.csv"))
+            # writePlotlyGraphMerged(partition_id, id, os.path.join(output_path, str(partition_id)), merged_graph)
+
+            nx.write_graphml(merged_graph, os.path.join(output_path, str(partition_id), 'Merged_' + str(partition_id) + "_" + str(id) + ".graphml"))
     
     return analyse_result_df_bait_similarity_high, analyse_result_df_bait_similarity_low
 
@@ -236,9 +223,6 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
     result_for_dfferential_dict = {}
     # Collect data for each bait node
     for bait_node in connected_edges:
-        # ic(bait_node)
-        # result_for_dfferential_dict = {}
-
 
         for i, level_edges in enumerate(connected_edges[bait_node]):
             visited_nodes = set()
@@ -248,14 +232,11 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
 
 
             for edge in level_edges:
-                # ic(edge)
                 node1, node2 = edge
                 connected_node = node2 #if node1 == bait_node else node1
-                
 
                 if connected_node not in visited_nodes:
                     visited_nodes.add(connected_node)
-                
 
                     for chip_name in chip_data_list_pyrange:
                         if chip_name[1] in pMergeGraph.nodes[bait_node]:
@@ -384,16 +365,9 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
 
     return df
 
-# def normalize_and_color(nodes, attribute):
-#     values = [data[attribute] for _, data in nodes]
-#     norm_values = [np.nan_to_num((value - min(values)) / (max(values) - min(values))) for value in values]
-#     colors = px.colors.sequential.Plasma
-#     node_color = [colors[int(norm * (len(colors) - 1))] for norm in norm_values]
-#     return node_color
-
 def plotGraph(pGraph, pNodeColor, pEdgeColor, pBaitName, pOutputPath, pPartitionString, pJaccardSimilarityCommunities=None, pJaccardSimilarityBaitCommunities=None, pFigureSize=(8, 6), pFileFormat='pdf', pSeed=42):
+    
     G=pGraph
-    # levels = nx.get_node_attributes(G, pNodeColor)
 
     # Set a default value for nodes without the 'level' attribute
     labels = {node: G.nodes[node].get('name', "") for node in G.nodes}
@@ -418,8 +392,8 @@ def plotGraph(pGraph, pNodeColor, pEdgeColor, pBaitName, pOutputPath, pPartition
         vmax_nodes = 0+0.001
         vmin_nodes = vmin_nodes if vmin_nodes < 0 else 0 - 0.001 # Set vmin to a negative value if it's 0 or more
 
-    if not vmin_nodes < 0 < vmax_nodes:
-        ic(vmin_nodes, vmax_nodes)
+    # if not vmin_nodes < 0 < vmax_nodes:
+    #     ic(vmin_nodes, vmax_nodes)
     norm_nodes = mcolors.TwoSlopeNorm(vmin=vmin_nodes, vcenter=0, vmax=vmax_nodes)
     node_colors = [cm.seismic(norm_nodes(all_levels[node])) for node in G.nodes]
 
@@ -482,7 +456,7 @@ def plotGraph(pGraph, pNodeColor, pEdgeColor, pBaitName, pOutputPath, pPartition
     plt.savefig(pOutputPath + '.' + pFileFormat, bbox_inches='tight')
     plt.close()
 
-def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartitionsIdString, pChipNamesToPlotList, pJaccardSimilarityCommunities, pJaccardSimilarityBaitCommunities, pPlot=True):
+def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartitionsIdString, pChipNamesToPlotList, pJaccardSimilarityCommunities, pJaccardSimilarityBaitCommunities, pPlot=False):
 
     connected_nodes, connected_edges = getConnectedNodes(pMergedGraph, pNumberOfSteps)
 
@@ -490,7 +464,7 @@ def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartition
     result_for_dfferential_dict = {}
     # Collect data for each bait node
     for bait_node in connected_edges:
-        ic(bait_node)
+        # ic(bait_node)
         G = nx.Graph()
 
         node_attributes = pMergedGraph.nodes[bait_node]
@@ -501,7 +475,6 @@ def createGraphsBasedOnRNA(pMergedGraph, pNumberOfSteps, pOutputPath, pPartition
         for i, level_edges in enumerate(connected_edges[bait_node]):
             visited_nodes = set()
             for edge in level_edges:
-                # ic(edge)
                 node1, node2 = edge
                 if node2 not in visited_nodes:
                     
@@ -573,74 +546,6 @@ def getConnectedNodes(pMergedGraph, numberOfSteps):
                     connected_edges[node][i].update(neighbor_edges_update)
     return connected_nodes, connected_edges
 
-def writePlotlyGraph(partition_id, output_path, graph, genes_to_highlight, file_name_prefix):
-
-    
-    pos = nx.spring_layout(graph)
-    edge_x = []
-    edge_y = []
-    for edge in graph.edges():
-        x0, y0 = pos[edge[0]]
-        x1, y1 = pos[edge[1]]
-        edge_x.append(x0)
-        edge_x.append(x1)
-        edge_x.append(None)
-        edge_y.append(y0)
-        edge_y.append(y1)
-        edge_y.append(None)
-    edge_trace = go.Scatter(
-        x=edge_x, y=edge_y,
-        line=dict(width=0.5, color='#888'),
-        hoverinfo='none',
-        mode='lines')
-    node_x = []
-    node_y = []
-    node_text = []
-    for node in graph.nodes():
-        x, y = pos[node]
-        node_x.append(x)
-        node_y.append(y)
-        node_text.append(str(node))
-    node_trace = go.Scatter(
-        x=node_x, y=node_y,
-        mode='markers',
-        hoverinfo='text',
-        marker=dict(
-            showscale=True,
-            colorscale='YlGnBu',
-            reversescale=True,
-            color=[],
-            size=10,
-            colorbar=dict(
-                thickness=15,
-                title='Node Connections',
-                xanchor='left',
-                titleside='right'
-            ),
-            line_width=2))
-    node_adjacencies = []
-    node_text = []
-    for node, adjacencies in enumerate(graph.adjacency()):
-        node_adjacencies.append(len(adjacencies[1]))
-        node_text.append('# of connections: '+str(len(adjacencies[1])))
-    node_trace.marker.color = node_adjacencies
-    node_trace.text = node_text
-    fig = go.Figure(data=[edge_trace, node_trace],
-                layout=go.Layout(
-                title='Network graph made with Plotly',
-                titlefont_size=16,
-                showlegend=False,
-                hovermode='closest',
-                margin=dict(b=20,l=5,r=5,t=40),
-                annotations=[ dict(
-                    text="Python code: <a href='https://plotly.com/python/'> https://plotly.com/python/</a>",
-                    showarrow=False,
-                    xref="paper", yref="paper",
-                    x=0.005, y=-0.002 ) ],
-                xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
-                yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
-                )
-    fig.write_html(os.path.join(output_path, file_name_prefix + str(partition_id) + ".html"))
 
 def intersect(pyRangeObject, position):
     chromosome, position_start_end = position.split(":")
@@ -651,7 +556,7 @@ def intersect(pyRangeObject, position):
 
     return pyRangeObject.intersect(query)
 
-def writePlotlyGraphMerged(id_sample_1, id_sample_2, output_path, graph, genes_to_highlight, sample_name):
+def writePlotlyGraphMerged(id_sample_1, id_sample_2, output_path, graph):
     nx.write_graphml(graph, os.path.join(output_path, 'Merged_' + str(id_sample_1) + "_" + str(id_sample_2) + ".graphml"))
 
 
@@ -662,12 +567,8 @@ def main():
         os.makedirs(args.outputFolder)
     # Load the first graph
     graph1 = nx.read_graphml(args.graph1, node_type=int, edge_key_type=int)
-    # ic(graph1)
-    # ic(graph1.nodes(data=True))
     # Load the second graph
     graph2 = nx.read_graphml(args.graph2)
-    # ic(graph2)
-    # ic(graph2.nodes(data=True))
     # Load the first communities file
     communities1 = pd.read_csv(args.communities1)
     # Load the second communities file
@@ -704,20 +605,16 @@ def main():
 
     cluster_of_regulated_genes = getCommunituesFromDESeq2Ranks([df_deseq_up, df_deseq_down], gene_name_to_partition_mapping_sample_1, name_extension='_1')
 
-    # ic(len(cluster_of_regulated_genes))
-    # ic(cluster_of_regulated_genes)
-
-    # ic(partition_sample_1)
-    # ic(partition_sample_2)
     jaccardSimilarity = jaccardSimiliarityCommunities(partition_sample_1, partition_sample_2, len(promoters))
 
-    # ic(jaccardSimilarity)
-    analyseMergedGraphResult = writePlotlyGraphs(cluster_of_regulated_genes, args.outputFolder, 
+    analyseMergedGraphResult = createDifferentialPartitions(cluster_of_regulated_genes, args.outputFolder, 
                                                  graph1, partition_sample_1, graph2, partition_sample_2, jaccardSimilarity, 
                                                  "Md_", "PA2_", ma_norm_pyrange)
 
     analyseMergedGraphResultHigh, analyseMergedGraphResultLow = analyseMergedGraphResult
 
+    analyseMergedGraphResultHigh.reset_index(drop=True, inplace=True)
+    analyseMergedGraphResultLow.reset_index(drop=True, inplace=True)
     if analyseMergedGraphResultHigh is not None:
         analyseMergedGraphResultHigh.to_csv(os.path.join(args.outputFolder, "results_high.csv"), index=False)
     if analyseMergedGraphResultLow is not None:

@@ -266,9 +266,7 @@ def main():
     cut_intervals = createCutIntervals(args.chromosomeSizes, resolution=args.digestionSites)
 
     if args.interactionFormat == 'washU':
-
         interaction_matrices = importInteractionsFromWashU(args.interactionData, cut_intervals, args.interChromosomalInteractions, compression=compressedFile(args.interactionData[0]), pNumberOfProcesses=args.threads)
-
     else:
         pass
     
