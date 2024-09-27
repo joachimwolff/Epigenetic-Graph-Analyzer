@@ -22,7 +22,7 @@ def parse_arguments():
 def plotClustermap(pData, pColumns, pStepLevel, pOutputPath, pFigsize=(10, 30), pYticklabels=True, colormap='seismic', format='pdf'):
 
     cmap = plt.get_cmap(colormap)
-    pDataStep = pData[pData['step'] == pStepLevel]
+    pDataStep = pData
     pDataStep.fillna(0, inplace=True)
 
     pDataStep['Combined_Index'] = pDataStep.cluster_id.astype(str) + '-' + pDataStep['name']
@@ -66,6 +66,14 @@ def identifyRegulation(pDataFrame, pSuffixBait, pSuffixOE):
 
     noneRegulated = pDataFrame[~(baitRegulatedFilter | OERegulatedFilter)]
 
+    print(len(baitRegulated))
+    print(len(OERegulated))
+
+    print(len(bothRegulated))
+    print(len(noneRegulated))
+    print(len(pDataFrame))
+
+
     return baitRegulated, OERegulated, bothRegulated, noneRegulated
 
 def main():
@@ -84,24 +92,29 @@ def main():
     dataFrame['step'] = dataFrame['step'].astype(int)
     suffixBait = '_bait'
     suffixOE = '_OE'
-    negative_list = [col for col in dataFrame.columns if col.startswith('negative interaction')]
-    positive_list = [col for col in dataFrame.columns if col.startswith('positive interaction')]
+    negative_list = [col for col in dataFrame.columns if 'mean' in col and col.startswith('negative interaction')]
+    positive_list = [col for col in dataFrame.columns if 'mean' in col and col.startswith('positive interaction')]
 
     rna_list = [col for col in dataFrame.columns if col.endswith('RNA_log2FC')]
 
-    interaction_list = [col for col in dataFrame.columns if (col.startswith("negative") or col.startswith("positive") ) and col.endswith('logFC')]
+    interaction_list = [col for col in dataFrame.columns if ('mean' in col) and col.endswith('logFC')]
 
-    columnsList = rna_list + interaction_list + negative_list + positive_list
+    columnsListIdenticication = rna_list + interaction_list + negative_list + positive_list + ['name', 'cluster_id']
+    columnsListPlot = rna_list + interaction_list + negative_list + positive_list
 
     # dataFrameBait = dataFrame[bait_list]
     # dataFrameOE = dataFrame[OE_list]
     noneRegulated = None
     for i in range(0, args.step):
-
-        plotClustermap(dataFrame, columnsList, i, args.outputFolder, pFigsize=(width, height), colormap=args.colormap, pYticklabels=args.skipLabels, format=args.format)
         if noneRegulated is None:
-            noneRegulated = dataFrame[dataFrame['step'] == i]
-        baitRegulated, OERegulated, bothRegulated, noneRegulated = identifyRegulation(noneRegulated[columnsList], suffixBait, suffixOE)       
+            dataFrameLocal = dataFrame[dataFrame['step'] == i]
+        else:
+            names = noneRegulated['name']
+            dataFrameLocal = dataFrame[dataFrame['step'] == i]
+            dataFrameLocal = dataFrameLocal[dataFrameLocal['name'].isin(names)]
+        plotClustermap(dataFrameLocal, columnsListPlot, i, args.outputFolder, pFigsize=(width, height), colormap=args.colormap, pYticklabels=args.skipLabels, format=args.format)
+        
+        baitRegulated, OERegulated, bothRegulated, noneRegulated = identifyRegulation(noneRegulated[columnsListIdenticication], suffixBait, suffixOE)       
 
         baitRegulated.to_csv(os.path.join(args.outputFolder, f'baitRegulated_step_{i}.csv'), index=False)
         OERegulated.to_csv(os.path.join(args.outputFolder, f'OERegulated_step_{i}.csv'), index=False)

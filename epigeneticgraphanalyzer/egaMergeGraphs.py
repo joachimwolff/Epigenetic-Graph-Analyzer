@@ -282,6 +282,9 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
                 negative_values = [x for x in interaction_logFC if x < 0]
 
                 mean_positive = sum(positive_values) / len(positive_values) if positive_values else 0
+                # if bait_node == 1222:
+                ic(positive_values)
+                ic(interaction_logFC)
                 mean_negative = sum(negative_values) / len(negative_values) if negative_values else 0
                 count_positive = len(positive_values)
                 count_negative = len(negative_values)
