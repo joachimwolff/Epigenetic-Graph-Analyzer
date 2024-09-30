@@ -1,3 +1,17 @@
+import os
+import networkx as nx
+import argparse
+import plotly.graph_objs as go
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description='Generate a Plotly graph from a NetworkX graph.')
+    parser.add_argument('graph', type=str, help='Path to the input graph file (in edgelist format).')
+    parser.add_argument('output_path', type=str, help='Directory where the output HTML file will be saved.')
+    parser.add_argument('file_name_prefix', type=str, help='Prefix for the output HTML file name.')
+    return parser.parse_args()
+
+
 
 def writePlotlyGraph(partition_id, output_path, graph, file_name_prefix):
     pos = nx.spring_layout(graph)
@@ -65,3 +79,8 @@ def writePlotlyGraph(partition_id, output_path, graph, file_name_prefix):
                 yaxis=dict(showgrid=False, zeroline=False, showticklabels=False))
                 )
     fig.write_html(os.path.join(output_path, file_name_prefix + str(partition_id) + ".html"))
+
+
+def main():
+    args = parse_args()
+    # writePlotlyGraph(partition_id, output_path, graph, file_name_prefix) 

@@ -283,8 +283,8 @@ def createSiginficantTestingTable(pMergeGraph, outputPath, numberOfSteps, chip_d
 
                 mean_positive = sum(positive_values) / len(positive_values) if positive_values else 0
                 # if bait_node == 1222:
-                ic(positive_values)
-                ic(interaction_logFC)
+                # ic(positive_values)
+                # ic(interaction_logFC)
                 mean_negative = sum(negative_values) / len(negative_values) if negative_values else 0
                 count_positive = len(positive_values)
                 count_negative = len(negative_values)
@@ -571,7 +571,7 @@ def main():
     # Load the first graph
     graph1 = nx.read_graphml(args.graph1, node_type=int, edge_key_type=int)
     # Load the second graph
-    graph2 = nx.read_graphml(args.graph2)
+    graph2 = nx.read_graphml(args.graph2, node_type=int, edge_key_type=int)
     # Load the first communities file
     communities1 = pd.read_csv(args.communities1)
     # Load the second communities file

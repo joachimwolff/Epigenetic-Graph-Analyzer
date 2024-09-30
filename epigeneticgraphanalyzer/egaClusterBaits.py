@@ -106,14 +106,21 @@ def main():
     # dataFrameOE = dataFrame[OE_list]
     noneRegulated = None
     for i in range(0, args.step):
+        print( i+1)
+
         if noneRegulated is None:
             dataFrameLocal = dataFrame[dataFrame['step'] == i]
         else:
             names = noneRegulated['name']
             dataFrameLocal = dataFrame[dataFrame['step'] == i]
             dataFrameLocal = dataFrameLocal[dataFrameLocal['name'].isin(names)]
+        if dataFrameLocal is None:
+            break
+        print( i+1)
         plotClustermap(dataFrameLocal, columnsListPlot, i, args.outputFolder, pFigsize=(width, height), colormap=args.colormap, pYticklabels=args.skipLabels, format=args.format)
         
+        # if noneRegulated is None:
+        #     break
         baitRegulated, OERegulated, bothRegulated, noneRegulated = identifyRegulation(noneRegulated[columnsListIdenticication], suffixBait, suffixOE)       
 
         baitRegulated.to_csv(os.path.join(args.outputFolder, f'baitRegulated_step_{i}.csv'), index=False)

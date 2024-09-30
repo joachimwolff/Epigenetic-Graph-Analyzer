@@ -232,12 +232,13 @@ def createGraphAndFindCommunities(sample_matrix, bait_list, cut_intervals, thres
             G.add_weighted_edges_from([(bait, OE+number_of_samples, sample_matrix.data[i])])
             G.nodes[OE + number_of_samples]['colorType'] = "orange"
             G.nodes[OE + number_of_samples]['position'] = cut_intervals[OE][0] + ":" + str(cut_intervals[OE][1]) + "-" +  str(cut_intervals[OE][2])
-       
+            G.nodes[OE + number_of_samples]['type'] = "OE"
     for bait in bait_ids:
         if bait in G.nodes:
             G.nodes[bait]['name'] = bait_list[bait][0]
             G.nodes[bait]['colorType'] = "green"
             G.nodes[bait]['position'] = bait_list[bait][1]
+            G.nodes[bait]['type'] = "bait"
 
     partition_list = nx.community.louvain_communities(G, seed=42)
 
