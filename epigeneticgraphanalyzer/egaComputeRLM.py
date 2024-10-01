@@ -34,6 +34,13 @@ def parse_arguments():
         required=True, 
         help='List of paths to the input bigwig files'
     )
+
+    parser.add_argument(
+        '-d', '--deseqCounts', 
+        type=str, 
+        required=True, 
+        help='Path to the input file with normalized counts from DESeq2'
+    )
     parser.add_argument(
         '-o', '--outputFolder', 
         type=str, 
@@ -42,7 +49,7 @@ def parse_arguments():
     )
     return parser.parse_args()
 
-def annotate(pGraph, pConditions):
+def annotate(pGraph, pConditions, pRNA):
     '''
     Annotate the graph with the bigwig files
     '''
@@ -57,6 +64,9 @@ def annotate(pGraph, pConditions):
                 start, end = value.split('-')
                 values = bw.values(chromosome, int(start), int(end))
                 node[name + '_R' + str(i)] = values
+
+                if pRNA:
+                    
         bw.close()
 
 def createRLMTable(pGraph, pSteps, pConditionNames):
@@ -90,7 +100,7 @@ def createRLMTable(pGraph, pSteps, pConditionNames):
 
                         for name in pConditionNames:
                             pass
-                        
+
                             # if /
 
 def main():
