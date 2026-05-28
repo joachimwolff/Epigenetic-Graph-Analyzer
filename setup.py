@@ -2,7 +2,6 @@
 
 import sys
 import subprocess
-import re
 
 from setuptools import setup, find_packages
 from setuptools.command.sdist import sdist as _sdist
@@ -13,23 +12,14 @@ import epigeneticgraphanalyzer._version as version
 def parse_requirements(filename):
     with open(filename, 'r') as file:
         lines = file.readlines()
-        return [line.strip() for line in lines if line and not line.startswith('#')]
+        return [line.strip() for line in lines if line.strip() and not line.strip().startswith('#')]
 
 # Reading dependencies
 requirements = parse_requirements('requirements.txt')
 
 
 def get_version():
-    try:
-        f = open("hicgan/_version.py")
-    except EnvironmentError:
-        return None
-    for line in f.readlines():
-        mo = re.match("__version__ = '([^']+)'", line)
-        if mo:
-            ver = mo.group(1)
-            return ver
-    return None
+    return version.__version__
 
 
 class sdist(_sdist):
@@ -81,12 +71,24 @@ setup(
     url='https://github.com/joachimwolff/Epigenetic-Graph-Analyzer',
     packages=find_packages(),
     install_requires=requirements,
-    scripts=['bin/egaCreateGraph', 'bin/egaMergeGraphs', 'bin/egaClusterBaits', 'bin/egaPlotlyGraph'],
+    scripts=[
+        'bin/egaCreateGraph',
+        'bin/egaMergeGraphs',
+        'bin/egaClusterBaits',
+        'bin/egaPlotlyGraph',
+        'bin/egaComputeRLM',
+        'bin/egaMergeRLM',
+        'bin/egaValidateWithSPRITE',
+        'bin/egaPrepareInteractions',
+        'bin/egaFetchPromoters',
+        'bin/egaReconstructCutSites',
+        'bin/egaTADStats',
+        'bin/egaCheckDownloads',
+    ],
     include_package_data=True,
-    package_dir={'hicgan': 'hicgan'},
     license='LICENSE',
     description='Set of programs to integrate the analysis of capture Hi-C data RNA-seq data and epigenetic data',
-    long_description=open('README.md').read(),
+    long_description=open('README.md', encoding='utf-8').read(),
     classifiers=[
         'Intended Audience :: Science/Research',
         'Topic :: Scientific/Engineering :: Bio-Informatics'],

@@ -6,11 +6,11 @@ import plotly.graph_objs as go
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Generate a Plotly graph from a NetworkX graph.')
-    parser.add_argument('graph', type=str, help='Path to the input graph file (in edgelist format).')
+    parser.add_argument('graph', type=str, help='Path to the input graph file (GraphML).')
     parser.add_argument('output_path', type=str, help='Directory where the output HTML file will be saved.')
     parser.add_argument('file_name_prefix', type=str, help='Prefix for the output HTML file name.')
+    parser.add_argument('--partitionId', type=str, default='', help='Optional partition id suffix used in the output filename.')
     return parser.parse_args()
-
 
 
 def writePlotlyGraph(partition_id, output_path, graph, file_name_prefix):
@@ -83,4 +83,8 @@ def writePlotlyGraph(partition_id, output_path, graph, file_name_prefix):
 
 def main():
     args = parse_args()
-    # writePlotlyGraph(partition_id, output_path, graph, file_name_prefix) 
+    if not os.path.exists(args.output_path):
+        os.makedirs(args.output_path)
+
+    graph = nx.read_graphml(args.graph)
+    writePlotlyGraph(args.partitionId, args.output_path, graph, args.file_name_prefix)

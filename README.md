@@ -1,34 +1,65 @@
 # epigenetic_graph_analyzer
 
-This project is a Python application that analyzes epigenetic graphs. It uses several libraries including numpy, pandas, hicexplorer, hicmatrix, and networkx.
+Epigenetic Graph Analyzer integrates capture Hi-C interactions with RNA-seq and epigenetic signals and supports graph-based downstream analysis.
 
 ## Installation
 
-To install the dependencies for this project, you will need to have Python and pip installed on your machine. Once you have these installed, you can install the dependencies by running the following command in the root directory of the project:
-
 ```bash
 pip install -r requirements.txt
+pip install .
 ```
 
-## Usage
+## CLI Tools
 
-To run the main script of the application, navigate to the `src` directory and run the following command:
+Core tools:
+
+- `egaCreateGraph`
+- `egaMergeGraphs`
+- `egaClusterBaits`
+- `egaPlotlyGraph`
+- `egaComputeRLM`
+- `egaMergeRLM`
+- `egaValidateWithSPRITE`
+
+Utility tools:
+
+- `egaPrepareInteractions`
+- `egaFetchPromoters`
+- `egaReconstructCutSites`
+- `egaTADStats`
+- `egaCheckDownloads`
+
+## Examples
+
+Validate indirect graph links with SPRITE (low-memory mode by default):
 
 ```bash
-python main.py
+egaValidateWithSPRITE \
+	--sprite /path/to/sprite.clusters.gz \
+	--graph /path/to/graph.graphml \
+	--genomeSize /path/to/chrom.sizes \
+	--outputPrefix /path/to/output/sprite_validation \
+	--binSize 10000 \
+	--minSpriteCount 1
+```
+
+Compute RLM table from graph + bigWig signals:
+
+```bash
+egaComputeRLM \
+	--graph /path/to/graph.graphml \
+	--conditions condA condB \
+	--bigwigFiles condA_rep1.bw,condA_rep2.bw condB_rep1.bw,condB_rep2.bw \
+	--deseqCounts /path/to/deseq.tsv \
+	--steps 2 \
+	--outputFolder /path/to/output
 ```
 
 ## Testing
 
-To run the tests for the application, navigate to the `tests` directory and run the following command:
-
 ```bash
-python test_main.py
+python -m unittest discover -s tests -p "test_*.py"
 ```
-
-## Contributing
-
-Contributions are welcome. Please submit a pull request with your changes.
 
 ## License
 

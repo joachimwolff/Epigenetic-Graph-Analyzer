@@ -9,3 +9,8 @@ seaborn
 scikit-learn
 icecream
 pyranges
+pyBigWig
+plotly
+adjustText
+PyQt5
+pyqtgraph

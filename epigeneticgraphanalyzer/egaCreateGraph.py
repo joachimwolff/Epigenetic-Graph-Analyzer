@@ -49,10 +49,10 @@ def createCutIntervals(chromosome_size_file, resolution):
 
     cut_intervals = []
     if isinstance(resolution, int):
-        for chromosome in chrom_sizes:
-            for interval in range(0, chromosome[1], resolution):
-                cut_intervals.append(tuple([chromosome[0], interval,
-                                            min(chromosome[1], interval + resolution), 1.0]))
+        for chromosome, chromosome_size in chrom_sizes.items():
+            for interval in range(0, chromosome_size, resolution):
+                cut_intervals.append(tuple([chromosome, interval,
+                                            min(chromosome_size, interval + resolution), 1.0]))
     else:
         restriction_cut_sites = pd.read_table(resolution, sep='\t')
         for row in restriction_cut_sites.iterrows():
