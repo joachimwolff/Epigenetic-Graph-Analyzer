@@ -1,138 +1,84 @@
-# Epigenetic Graph Analyzer: Concept and Workflow
+# Concept and workflow
 
-## Overview
-Epigenetic Graph Analyzer is a graph-based framework for integrating capture Hi-C interactions with RNA-seq and ChIP-seq differential signals.
+## Graph model
 
-The central idea, consistent with the manuscript draft and data club presentation, is:
+Promoter capture Hi-C measures contacts between a baited promoter fragment and any other fragment. EGA
+turns the significant interactions into an undirected graph:
 
-1. Represent capture Hi-C contacts as a graph where bait and interacting elements are nodes and interaction strengths are edge weights.
-2. Build a differential graph between two biological conditions.
-3. Annotate graph nodes and edges with multi-omics changes.
-4. Analyze direct and indirect interaction paths to explain gene regulation.
+* **nodes** are restriction fragments, keyed by `chrom:start-end`; a fragment is a *bait* node if it is
+  captured, otherwise an *other-end* (OE) node. A baited fragment that is the other end of a
+  promoter-promoter interaction is the same node as the bait, so paths can pass through promoters;
+* **edges** are significant interactions, weighted by log2(observed/expected) or the input score.
 
-This documentation separates the workflow into:
+Because nodes are keyed by coordinates, graphs of different conditions built from the same fragment
+set share their nodes and can be compared edge by edge.
 
-1. Differential multi-omics analysis workflow.
-2. Standalone SPRITE validation workflow for indirect mappings.
+## Indirect contacts
 
-## Scientific Motivation
-Capture Hi-C gives pairwise contact evidence. Biological regulation, however, often involves multi-way chromatin hubs.
+Two nodes on the same chromosome without a significant interaction but with a common neighbour (the
+mediator) form an indirect contact. Pairs are classified by the capture design:
 
-The framework addresses this by combining:
+| Class | Meaning |
+|---|---|
+| `oe-oe` | neither end baited: the contact cannot be measured by promoter capture |
+| `bait-oe` | measurable, not called significant |
+| `bait-bait` | both ends baited, measurable, not called significant |
 
-1. Differential edge behavior in interaction graphs.
-2. Differential RNA expression.
-3. Differential histone or protein occupancy at genomic loci.
-4. Path-based interpretation (bait -> OE -> OE...) for indirect influence.
-
-The standalone SPRITE validation then checks whether graph-inferred indirect triplets are supported by independent 3D contact observations.
-
-## Data Inputs
-The project supports use with data assets such as:
-
-1. Capture Hi-C derived graphs for paired conditions.
-2. Genome size files for interval/bin operations.
-3. Promoter annotation tables.
-4. RNA-seq differential results (log2 fold change).
-5. ChIP-seq differential peak summaries (log2 fold change and significance).
-6. SPRITE cluster files for orthogonal 3D validation.
-
-## Differential Workflow
-
-### 1) Build condition-specific interaction graphs
-Generate graph structures from capture Hi-C style interaction tables.
+Each pair carries the number of mediators, the Adamic-Adar index and a path score (sum over mediators of
+the weaker edge). Two-hop paths u - v - w are reported as triplets.
 
 ```{mermaid}
 flowchart LR
-A[Capture Hi-C interactions] --> B[egaPrepareInteractions]
-B --> C[egaCreateGraph condition A]
-B --> D[egaCreateGraph condition B]
-C --> E[Graph A]
-D --> F[Graph B]
+A[raw pcHi-C counts] --> B[egaCallInteractions]
+B --> C[egaCreateGraph]
+C --> D[egaIndirectContacts]
+C --> E[egaAnnotateGraph]
+F[SPRITE clusters / GAM tables] --> G[egaBuildMultiway]
+C --> H[egaValidateMultiway]
+G --> H
+B --> I[egaDifferential]
+J[bigWig marks, expression] --> I
 ```
 
-### 2) Merge and compare graph communities
-Align communities across conditions and compute interaction fold changes.
+## Interaction calling
 
-```{mermaid}
-flowchart LR
-E[Graph A] --> G[egaMergeGraphs]
-F[Graph B] --> G
-G --> H[Merged differential community graphs]
-```
+`egaCallInteractions` models the expected count of a bait-other pair as
+`f(distance) * s(bait) * t(other end)`. The distance decay is estimated in log-spaced distance bins,
+bait factors by empirical Bayes shrinkage, and the other-end factor as a power law of the fragment
+coverage (or per fragment, or not at all). Counts are tested against a negative binomial with a
+maximum likelihood dispersion. Candidate interactions are excluded from the background fit in two
+refit rounds. Pairs are called by BH-FDR or, as in Jung et al. (2019), by a nominal p-value and a
+minimum count; in the latter case the expected number of false calls under the fitted background is
+reported.
 
-### 3) Add RNA and chromatin annotations
-Annotate nodes with RNA-seq and bigWig-derived signal summaries, then compute relation-to-local-neighborhood metrics.
+## Validation with multi-way data
 
-```{mermaid}
-flowchart LR
-H[Merged graph] --> I[egaComputeRLM]
-I --> J[Node-level and neighborhood-level tables]
-J --> K[egaClusterBaits]
-K --> L[Regulatory pattern clusters]
-```
+SPRITE clusters and GAM tubes record sets of loci that were together in one crosslinked complex or one
+nuclear slice, without proximity ligation. `egaBuildMultiway` bins them into a sparse incidence matrix
+(SPRITE clusters weighted 2/n). `egaValidateMultiway` then tests
 
-### 4) Interpret direct and indirect mechanisms
-Interpretation is performed in path-length space:
+1. **pairs** (direct edges and indirect contacts): co-occurrence, co-occurrence relative to the
+   genome-wide expectation at the same distance, and for GAM the NPMI, each compared with control pairs
+   at the identical bin offset drawn from the same pools of graph loci (bait or OE) and not connected
+   within two hops;
+2. **triplets**: the number of groups holding all three loci of a two-hop path, compared with control
+   triplets around the same mediator;
+3. **communities**: groups holding at least k bins of a community, compared with the same bin set
+   circularly shifted along the chromosome.
 
-1. Step 1: direct bait-neighbor effects.
-2. Step 2: one intermediate node.
-3. Step 3: extended local hubs.
+Graph coordinates can be lifted to the assembly of the multi-way data with `--chain`.
 
-This supports hypothesis classes highlighted in the manuscript/presentation:
+## Differential mode
 
-1. Expression change with interaction and chromatin change.
-2. Expression change with interaction change but weak chromatin shift.
-3. Expression change explained through indirect graph paths.
+`egaDifferential` takes the complete call tables of two conditions, chromatin marks (bigWig) and
+expression for both:
 
-## Standalone SPRITE Validation Workflow
-This branch validates whether graph-inferred indirect triplets are present in real multi-way 3D data.
+1. pairs significant in either condition are tested for a change of enrichment with a conditional
+   binomial test;
+2. on the union graph each bait gene receives, per mark, the log2 change of the mark at the promoter,
+   of the contact-weighted mark sum over direct neighbours, and over indirect (two-hop) nodes;
+3. expression changes are related to these features by nested linear models (promoter; + direct;
+   + indirect) and by a hierarchical classification (promoter > direct > indirect > unexplained);
+4. the contribution of the indirect level is tested by permuting mark values over non-promoter nodes.
 
-### Core question
-If A interacts with B and B interacts with C in the capture Hi-C graph, does SPRITE report co-occurrence of A, B, and C in the same cluster?
-
-### Procedure
-
-```{mermaid}
-flowchart LR
-A[GraphML with node positions] --> B[Map nodes to genomic bins]
-C[SPRITE clusters] --> D[Count triplet support]
-B --> E[Graph-derived indirect triplets]
-D --> F[Triplet evidence]
-E --> G[egaValidateWithSPRITE]
-F --> G
-G --> H[Supported vs unsupported indirect triplets]
-```
-
-### Modes
-`egaValidateWithSPRITE` provides two counting modes:
-
-1. `targeted` (default): low-memory mode that counts only graph-derived triplets.
-2. `full`: counts all SPRITE triplets (higher memory footprint).
-
-### Outputs
-The validation step yields:
-
-1. Detailed table of each indirect graph triplet with SPRITE support count.
-2. Summary table with total triplets, supported fraction, and thresholds used.
-
-## Recommended End-to-End Execution
-
-1. Standardize interaction input: `egaPrepareInteractions`.
-2. Build graphs per condition: `egaCreateGraph`.
-3. Merge and derive differential communities: `egaMergeGraphs`.
-4. Annotate and compute local regulation metrics: `egaComputeRLM`, optionally `egaMergeRLM`.
-5. Cluster and visualize regulatory patterns: `egaClusterBaits`, `egaPlotlyGraph`.
-6. Validate indirect triplets with orthogonal 3D data: `egaValidateWithSPRITE`.
-
-## Practical Notes
-
-1. For large SPRITE files, use `targeted` mode and optionally set `--maxClusterBins`.
-2. Ensure graph nodes carry valid genomic `position` attributes before SPRITE validation.
-3. Keep RNA-seq and ChIP-seq contrasts matched to the same condition pair used for graph comparison.
-
-## Scope Boundaries
-
-1. Differential branch explains condition-dependent rewiring and regulatory consequences.
-2. Standalone SPRITE branch is validation-focused and can run independently once a graph is available.
-3. SPRITE support strengthens confidence in indirect mappings but does not by itself establish causality.
+Communities of both conditions are matched by Jaccard index.
