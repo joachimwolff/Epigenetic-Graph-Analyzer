@@ -18,7 +18,7 @@ work="$results/regions"
 mkdir -p "$figures" "$work"
 # name | figure of arcs and graph | graph | multi-way data | region (hg19) | label | extra options
 regions=(
-    "GM|figure3|GM_chicago|$sprite|chr12:14500000-15500000|GM12878|--noIndirect --multiway $sprite"
+    "GM|figure3|GM_chicago|$sprite|chr20:30000000-31000000|GM12878|--noIndirect --multiway $sprite"
     "H1|figureS4|H1|$gam|chr12:52550000-54620000|H1-hESC|--noIndirect --multiway $gam --chain $chain"
 )
 for entry in "${regions[@]}"; do
