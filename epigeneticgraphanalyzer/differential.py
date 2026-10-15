@@ -729,7 +729,8 @@ def community_expression_changes(communities_a, communities_b, main, transitions
     Rewiring counts the union-graph edges inside the pair (both ends in the A community or both in its main B
     community) by status. The expression change of a community is the mean RNA log2FC of its bait genes (A and B
     members); its coherence is tested against random sets of the same number of genes drawn from all genes with an
-    expression change (two-sided, empirical p, BH q). Communities with fewer than `min_genes` genes are skipped.
+    expression change (two-sided, empirical p, BH q). Communities with fewer than `min_genes` genes are skipped; A
+    communities that continue in the same B community are tested once (column communities_a lists them).
     """
     rng = np.random.default_rng(seed)
     values = np.array(list(expression.values()), dtype=float)
@@ -773,6 +774,10 @@ def community_expression_changes(communities_a, communities_b, main, transitions
                      'mean_rna_log2FC': mean_change, 'coherence_p': float(p)})
     table = pd.DataFrame(rows)
     if len(table):
+        # A communities with the same main B community form one unit: keep the pair with most genes, list all A ids
+        sources = table.groupby('community_b')['community_a'].apply(lambda v: ','.join(str(x) for x in sorted(v)))
+        table = table.sort_values('n_genes', ascending=False).drop_duplicates('community_b')
+        table['communities_a'] = table['community_b'].map(sources)
         table['coherence_q'] = _benjamini_hochberg(table['coherence_p'].to_numpy())
         table = table.sort_values('coherence_p').reset_index(drop=True)
     return table

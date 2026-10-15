@@ -69,6 +69,8 @@ def parse_arguments(args=None):
     parser.add_argument('--chromatinThreshold', type=float, default=1.0,
                         help='|log2FC| of a chromatin feature counted as explaining a gene')
     parser.add_argument('--permutations', type=int, default=100)
+    parser.add_argument('--communityPermutations', type=int, default=10000,
+                        help='Random gene sets per community size for the coherence test of community expression')
     parser.add_argument('--genePermutations', type=int, default=1000,
                         help='Permutations of the per-gene test of the indirect level (0 skips it)')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
@@ -210,13 +212,16 @@ def main(args=None):
                                                        expression=change, differential=de_nodes)
     write_table(gene_changes, prefix + '_gene_community_changes.tsv')
     community_changes = community_expression_changes(communities_a, communities_b, main_b, transitions, edges, change,
-                                                     n_permutations=args.genePermutations or 1000, seed=args.seed)
+                                                     n_permutations=args.communityPermutations, seed=args.seed)
     write_table(community_changes, prefix + '_community_expression.tsv')
     summary = {'transitions': transitions['transition'].value_counts().to_dict(),
                'gene_status': gene_changes['status'].value_counts().to_dict() if len(gene_changes) else {},
                'switching_vs_differential': switch_test,
                'communities_tested': int(len(community_changes)),
-               'coherent_communities_q_lt_0.1': int((community_changes['coherence_q'] < 0.1).sum())
+               'coherent_community_pairs_q_lt_0.1': int((community_changes['coherence_q'] < 0.1).sum())
+               if len(community_changes) else 0,
+               'coherent_communities_b_q_lt_0.1': int(community_changes.loc[community_changes['coherence_q'] < 0.1,
+                                                                            'community_b'].nunique())
                if len(community_changes) else 0}
     if len(community_changes) > 3:
         rho, p = stats.spearmanr(community_changes['rewired_fraction'], community_changes['mean_rna_log2FC'].abs(),
