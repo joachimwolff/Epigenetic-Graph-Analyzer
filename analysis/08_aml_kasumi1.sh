@@ -21,9 +21,8 @@ chain="$data/annotation/hg19ToHg38.over.chain.gz"
 for f in "$kasumi"/dnase/*.wig.gz; do
     output="$bw/$(basename "$f" .wig.gz).bw"
     [[ -s "$output" ]] && continue
-    python "$(dirname "$0")/liftover_wig.py" "$f" "$chain" "$sizes" "$output.bedGraph" &
+    python "$(dirname "$0")/liftover_wig.py" "$f" "$chain" "$sizes" "$output.bedGraph"
 done
-wait
 for f in "$kasumi"/dnase/*.wig.gz; do
     output="$bw/$(basename "$f" .wig.gz).bw"
     [[ -s "$output" ]] && continue
