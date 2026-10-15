@@ -4,7 +4,7 @@
 #   capture Hi-C: HiCUP per replicate (kasumi1/map_runs.sh), bam2chicago and the CHiCAGO pipeline of HiCExplorer
 #   (kasumi1/call_chicago.sh) on a design of the HindIII fragments holding a TSS (analysis/promoter_baitmap.py),
 #   exported at score >= 1 and combined by the replicate rule (present in both replicates, score >= 5 in one)
-#   chromatin: DNase-seq of siMM and siRE at day 2 and day 10 after transfection
+#   chromatin: DNase-seq of siMM and siRE at day 2 and day 10 after transfection (deposited on hg19, lifted to hg38)
 #   expression: RNA-seq day 4, three replicates, salmon and PyDESeq2 (analysis/kasumi_rna.sh)
 set -euo pipefail
 kasumi=${1:?usage: 08_aml_kasumi1.sh <kasumi1 dir> <data_dir> <results_dir> [permutations]}
@@ -16,14 +16,17 @@ sizes="$data/annotation/hg38.chrom.sizes"
 out="$results/aml_kasumi1"
 bw="$kasumi/dnase/bigwig"
 mkdir -p "$out" "$bw"
+# the deposited DNase-seq tracks are on hg19 (GAPDH promoter signal at the hg19 position): lifted to hg38
+chain="$data/annotation/hg19ToHg38.over.chain.gz"
 for f in "$kasumi"/dnase/*.wig.gz; do
     output="$bw/$(basename "$f" .wig.gz).bw"
     [[ -s "$output" ]] && continue
-    zcat "$f" | awk -v OFS='\t' '
-        /^track/ {next}
-        /^variableStep/ {split($2, c, "="); chrom = c[2]; span = 1; for (i = 3; i <= NF; i++) if ($i ~ /^span=/) {split($i, s, "="); span = s[2]}; next}
-        {print chrom, $1 - 1, $1 - 1 + span, $2}' | awk '$1 ~ /^chr([0-9]+|X|Y)$/' |
-        LC_ALL=C sort -k1,1 -k2,2n -S 8G > "$output.bedGraph"
+    python "$(dirname "$0")/liftover_wig.py" "$f" "$chain" "$sizes" "$output.bedGraph" &
+done
+wait
+for f in "$kasumi"/dnase/*.wig.gz; do
+    output="$bw/$(basename "$f" .wig.gz).bw"
+    [[ -s "$output" ]] && continue
     bedGraphToBigWig "$output.bedGraph" "$sizes" "$output"
     rm "$output.bedGraph"
 done
