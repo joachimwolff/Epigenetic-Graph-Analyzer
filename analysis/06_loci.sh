@@ -1,11 +1,10 @@
 #!/usr/bin/env bash
 # Example regions with several communities.
 #   Figure 3 (GM12878) and Supplementary Figure S4 (H1-hESC): interactions as pyGenomeTracks arcs coloured by
-#             community, and below them the same region as a promoter-centred graph (egaPlotRegion).
-#   Figure 4: the GM12878 graph with SPRITE co-occurrence of its interactions and single SPRITE clusters.
-#   Figure 5: the SPRITE clusters / GAM tubes that contain loci of these communities and their community purity.
-#   Supplementary Figure S5: communities, events and purity of a wider GM12878 region with seven communities.
-#   Supplementary Figures S2, S3: single communities with their multi-way events.
+#             community, the same region as a promoter-centred graph (egaPlotRegion), and the graph with the
+#             multi-way co-occurrence of its interactions and single SPRITE clusters / GAM tubes.
+#   Supplementary Figure S6: the SPRITE clusters / GAM tubes that contain loci of these communities and their
+#             community purity; S5: a wider GM12878 region; S2, S3: single communities with their multi-way events.
 # PGT is the pyGenomeTracks executable (default: pyGenomeTracks on PATH).
 set -euo pipefail
 data=${1:?usage: 06_loci.sh <data_dir> <results_dir> <figure_dir>}
@@ -19,8 +18,8 @@ work="$results/regions"
 mkdir -p "$figures" "$work"
 # name | figure of arcs and graph | graph | multi-way data | region (hg19) | label | extra options
 regions=(
-    "GM|figure3|GM_mifsud_c20_r1|$sprite|chr12:14500000-15500000|GM12878|--noIndirect --multiway $sprite"
-    "H1|figureS4|H1_p1e-3|$gam|chr12:52550000-54620000|H1-hESC|"
+    "GM|figure3|GM_chicago|$sprite|chr12:14500000-15500000|GM12878|--noIndirect --multiway $sprite"
+    "H1|figureS4|H1|$gam|chr12:52550000-54620000|H1-hESC|--noIndirect --multiway $gam --chain $chain"
 )
 for entry in "${regions[@]}"; do
     IFS='|' read -r name figure graph multiway region label extra <<< "$entry"
@@ -37,18 +36,25 @@ for entry in "${regions[@]}"; do
         --width 30 --fontSize 9 \
         -o "$figures/${figure}_${name}_arcs.pdf"
     cp "$work/${name}_region_graph.pdf" "$figures/${figure}_${name}_graph.pdf"
-    # promoter-centred graph with the multi-way evidence (Figure 4 for GM12878)
-    [[ -s "$work/${name}_region_graph_multiway.pdf" && "$figure" == figure3 ]] && \
-        cp "$work/${name}_region_graph_multiway.pdf" "$figures/figure4_${name}_graph_sprite.pdf"
+    # promoter-centred graph with the multi-way evidence
+    [[ -s "$work/${name}_region_graph_multiway.pdf" ]] && \
+        cp "$work/${name}_region_graph_multiway.pdf" "$figures/${figure}_${name}_graph_multiway.pdf"
     chain_option=()
     [[ "$multiway" == "$gam" ]] && chain_option=(--chain "$chain")
     egaPlotLocus --style communities --panels evidence -g "$results/graphs/$graph.graphml" -m "$multiway" \
-        "${chain_option[@]}" --region "$region" --title "$label" -o "$figures/figure5_${name}_evidence.pdf"
+        "${chain_option[@]}" --region "$region" --title "$label" -o "$figures/figureS6_${name}_evidence.pdf"
 done
 # partition of a wider GM12878 region with seven communities
-egaPlotLocus --style communities -g "$results/graphs/GM_mifsud_c20_r1.graphml" -m "$sprite" \
+egaPlotLocus --style communities -g "$results/graphs/GM_chicago.graphml" -m "$sprite" \
     --region chr12:14370000-16850000 --title 'GM12878 SPRITE, chr12' -o "$figures/figureS5_GM_partition.pdf"
-egaPlotLocus -g "$results/graphs/GM_mifsud_c20_r1.graphml" -m "$sprite" \
-    --highlightCommunity 970 --title 'GM12878 SPRITE, MYOCD community' -o "$figures/figureS2_locus_sprite.pdf"
-egaPlotLocus -g "$results/graphs/H1_p1e-3.graphml" -m "$gam" --chain "$chain" \
-    --highlightCommunity 28 --title 'H1-hESC GAM, HOXA community' -o "$figures/figureS3_locus_gam.pdf"
+# community of a gene, looked up in the node table
+community_of() {
+    awk -F'\t' -v g="$2" 'NR == 1 {for (i = 1; i <= NF; i++) col[$i] = i; next}
+        $col["bait"] == "True" && ("," $col["genes"] ",") ~ ("," g ",") {print $col["community"]; exit}' "$1"
+}
+egaPlotLocus -g "$results/graphs/GM_chicago.graphml" -m "$sprite" \
+    --highlightCommunity "$(community_of "$results/graphs/GM_chicago_nodes.tsv" MYOCD)" \
+    --title 'GM12878 SPRITE, MYOCD community' -o "$figures/figureS2_locus_sprite.pdf"
+egaPlotLocus -g "$results/graphs/H1.graphml" -m "$gam" --chain "$chain" \
+    --highlightCommunity "$(community_of "$results/graphs/H1_nodes.tsv" HOXA3)" \
+    --title 'H1-hESC GAM, HOXA community' -o "$figures/figureS3_locus_gam.pdf"
