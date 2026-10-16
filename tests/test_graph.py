@@ -1,8 +1,8 @@
 import networkx as nx
 import pandas as pd
 
-from epigeneticgraphanalyzer.graph import (annotate_genes, build_graph, community_table, detect_communities,
-                                           neighbourhood_layers, read_graph, write_graph)
+from epigeneticgraphanalyzer.graph import (annotate_genes, build_graph, community_table, compare_partitions,
+                                           detect_communities, neighbourhood_layers, read_graph, write_graph)
 from epigeneticgraphanalyzer.indirect import direct_contacts, indirect_contacts, pair_class, two_hop_triplets
 
 
@@ -97,6 +97,21 @@ def test_communities_split_two_cliques():
         assert sorted(len(c) for c in communities) == [5, 5]
     table = community_table(graph, communities)
     assert list(table['n_nodes']) == [5, 5]
+
+
+def test_compare_partitions():
+    reference = [{'a', 'b', 'c', 'd'}, {'e', 'f', 'g'}, {'h', 'i'}]
+    summary, table = compare_partitions(reference, [set(c) for c in reference])
+    assert summary['ari'] == 1.0 and summary['nmi'] == 1.0 and summary['fraction_matched'] == 1.0
+    assert list(table['best_match']) == [0, 1, 2]
+    # 'd' moves to the second community, 'h' and 'i' are missing from the other partition
+    other = [{'e', 'f', 'g', 'd', 'x'}, {'a', 'b', 'c'}]
+    summary, table = compare_partitions(reference, other)
+    assert summary['n_shared_nodes'] == 7
+    assert summary['ari'] < 1.0
+    assert list(table['best_match']) == [1, 0, -1]
+    assert table.loc[0, 'jaccard'] == 0.75 and table.loc[1, 'jaccard'] == 0.75 and table.loc[2, 'jaccard'] == 0.0
+    assert abs(summary['fraction_matched'] - 2 / 3) < 1e-12
 
 
 def test_graphml_roundtrip(tmp_path):
