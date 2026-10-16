@@ -48,20 +48,23 @@ def integer(x):
     return '{:,}'.format(int(x))
 
 
-def table(name, columns, header, rows, caption, label, size=r'\small', long=False):
+def table(name, columns, header, rows, caption, label, size=r'\small', long=False, colsep=None):
+    """LaTeX table; normal tables shrink to the text width if wider (adjustbox), long tables use `colsep`."""
+    spacing = r'\setlength{\tabcolsep}{%s}' % colsep if colsep else ''
     lines = []
     if long:
-        lines += ['{' + size, r'\begin{longtable}{@{}' + columns + '@{}}', r'\caption{' + caption + r'}\label{' + label
-                  + r'}\\', r'\toprule', header + r' \\', r'\midrule', r'\endfirsthead', r'\toprule', header + r' \\',
-                  r'\midrule', r'\endhead']
+        lines += ['{' + size + spacing, r'\begin{longtable}{@{}' + columns + '@{}}', r'\caption{' + caption + r'}\label{'
+                  + label + r'}\\', r'\toprule', header + r' \\', r'\midrule', r'\endfirsthead', r'\toprule',
+                  header + r' \\', r'\midrule', r'\endhead']
         lines += rows
         lines += [r'\bottomrule', r'\end{longtable}}']
     else:
-        lines += [r'\begin{table}[!h]', r'\centering' + size, r'\begin{tabular}{@{}' + columns + '@{}}', r'\toprule',
+        lines += [r'\begin{table}[!h]', r'\centering' + size + spacing,
+                  r'\begin{adjustbox}{max width=\textwidth}', r'\begin{tabular}{@{}' + columns + '@{}}', r'\toprule',
                   header + r' \\', r'\midrule']
         lines += rows
-        lines += [r'\bottomrule', r'\end{tabular}', r'\caption{' + caption + '}', r'\label{' + label + '}',
-                  r'\end{table}']
+        lines += [r'\bottomrule', r'\end{tabular}', r'\end{adjustbox}', r'\caption{' + caption + '}',
+                  r'\label{' + label + '}', r'\end{table}']
     with open(os.path.join(OUT, name), 'w') as handle:
         handle.write('\n'.join(lines) + '\n')
 
@@ -202,7 +205,7 @@ def s3():
           'Per-contact support: fraction of direct interactions and indirect contacts whose distance-normalised '
           'co-occurrence exceeds the 95th percentile of their matched controls (5\\% expected), and the same '
           'fraction for held-out controls; all contacts, by genomic distance (pair classes pooled) and, for direct '
-          'interactions, by quartile of the interaction score.', 'tab:s3', long=True)
+          'interactions, by quartile of the interaction score.', 'tab:s3', size=r'\scriptsize', long=True, colsep='4pt')
 
 
 def s4():
@@ -272,7 +275,7 @@ def s5():
                                     num(r['rewired_fraction'], 2), num(r['mean_rna_log2FC'], 2),
                                     num(r['coherence_q'], 3), (('\\textit{' + tex(', '.join(names)) + '}') if italic else tex(', '.join(names))) or '--']) + r' \\')
         rows.append(r'\midrule')
-    table('table_s5.tex', 'llllrrrrp{7.2cm}',
+    table('table_s5.tex', 'p{1.9cm}rp{1.4cm}rrrrr>{\\raggedright\\arraybackslash}p{4.4cm}',
           'Comparison & Community & Transition & Genes & Shared/lost/gained & Rewired & Mean $\\log_2$FC & $q$ & '
           'Genes with the largest change', rows[:-1],
           'Communities of the second condition with a coordinated expression change of their genes (FDR $<$ 0.1, '
@@ -280,7 +283,7 @@ def s5():
           'condition (--, no matched community in the second condition; genes of the first); shared/lost/gained: interactions of the community; rewired: fraction of lost and gained '
           'interactions. The AML patient comparison '
           'uses an exploratory expression contrast of three patients per subtype.', 'tab:s5', size=r'\scriptsize',
-          long=True)
+          long=True, colsep='3pt')
 
 
 COMPARISONS = (('hESC / hNEC', 'differential/hESC_vs_hNEC'), ('Md / PA2', 'kessler/Md_vs_PA2'),
@@ -350,12 +353,13 @@ def s8():
                 gene = item.split('[')[-1].split(']')[0] if '[' in item else ''
                 if gene and gene not in drivers:
                     drivers.append(gene)
-            rows.append(' & '.join([label, '\\textit{' + tex(','.join(genes)) + '}', num(r['rna_log2FC'], 2),
-                                    str(int(r['n_direct'])), str(int(r['n_indirect'])), tex(r['explaining_marks']),
+            rows.append(' & '.join([label, '\\textit{' + tex(', '.join(genes)) + '}', num(r['rna_log2FC'], 2),
+                                    str(int(r['n_direct'])), str(int(r['n_indirect'])), tex(str(r['explaining_marks']).replace(',', ', ')),
                                     pval(r['indirect_p']), num(r['indirect_q'], 2),
-                                    tex(', '.join(drivers[:5]))]) + r' \\')
+                                    tex(', '.join(dict.fromkeys(g.strip() for d in drivers[:5] for g in d.split(','))))]) + r' \\')
         rows.append(r'\midrule')
-    table('table_s8.tex', 'llrrrlrrp{6cm}',
+    table('table_s8.tex', 'p{1.5cm}>{\\raggedright\\arraybackslash}p{2.1cm}rrr>{\\raggedright\\arraybackslash}p{1.7cm}rr'
+          '>{\\raggedright\\arraybackslash}p{3.5cm}',
           'Comparison & Gene & RNA $\\log_2$FC & Direct & Indirect & Marks & $P$ & $q$ & Explaining two-step nodes',
           rows[:-1],
           'Candidates for regulation through indirect contacts: differentially expressed genes explained only at '
@@ -364,7 +368,7 @@ def s8():
           'available explanation of the expression change of these genes; perturbation experiments are required '
           'to establish regulation. Direct and indirect: numbers of direct and two-step neighbours; explaining '
           'two-step nodes: annotated genes of the nodes with the largest concordant contribution (OE, other end).',
-          'tab:s8', size=r'\scriptsize', long=True)
+          'tab:s8', size=r'\scriptsize', long=True, colsep='3pt')
 
 
 def s9():
@@ -389,7 +393,7 @@ def s9():
           'Virtual promoter capture: agreement of CHiCAGO calls from Hi-C or Micro-C contact matrices (5\\,kb) with '
           'promoter capture calls of the same cell type on shared baited bins, exact and, in brackets, with a '
           'tolerance of one bin. Two capture experiments of GM12878 serve as reference for the agreement between '
-          'capture data sets.', 'tab:s9', size=r'\scriptsize', long=True)
+          'capture data sets.', 'tab:s9', size=r'\scriptsize', long=True, colsep='4pt')
 
 
 def s10():
