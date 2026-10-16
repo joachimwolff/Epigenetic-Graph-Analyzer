@@ -72,20 +72,20 @@ def panel_sprite(ax):
         (x1, y1), (x2, y2) = points[a], points[b]
         ax.plot([x1, x2], [y1, y2], color=MUTED, lw=0.5, ls=(0, (1, 1.5)), zorder=1)
     ax.text(0.75, 0.08, 'crosslinked complex', ha='center', fontsize=6.5, color=INK)
-    ax.annotate('', xy=(1.95, 0.95), xytext=(1.5, 0.95), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
-    ax.text(1.62, 0.85, 'split-pool\nbarcoding', ha='center', va='top', fontsize=6.5, color=INK)
+    ax.annotate('', xy=(2.38, 0.95), xytext=(1.6, 0.95), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
+    ax.text(1.99, 0.85, 'split-pool\nbarcoding', ha='center', va='top', fontsize=6.5, color=INK)
     # every fragment of the complex carries the same barcode
     for i, name in enumerate(('P', 'E1', 'E2', 'E3')):
         y = 1.55 - 0.28 * i
         if name == 'P':
-            ax.add_patch(mpatches.Rectangle((2.05, y - 0.07), 0.32, 0.14, color=INK, lw=0))
+            ax.add_patch(mpatches.Rectangle((2.5, y - 0.07), 0.32, 0.14, color=INK, lw=0))
         else:
-            ax.add_patch(mpatches.Rectangle((2.05, y - 0.07), 0.32, 0.14, facecolor='white', edgecolor=INK, lw=1.0))
-        barcode(ax, 2.4, y)
-        ax.text(2.82, y, name, va='center', fontsize=6.5, color=INK)
-    ax.text(2.05, 0.38, 'one barcode =\none cluster', ha='left', va='center', fontsize=6.5, color=INK)
+            ax.add_patch(mpatches.Rectangle((2.5, y - 0.07), 0.32, 0.14, facecolor='white', edgecolor=INK, lw=1.0))
+        barcode(ax, 2.85, y)
+        ax.text(3.27, y, name, va='center', fontsize=6.5, color=INK)
+    ax.text(2.5, 0.38, 'one barcode =\none cluster', ha='left', va='center', fontsize=6.5, color=INK)
     ax.text(0.0, -0.25, 'E1 and E2 are read out together, without ligation', fontsize=6.5, color=ORANGE)
-    ax.set_xlim(0.0, 3.4)
+    ax.set_xlim(0.0, 3.6)
     ax.set_ylim(-0.35, 1.75)
     ax.set_aspect('equal')
     ax.axis('off')
