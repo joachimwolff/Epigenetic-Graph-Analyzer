@@ -202,13 +202,14 @@ def gene_labels(sub, nodes):
     return [(n, name) for name, n in best.items()]
 
 
-def node_legend(ax, loc='lower right', extra=()):
+def node_legend(ax, loc='lower right', extra=(), anchor=None):
     """Legend of the node shapes: baited promoter (square) and other end (circle)."""
     handles = [plt.Line2D([0], [0], marker='s', ls='', color='#9a9994', markeredgecolor=INK, markersize=6,
                           label='baited promoter'),
                plt.Line2D([0], [0], marker='o', ls='', color='#9a9994', markeredgecolor=INK, markersize=4,
                           label='other end (OE)')] + list(extra)
-    ax.legend(handles=handles, loc=loc, fontsize=6, frameon=False, handletextpad=0.3, borderaxespad=0.2)
+    ax.legend(handles=handles, loc=loc, fontsize=6, frameon=False, handletextpad=0.3, borderaxespad=0.2,
+              bbox_to_anchor=anchor)
 
 
 def layout_limits(ax, positions, pad=0.12):
@@ -280,14 +281,18 @@ def _locus_of(data, attrs, liftover=None):
     return data.bins.bin_of(chrom, position)
 
 
-def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max_overlap=0.5, title=None,
-                        example_bins=(4, 8), liftover=None, aspect=1.3, size=(3.6, 2.9)):
+def plot_graph_multiway(sub, colors, data, output, min_loci=3, max_overlap=0.5, title=None,
+                        size_classes=((3, 4), (5, 7), (8, 12), (13, 10 ** 6)), liftover=None, aspect=1.3,
+                        size=(3.6, 2.9)):
     """Promoter-centred graph with multi-way evidence.
 
     `output`: interactions coloured by the NPMI of their two ends in the multi-way data relative to locus pairs at
     the same offset. `<output stem>_example<k>.pdf`: the same graph with the fragments of single groups (SPRITE
-    clusters / GAM tubes) highlighted; examples are the largest groups whose bin sets overlap each other by at most
-    `max_overlap` (Jaccard). Every panel is a separate file, so that figures are assembled in the manuscript.
+    clusters / GAM tubes) highlighted; examples are groups whose bin sets overlap each other by at most
+    `max_overlap` (Jaccard), one per class of `size_classes` (number of region loci), chosen at random with a fixed
+    seed. `<output stem>_sizes.pdf`: groups by their number of region loci, with the examples marked.
+    `<output stem>_neighbourhood.pdf`: the largest example with its graph neighbourhood. Every panel is a separate
+    file, so that figures are assembled in the manuscript.
     """
     from .egaPlotLocus import groups_with_loci
     positions = promoter_centred_layout(sub, aspect=aspect)
@@ -314,15 +319,18 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
         pair[a == b] = np.nan
     else:
         pair = np.zeros(0)
+    # one example per size class of region loci, chosen at random (fixed seed) among groups that overlap the
+    # examples chosen before by at most max_overlap (Jaccard)
+    rng = np.random.default_rng(0)
     examples, chosen = [], []
-    candidates = [g for g in groups if example_bins[0] <= len(groups[g]) <= example_bins[1]]
-    for g in sorted(candidates, key=lambda g: (-len(groups[g]), g)):
-        current = set(groups[g].tolist())
-        if all(len(current & c) / len(current | c) <= max_overlap for c in chosen):
-            chosen.append(current)
-            examples.append(current)
-        if len(examples) == n_examples:
-            break
+    for low, high in size_classes:
+        candidates = sorted(g for g in groups if low <= len(groups[g]) <= high)
+        for g in rng.permutation(candidates) if candidates else []:
+            current = set(groups[g].tolist())
+            if all(len(current & c) / len(current | c) <= max_overlap for c in chosen):
+                chosen.append(current)
+                examples.append(current)
+                break
     group = 'tube' if data.kind == 'gam' else 'cluster'
     assay = 'GAM' if data.kind == 'gam' else 'SPRITE'
 
@@ -351,7 +359,7 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
     bar = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), cax=cax, orientation='horizontal')
     bar.set_label('$\\Delta$NPMI: {} co-occurrence above\npairs at the same distance'.format(assay), fontsize=6)
     bar.ax.tick_params(labelsize=5.5, length=2)
-    node_legend(ax_main, loc='lower left')
+    node_legend(ax_main, loc='lower right', anchor=(1.0, 0.16))
     ax_main.set_axis_off()
     ax_main.set_title('interactions by {} co-occurrence'.format(assay), loc='left', fontsize=7.5)
     fig.savefig(ensure_parent(output), bbox_inches='tight')
@@ -377,6 +385,54 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
         ax.set_title('one {}: {} {}'.format(group, len(members), unit), loc='left', fontsize=6.5)
         fig.savefig('{}_example{}.pdf'.format(stem, k + 1), bbox_inches='tight')
         plt.close(fig)
+    # all groups by their number of region loci, the examples marked
+    counts = np.bincount([len(v) for v in groups.values()]) if groups else np.zeros(1, dtype=int)
+    fig, ax = plt.subplots(figsize=(size[0] / 2, size[1] / 2))
+    sizes = np.arange(len(counts))
+    keep = sizes >= min_loci
+    ax.bar(sizes[keep], counts[keep], width=0.85, color='#b9b8b2', lw=0)
+    for k, members in enumerate(examples):
+        ax.bar([len(members)], [counts[len(members)]], width=0.85, color='#eb6834', lw=0)
+        ax.text(len(members), counts[len(members)] * 1.15, 'defg'[k] if k < 4 else '', ha='center', va='bottom',
+                fontsize=6, color=INK)
+    ax.set_yscale('log')
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax.set_xlabel('{} of the region per {}'.format(unit.split()[-1], group), fontsize=6.5)
+    ax.set_ylabel('{}s'.format(group), fontsize=6.5)
+    ax.tick_params(labelsize=6)
+    for side in ('top', 'right'):
+        ax.spines[side].set_visible(False)
+    ax.set_title('{:,} {}s with $\\geq${} {}'.format(len(groups), group, min_loci, unit.split()[-1]), loc='left',
+                 fontsize=6.5)
+    fig.savefig('{}_sizes.pdf'.format(stem), bbox_inches='tight')
+    plt.close(fig)
+    # the largest example with its graph neighbourhood: interactions with at least one fragment of the group and the
+    # nodes they reach, which by transitivity are expected close to the group
+    if examples:
+        members = max(examples, key=len)
+        inside = {n for n, b in node_bin.items() if b in members}
+        reached = {w for u in inside for w in sub.neighbors(u) if w in positions} - inside
+        fig, ax = plt.subplots(figsize=(size[0] / 2, size[1] / 2))
+        for u, v in sub.edges:
+            if u not in positions or v not in positions:
+                continue
+            ends = (u in inside) + (v in inside)
+            color, lw, z = {2: ('#2a78d6', 0.8, 3), 1: ('#9cc3ee', 0.6, 2), 0: ('#e2e1dc', 0.3, 1)}[ends]
+            ax.plot([positions[u][0], positions[v][0]], [positions[u][1], positions[v][1]], color=color, lw=lw,
+                    zorder=z)
+        for n in nodes:
+            state = 2 if n in inside else (1 if n in reached else 0)
+            color = {2: '#eb6834', 1: '#f6b99c', 0: '#e2e1dc'}[state]
+            ax.scatter(*positions[n], marker='s' if sub.nodes[n].get('bait') else 'o',
+                       s=(26 if sub.nodes[n].get('bait') else 7), color=color,
+                       edgecolor=INK if state else 'none', lw=0.3, zorder=3 + state)
+        layout_limits(ax, positions)
+        ax.set_axis_off()
+        ax.set_title('{} and its graph partners'.format(group), loc='left', fontsize=6.5)
+        fig.savefig('{}_neighbourhood.pdf'.format(stem), bbox_inches='tight')
+        plt.close(fig)
+        log.info('largest example: %d nodes in the %s, %d direct partners outside it', len(inside), group,
+                 len(reached))
 
 
 def main(args=None):

@@ -166,10 +166,9 @@ def place_labels(ax, labelled, positions, fontsize=6, obstacles=None, marker_poi
     """Gene labels next to their nodes without overlapping each other or any node marker.
 
     Labels are placed one after another (top to bottom); each takes the first free position from a list of
-    candidates around its node (above, below, right, left, the diagonals, then the same at two and three times the
-    distance). A position is free if the label box overlaps neither a placed label nor a node marker (`obstacles`,
-    default all of `positions`, squares of `marker_points` points). Labels placed beyond the first ring get a leader
-    line; if no candidate is free, the label takes the candidate with the least overlap."""
+    candidates around its node (above, below, right, left, the diagonals, then the same at twice the distance). A position is free if the label box overlaps neither a placed label nor a node marker (`obstacles`,
+    default all of `positions`, squares of `marker_points` points). Labels placed in the second ring get a leader line;
+    if no candidate is free, the label takes the least overlapping position next to its node."""
     if not labelled:
         return
     fig = ax.figure
@@ -208,15 +207,17 @@ def place_labels(ax, labelled, positions, fontsize=6, obstacles=None, marker_poi
         x, y = positions[labelled[i][0]]
         w, h = sizes[i]
         candidates = []
-        for ring in (1, 2, 3):
+        for ring in (1, 2):
             dx = (w / 2 + half[0]) * 1.05 + (ring - 1) * w * 0.6
             dy = (h / 2 + half[1]) * 1.1 + (ring - 1) * h
             candidates += [(ring, x, y + dy), (ring, x, y - dy), (ring, x + dx, y), (ring, x - dx, y),
                            (ring, x + dx, y + dy), (ring, x - dx, y + dy), (ring, x + dx, y - dy),
                            (ring, x - dx, y - dy)]
+        # the nearest free position; without one, the least overlapping position of the first ring, so that a label
+        # never moves far from its node
         scored = [(overlap(cx, cy, w, h), k, ring, cx, cy) for k, (ring, cx, cy) in enumerate(candidates)]
         free = [c for c in scored if c[0] == 0]
-        _, _, ring, cx, cy = free[0] if free else min(scored)
+        _, _, ring, cx, cy = free[0] if free else min(c for c in scored if c[2] == 1)
         texts[i].set_position((cx, cy))
         placed.append((cx, cy, w, h))
         if ring > 1:
