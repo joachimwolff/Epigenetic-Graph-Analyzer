@@ -128,13 +128,15 @@ def coverage_classes(pools, n_classes=5):
     return np.searchsorted(edges, coverage, side='right')
 
 
-def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, coverage_class=None):
+def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, coverage_class=None, tad_id=None):
     """Control pairs at the same bin offset with ends from the same locus pools.
 
     `excluded` is a set of (bin_a, bin_b) tuples (bin_a < bin_b) that must not
     be drawn (direct and indirect contacts). With `coverage_class` (per bin, see
     coverage_classes) a control must also match the unordered pair of coverage classes
-    of the tested pair; pairs without such a candidate fall back to offset matching.
+    of the tested pair; pairs without such a candidate fall back to offset matching. `coverage_class` can
+    combine several per-bin classes (see domain_classes). With `tad_id` (per bin, -1 outside domains) a control
+    must also match whether the two ends lie in the same topological domain.
     Returns a DataFrame with test_index, bin_a, bin_b.
     """
     rng = np.random.default_rng(seed)
@@ -158,10 +160,10 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
             continue
         candidates = np.array(candidates, dtype=np.int64)
         by_class = None
-        if coverage_class is not None:
-            codes = _class_code(coverage_class, candidates[:, 0], candidates[:, 1])
+        if coverage_class is not None or tad_id is not None:
+            codes = _pair_code(coverage_class, tad_id, candidates[:, 0], candidates[:, 1])
             by_class = {code: candidates[codes == code] for code in np.unique(codes)}
-            test_codes = _class_code(coverage_class, group['bin_a'].to_numpy(), group['bin_b'].to_numpy())
+            test_codes = _pair_code(coverage_class, tad_id, group['bin_a'].to_numpy(), group['bin_b'].to_numpy())
         for i, test_index in enumerate(group.index):
             pool = candidates
             if by_class is not None:
@@ -173,16 +175,125 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
             rows_index.extend([test_index] * n_controls)
             rows_a.extend(pool[choice, 0])
             rows_b.extend(pool[choice, 1])
-    if coverage_class is not None:
-        log.info('coverage-matched controls: %d of %d pairs fell back to offset matching', n_fallback, len(pairs))
+    if coverage_class is not None or tad_id is not None:
+        log.info('class-matched controls: %d of %d pairs fell back to offset matching', n_fallback, len(pairs))
     return pd.DataFrame({'test_index': np.array(rows_index, dtype=np.int64),
                          'bin_a': np.array(rows_a, dtype=np.int64),
                          'bin_b': np.array(rows_b, dtype=np.int64)})
 
 
+def _pair_code(bin_class, tad_id, bin_a, bin_b):
+    """Code of a pair: unordered pair of bin classes and, with tad_id, whether both ends share a domain."""
+    code = _class_code(bin_class, bin_a, bin_b) if bin_class is not None else np.zeros(len(bin_a), dtype=np.int64)
+    if tad_id is not None:
+        same = (tad_id[bin_a] == tad_id[bin_b]) & (tad_id[bin_a] >= 0)
+        code = code * 2 + same.astype(np.int64)
+    return code
+
+
 def _class_code(coverage_class, bin_a, bin_b):
     a, b = coverage_class[bin_a], coverage_class[bin_b]
     return np.minimum(a, b) * 1000 + np.maximum(a, b)
+
+
+def _read_intervals(path):
+    """Intervals of a BED-like file (first three columns; chromosome names with or without 'chr') with the name
+    column if present. Rao et al. Arrowhead domain lists (chr1 x1 x2 chr2 y1 y2 ...) are read the same way."""
+    rows = []
+    opener = __import__('gzip').open if str(path).endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        for line in handle:
+            if not line.strip() or line.startswith(('#', 'track', 'browser', 'chr1\tx1')):
+                continue
+            fields = line.rstrip('\n').split('\t')
+            try:
+                start, end = int(float(fields[1])), int(float(fields[2]))
+            except (ValueError, IndexError):
+                continue
+            chrom = fields[0] if fields[0].startswith('chr') else 'chr' + fields[0]
+            rows.append((chrom, start, end, fields[3] if len(fields) > 3 else ''))
+    return pd.DataFrame(rows, columns=['chrom', 'start', 'end', 'name'])
+
+
+def domain_annotation(bins, compartments=None, domains=None):
+    """Per bin of a multi-way data set: A/B compartment (1 A, 0 B, -1 unknown) and topological domain id (-1 outside
+    any domain), from the midpoint of the bin.
+
+    `compartments`: BED whose name column starts with A or B (e.g. subcompartments A1, B2) or a bedGraph whose fourth
+    column is the eigenvector (positive A). `domains`: BED of domains; for nested domains the smallest domain that
+    contains the midpoint is used, so that two loci share a domain if they lie in the same innermost domain."""
+    n = bins.n_bins
+    chrom_names = np.array(bins.chrom_names)[bins.chrom_index_of_bins(np.arange(n))]
+    middle = (np.asarray(bins.bin_start(np.arange(n))) + np.asarray(bins.bin_end(np.arange(n)))) // 2
+    compartment = np.full(n, -1, dtype=np.int64)
+    tad_id = np.full(n, -1, dtype=np.int64)
+    if compartments is not None:
+        table = _read_intervals(compartments)
+        for chrom, sub in table.groupby('chrom'):
+            on = np.nonzero(chrom_names == chrom)[0]
+            if len(on) == 0:
+                continue
+            sub = sub.sort_values('start')
+            index = np.searchsorted(sub['start'].to_numpy(), middle[on], side='right') - 1
+            inside = (index >= 0) & (middle[on] < sub['end'].to_numpy()[np.clip(index, 0, None)])
+            names = sub['name'].astype(str).to_numpy()
+            label = np.full(len(on), -1, dtype=np.int64)
+            for k in np.nonzero(inside)[0]:
+                name = names[index[k]]
+                if name[:1] in ('A', 'B'):
+                    label[k] = 1 if name[0] == 'A' else 0
+                else:
+                    try:
+                        value = float(name)
+                    except ValueError:
+                        continue
+                    if np.isfinite(value) and value != 0:
+                        label[k] = 1 if value > 0 else 0
+            compartment[on] = label
+    if domains is not None:
+        table = _read_intervals(domains)
+        table = table.assign(size=table['end'] - table['start']).sort_values('size', ascending=False)
+        for k, (chrom, start, end) in enumerate(zip(table['chrom'], table['start'], table['end'])):
+            on = np.nonzero((chrom_names == chrom) & (middle >= start) & (middle < end))[0]
+            tad_id[on] = k        # smaller domains, written later, overwrite larger ones
+    return compartment, tad_id
+
+
+def domain_classes(coverage_class, compartment):
+    """Per-bin class combining the coverage class and the compartment (A, B or unknown)."""
+    base = coverage_class if coverage_class is not None else np.zeros(len(compartment), dtype=np.int64)
+    return base * 3 + (compartment + 1)
+
+
+def pair_concordance(test_values, control_values, control_index, n_tests):
+    """Per tested item, the fraction of its matched controls with a lower value (ties one half)."""
+    test_values = np.asarray(test_values, dtype=float)
+    control_values = np.asarray(control_values, dtype=float)
+    control_index = np.asarray(control_index, dtype=np.int64)
+    keep = ~np.isnan(control_values) & ~np.isnan(test_values[control_index])
+    control_values, control_index = control_values[keep], control_index[keep]
+    reference = test_values[control_index]
+    wins = (reference > control_values) + 0.5 * (reference == control_values)
+    counts = np.bincount(control_index, minlength=n_tests)
+    score = np.full(n_tests, np.nan)
+    has = counts > 0
+    score[has] = np.bincount(control_index, weights=wins, minlength=n_tests)[has] / counts[has]
+    return score
+
+
+def block_bootstrap(values, blocks, n_boot=1000, seed=0, statistic=np.nanmean):
+    """Percentile 95% interval of a statistic over items, resampling whole blocks (e.g. chromosomes) with replacement,
+    so that items sharing a block, and their dependence, stay together."""
+    values = np.asarray(values, dtype=float)
+    blocks = np.asarray(blocks)
+    labels, index = np.unique(blocks, return_inverse=True)
+    members = [np.nonzero(index == k)[0] for k in range(len(labels))]
+    rng = np.random.default_rng(seed)
+    estimates = np.empty(n_boot)
+    for b in range(n_boot):
+        chosen = rng.integers(0, len(labels), len(labels))
+        estimates[b] = statistic(values[np.concatenate([members[k] for k in chosen])])
+    return float(np.nanpercentile(estimates, 2.5)), float(np.nanpercentile(estimates, 97.5))
 
 
 def distance_stratum(distance):
@@ -233,10 +344,12 @@ def summarize_against_controls(test_values, control_values, control_index, n_tes
 
 
 def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offset=None, seed=0,
-                   coverage_matched=0):
+                   coverage_matched=0, compartment=None, tad_id=None):
     """Metrics of test pairs and their matched controls; returns (per-pair table, summary table).
 
-    coverage_matched > 0 additionally matches controls on that many coverage classes of their ends.
+    coverage_matched > 0 additionally matches controls on that many coverage classes of their ends; `compartment`
+    and `tad_id` (per bin, see domain_annotation) on the compartments of the ends and on whether both ends share a
+    topological domain. The per-pair table holds the concordance of every pair (<metric>_concordance).
     """
     if len(pairs) == 0:
         return pairs, pd.DataFrame()
@@ -244,8 +357,10 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
         max_offset = int(pairs['offset'].max())
     test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset)
     classes = coverage_classes(pools, coverage_matched) if coverage_matched else None
+    if compartment is not None:
+        classes = domain_classes(classes, compartment)
     controls = sample_matched_controls(pairs, pools, excluded, n_controls=n_controls, seed=seed,
-                                       coverage_class=classes)
+                                       coverage_class=classes, tad_id=tad_id)
     control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset)
     table = pairs.copy()
     rows = []
@@ -256,6 +371,8 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
         summary, control_mean = summarize_against_controls(values, control[metric],
                                                            controls['test_index'].to_numpy(), len(table))
         table[metric + '_control'] = control_mean
+        table[metric + '_concordance'] = pair_concordance(values, control[metric], controls['test_index'].to_numpy(),
+                                                          len(table))
         rows.append(dict(set=label, pair_class='all', stratum='all', metric=metric, **summary))
         for pair_class in sorted(table['pair_class'].unique()):
             mask = (table['pair_class'] == pair_class).to_numpy()

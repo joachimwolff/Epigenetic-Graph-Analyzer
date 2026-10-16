@@ -10,7 +10,7 @@ from .genome import LiftOver
 from .graph import read_graph
 from .indirect import direct_contacts, indirect_contacts, two_hop_triplets
 from .multiway import MultiwayData
-from .validation import (LocusPools, confirm_pairs, map_nodes_to_bins, pairs_to_bins, validate_communities,
+from .validation import (LocusPools, confirm_pairs, domain_annotation, map_nodes_to_bins, pairs_to_bins, validate_communities,
                          validate_pairs, validate_triplets)
 
 log = logging.getLogger(__name__)
@@ -25,6 +25,10 @@ def parse_arguments(args=None):
     parser.add_argument('--maxDistance', type=int, default=2000000)
     parser.add_argument('--maxMediatorDegree', type=int, default=None)
     parser.add_argument('--controls', type=int, default=10, help='Matched controls per tested pair')
+    parser.add_argument('--compartments', help='A/B compartments in the multi-way assembly (BED with names A*/B* or '
+                                               'eigenvector bedGraph); controls match the compartments of both ends')
+    parser.add_argument('--domains', help='Topological domains in the multi-way assembly (BED); controls match whether '
+                                          'both ends lie in the same domain')
     parser.add_argument('--coverageClasses', type=int, default=0,
                         help='Also match pair controls on the coverage class (quantiles over graph loci) of both '
                              'ends; 0 matches on offset and locus pools only')
@@ -63,6 +67,11 @@ def main(args=None):
     if len(indirect) > args.maxPairs:
         indirect = indirect.sample(n=args.maxPairs, random_state=args.seed).reset_index(drop=True)
     pools = LocusPools(graph, node_bins, data)
+    compartment, tad_id = None, None
+    if args.compartments or args.domains:
+        compartment, tad_id = domain_annotation(data.bins, args.compartments, args.domains)
+        compartment = compartment if args.compartments else None
+        tad_id = tad_id if args.domains else None
     max_offset = int(max(direct['offset'].max() if len(direct) else 1,
                          indirect['offset'].max() if len(indirect) else 1))
 
@@ -70,12 +79,14 @@ def main(args=None):
     if not args.skipPairs:
         direct_table, summary = validate_pairs(direct, data, pools, excluded, 'direct', n_controls=args.controls,
                                                max_offset=max_offset, seed=args.seed,
-                                               coverage_matched=args.coverageClasses)
+                                               coverage_matched=args.coverageClasses, compartment=compartment,
+                                               tad_id=tad_id)
         summaries.append(summary)
         write_table(direct_table, args.outputPrefix + '_direct_pairs.tsv.gz')
         indirect_table, summary = validate_pairs(indirect, data, pools, excluded, 'indirect',
                                                  n_controls=args.controls, max_offset=max_offset, seed=args.seed + 1,
-                                                 coverage_matched=args.coverageClasses)
+                                                 coverage_matched=args.coverageClasses, compartment=compartment,
+                                                 tad_id=tad_id)
         summaries.append(summary)
         write_table(indirect_table, args.outputPrefix + '_indirect_pairs.tsv.gz')
 

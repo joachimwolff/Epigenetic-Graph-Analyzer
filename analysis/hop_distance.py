@@ -2,12 +2,16 @@
 
 Pairs at graph distance 1 (direct contacts), 2, 3, 4 and 5 or more steps, and pairs in the same connected component
 range are sampled within 2 Mb; each set is compared with control pairs at the same fragment offset drawn from the
-same pools of graph loci (the matched controls of the pair validation, concordance of NPMI).
+same pools of graph loci and the same coverage classes of the multi-way data (the matched controls of the pair
+validation, concordance of NPMI). With --compartments and --domains, controls also match the A/B compartments of both
+ends and whether both ends lie in the same topological domain. The 95% interval of the concordance comes from a
+block bootstrap over chromosomes, so that pairs sharing nodes and regions stay together.
 
-Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [chain file] [pairs per step=50000]
+Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
+           [--coverageClasses 5] [--compartments BED] [--domains BED] [--bootstrap 1000]
 """
 
-import sys
+import argparse
 
 import networkx as nx
 import numpy as np
@@ -17,18 +21,37 @@ from epigeneticgraphanalyzer.genome import LiftOver
 from epigeneticgraphanalyzer.graph import read_graph
 from epigeneticgraphanalyzer.indirect import pair_class
 from epigeneticgraphanalyzer.multiway import MultiwayData
-from epigeneticgraphanalyzer.validation import LocusPools, map_nodes_to_bins, pairs_to_bins, validate_pairs
+from epigeneticgraphanalyzer.validation import (LocusPools, block_bootstrap, domain_annotation, map_nodes_to_bins,
+                                                  pairs_to_bins, validate_pairs)
 
 MAX_DISTANCE = 2000000
 MAX_STEPS = 5
 
 
 def main():
-    graph_path, multiway_path, output = sys.argv[1:4]
-    liftover = LiftOver(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] != '-' else None
-    n_pairs = int(sys.argv[5]) if len(sys.argv) > 5 else 50000
-    graph = read_graph(graph_path)
-    data = MultiwayData.load(multiway_path)
+    parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    parser.add_argument('graph')
+    parser.add_argument('multiway')
+    parser.add_argument('output')
+    parser.add_argument('chain_file', nargs='?', default=None, help='(positional form of --chain, kept for old calls)')
+    parser.add_argument('--chain', help='Chain from the graph assembly to the multi-way assembly')
+    parser.add_argument('--pairs', type=int, default=50000, help='Pairs per graph distance')
+    parser.add_argument('--coverageClasses', type=int, default=5)
+    parser.add_argument('--compartments', help='A/B compartments (BED name A*/B* or eigenvector bedGraph), '
+                                               'multi-way assembly')
+    parser.add_argument('--domains', help='Topological domains (BED), multi-way assembly')
+    parser.add_argument('--bootstrap', type=int, default=1000)
+    args = parser.parse_args()
+    chain = args.chain or (args.chain_file if args.chain_file not in (None, '-') else None)
+    liftover = LiftOver(chain) if chain else None
+    n_pairs = args.pairs
+    graph = read_graph(args.graph)
+    data = MultiwayData.load(args.multiway)
+    compartment, tad_id = None, None
+    if args.compartments or args.domains:
+        compartment, tad_id = domain_annotation(data.bins, args.compartments, args.domains)
+        compartment = compartment if args.compartments else None
+        tad_id = tad_id if args.domains else None
     node_bins = map_nodes_to_bins(graph, data, liftover)
     middle = {n: (int(d['start']) + int(d['end'])) // 2 for n, d in graph.nodes(data=True)}
     rows = []
@@ -56,16 +79,19 @@ def main():
         if len(subset) > n_pairs:
             subset = subset.sample(n=n_pairs, random_state=steps)
         subset = subset.reset_index(drop=True)
-        _, summary = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps), max_offset=max_offset,
-                                    seed=steps)
+        table, summary = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
+                                        max_offset=max_offset, seed=steps, coverage_matched=args.coverageClasses,
+                                        compartment=compartment, tad_id=tad_id)
+        low, high = block_bootstrap(table['npmi_concordance'].to_numpy(), table['chrom'].to_numpy(),
+                                    n_boot=args.bootstrap, seed=steps)
         row = summary[(summary['metric'] == 'npmi') & (summary['pair_class'] == 'all') &
                       (summary['stratum'] == 'all')].iloc[0]
         results.append(dict(steps=steps, pairs_available=int((pairs['steps'] == steps).sum()), n=int(row['n']),
                             median_distance=float(subset['distance'].median()),
-                            concordance=float(row['fraction_above_control']),
+                            concordance=float(row['fraction_above_control']), ci_low=low, ci_high=high,
                             mean_npmi=float(row['test_mean']), mean_npmi_control=float(row['control_mean'])))
         print(results[-1], flush=True)
-    pd.DataFrame(results).to_csv(output, sep='\t', index=False)
+    pd.DataFrame(results).to_csv(args.output, sep='\t', index=False)
 
 
 if __name__ == '__main__':
