@@ -239,3 +239,20 @@ def test_replicate_rule_present_in_all_called_in_one():
     assert set(consensus_scores([r1, r2], 'union', threshold=5)['other_start']) == {50000, 80000}
     # without a threshold (published, already thresholded files) 'all' requires the pair in every replicate
     assert set(consensus_scores([r1, r2], 'all')['other_start']) == {50000, 90000}
+
+
+def test_edge_chromatin_association():
+    from epigeneticgraphanalyzer.egaExplain import edge_chromatin, matched_concordance
+    rng = np.random.default_rng(0)
+    n = 300
+    edges = pd.DataFrame({'status': ['shared'] * n + ['gained'] * n + ['lost'] * n,
+                          'bin': rng.integers(1, 4, 3 * n)})
+    # active mark: up at gained, down at lost anchors; repressive mark the opposite
+    edges['H3K27ac'] = np.concatenate([rng.normal(0, 1, n), rng.normal(1, 1, n), rng.normal(-1, 1, n)])
+    edges['H3K27me3'] = np.concatenate([rng.normal(0, 1, n), rng.normal(-1, 1, n), rng.normal(1, 1, n)])
+    table = edge_chromatin(edges, ['H3K27ac', 'H3K27me3'], {'H3K27me3'}).set_index(['mark', 'interactions'])
+    assert table.loc[('H3K27ac', 'gained'), 'concordance_vs_shared'] > 0.7
+    assert table.loc[('H3K27ac', 'lost'), 'concordance_vs_shared'] < 0.3
+    assert table['concordant'].all()
+    assert table['mannwhitney_p_expected_direction'].max() < 1e-6
+    assert matched_concordance(np.array([1.0]), np.array([1.0]), np.array([1]), np.array([1])) == 0.5
