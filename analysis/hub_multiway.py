@@ -24,7 +24,20 @@ SIZE_CLASSES = ((3, 3), (4, 5), (6, 10), (11, 1000))
 
 
 def hub_counts(data, promoter_bin, partner_bins):
-    """(largest number of hub elements in one group, groups with promoter + >= 2 partners)."""
+    """(largest number of hub elements in one group, groups with promoter + >= 2 partners).
+
+    Counts only the groups that hold an element of the hub, so the cost does not grow with the number of groups.
+    """
+    promoter_groups = data.incidence[promoter_bin].indices
+    groups, partners_in = np.unique(data.incidence[partner_bins].indices, return_counts=True)
+    with_promoter = np.isin(groups, promoter_groups, assume_unique=True)
+    largest = int((partners_in + with_promoter).max()) if len(groups) else 0
+    largest = max(largest, int(len(promoter_groups) > 0))
+    return largest, int(np.sum(with_promoter & (partners_in >= 2)))
+
+
+def hub_counts_dense(data, promoter_bin, partner_bins):
+    """Reference implementation of hub_counts over all groups (kept for the test)."""
     rows = data.incidence[np.concatenate([[promoter_bin], partner_bins])]
     per_group = np.asarray(rows.sum(axis=0)).ravel()
     with_promoter = np.zeros(data.n_groups, dtype=bool)
