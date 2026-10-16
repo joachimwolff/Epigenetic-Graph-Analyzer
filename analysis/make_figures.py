@@ -50,101 +50,6 @@ def panel_label(ax, label):
     ax.text(-0.12, 1.04, label, transform=ax.transAxes, fontweight='bold', fontsize=9, color=INK, va='bottom')
 
 
-# ----------------------------------------------------------------------------------- figure 1
-def figure_concept(output):
-    fig, axes = plt.subplots(1, 3, figsize=(7.1, 2.3), gridspec_kw={'width_ratios': [1.25, 1, 1]})
-    ax = axes[0]
-    baits = {'P1': (1.0, 0.0), 'P2': (4.0, 0.0)}
-    others = {'E1': (0.0, 0.0), 'E2': (2.3, 0.0), 'E3': (3.1, 0.0), 'E4': (5.2, 0.0)}
-    edges = [('P1', 'E1'), ('P1', 'E2'), ('P2', 'E2'), ('P2', 'E3'), ('P2', 'E4')]
-    pos = {**baits, **others}
-
-    def arc(x1, x2, height, **kw):
-        xs = np.linspace(x1, x2, 60)
-        c, h = (x1 + x2) / 2, abs(x2 - x1) / 2
-        ax.plot(xs, height * np.sqrt(np.clip(1 - ((xs - c) / h) ** 2, 0, 1)), **kw)
-
-    for u, v in edges:
-        arc(pos[u][0], pos[v][0], 0.35 + 0.12 * abs(pos[u][0] - pos[v][0]), color=BLUE, lw=1.4)
-    for u, v in (('E1', 'E2'), ('E2', 'E3'), ('E3', 'E4'), ('E2', 'E4')):
-        arc(pos[u][0], pos[v][0], -(0.25 + 0.1 * abs(pos[u][0] - pos[v][0])), color=ORANGE, lw=1.2, ls=(0, (3, 2)))
-    arc(pos['P1'][0], pos['P2'][0], -0.95, color=ORANGE, lw=1.2, ls=(0, (3, 2)))
-    for name, (x, y) in baits.items():
-        ax.scatter(x, y, marker='s', s=70, color=INK, zorder=3)
-        ax.text(x + 0.12, y + 0.08, name, ha='left', va='bottom', fontsize=6.5, color=INK,
-                bbox=dict(facecolor='white', edgecolor='none', pad=0.3))
-    for name, (x, y) in others.items():
-        ax.scatter(x, y, marker='o', s=55, facecolor='white', edgecolor=INK, lw=1.0, zorder=3)
-        ax.text(x + 0.12, y + 0.08, name, ha='left', va='bottom', fontsize=6.5, color=INK,
-                bbox=dict(facecolor='white', edgecolor='none', pad=0.3))
-    ax.axhline(0, color=GRID, lw=0.8, zorder=0)
-    ax.set_xlim(-0.4, 5.6)
-    ax.set_ylim(-1.15, 1.25)
-    ax.axis('off')
-    ax.legend(handles=[plt.Line2D([], [], color=BLUE, lw=1.4, label='significant interaction (edge)'),
-                       plt.Line2D([], [], color=ORANGE, lw=1.2, ls=(0, (3, 2)), label='indirect contact (two hops)'),
-                       plt.Line2D([], [], marker='s', color=INK, ls='', label='baited promoter'),
-                       plt.Line2D([], [], marker='o', mfc='white', mec=INK, ls='', label='other end')],
-              loc='lower center', bbox_to_anchor=(0.5, -0.32), ncol=2, frameon=False, fontsize=6.5)
-    ax.set_title('Capture Hi-C graph', loc='left')
-    panel_label(ax, 'a')
-
-    ax = axes[1]
-    rng = np.random.default_rng(3)
-    for k in range(5):
-        y = 4 - k
-        members = sorted(rng.choice(np.arange(12), size=rng.integers(2, 5), replace=False))
-        if k in (0, 2):
-            members = sorted(set(members) | {2, 5, 8})
-        for m in members:
-            ax.add_patch(mpatches.FancyBboxPatch((m - 0.35, y - 0.3), 0.7, 0.6, boxstyle='round,pad=0.02,rounding_size=0.1',
-                                                 color=AQUA if m in (2, 5, 8) else GRID, lw=0))
-    for m in (2, 5, 8):
-        ax.text(m, 5.0, '|', ha='center', color=INK)
-    ax.text(5, 5.45, 'community loci', ha='center', fontsize=6.5, color=INK)
-    ax.set_xlim(-0.6, 11.6)
-    ax.set_ylim(-0.6, 5.9)
-    ax.set_yticks(range(5))
-    ax.set_yticklabels(['group {}'.format(5 - i) for i in range(5)], fontsize=6.5)
-    ax.set_xticks([])
-    ax.set_xlabel('genomic bins')
-    ax.spines['left'].set_visible(False)
-    ax.tick_params(left=False)
-    ax.set_title('SPRITE cluster / GAM tube', loc='left')
-    panel_label(ax, 'b')
-
-    ax = axes[2]
-    ax.scatter([2, 5, 8], [1, 1, 1], s=40, color=AQUA, zorder=3, label='tested loci')
-    for shift, y in ((3, 0.55), (6, 0.1)):
-        ax.scatter(np.array([2, 5, 8]) + shift - 12 * ((np.array([2, 5, 8]) + shift) > 11), [y] * 3, s=40,
-                   facecolor='white', edgecolor=MUTED, zorder=3)
-    ax.text(12.2, 1.0, 'observed', va='center', ha='left', fontsize=6.5)
-    ax.text(12.2, 0.55, 'shifted', va='center', ha='left', fontsize=6.5)
-    ax.text(12.2, 0.1, 'shifted', va='center', ha='left', fontsize=6.5)
-    ax.hlines([1, 0.55, 0.1], -0.5, 11.3, color=GRID, lw=0.8, zorder=0)
-    ax.set_xlim(-0.6, 15.5)
-    ax.set_ylim(-0.3, 1.5)
-    ax.axis('off')
-    ax.set_title('Shifted controls', loc='left')
-    panel_label(ax, 'c')
-    fig.tight_layout()
-    fig.savefig(os.path.join(output, 'figure1_concept.pdf'))
-    plt.close(fig)
-
-
-# ----------------------------------------------------------------------------------- figure 2
-CATEGORIES = [
-    ('direct', 'bait-oe', 'direct, promoter-other'),
-    ('direct', 'bait-bait', 'direct, promoter-promoter'),
-    ('indirect', 'bait-bait', 'indirect, promoter-promoter'),
-    ('indirect', 'bait-oe', 'indirect, promoter-other'),
-    ('indirect', 'oe-oe', 'indirect, other-other'),
-    ('triplets', 'all', 'two-hop triplets (all three loci)'),
-    ('communities', 'null_shift', 'communities, shifted sets'),
-    ('communities', 'null_locus', 'communities, shifted captured sets'),
-]
-
-
 def category_value(table, set_name, pair_class, assay):
     if set_name == 'triplets':
         return pick(table, 'triplets', pair_class, 'c_uvw')
@@ -614,7 +519,6 @@ def fdr_lookup(results):
 def main():
     results, output = sys.argv[1], sys.argv[2]
     os.makedirs(output, exist_ok=True)
-    figure_concept(output)
     figure_validation(results, output, [
         ('GM_mifsud_c20_sprite', 'sprite', 'GM12878, SPRITE', BLUE, 'o'),
         ('H1_p1e-3_gam', 'gam', 'H1-hESC, GAM', ORANGE, 's')])
