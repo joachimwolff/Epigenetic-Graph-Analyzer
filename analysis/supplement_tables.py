@@ -499,10 +499,35 @@ def s13():
           'least three hub pairs. $^a$All viewpoints, with the viewpoint as covariate.', 'tab:s13')
 
 
+def s15():
+    rows = []
+    for label, name in (('hESC / hNEC', 'hESC_vs_hNEC'), ('Md / PA2', 'Md_vs_PA2'),
+                        ('Kasumi-1 siMM / siRE', 'siMM_vs_siRE'), ('AML t(8;21) / FLT3-ITD', 't821_vs_FLT3ITD')):
+        t = pd.read_csv(path('explain', name + '_edge_chromatin.tsv'), sep='\t')
+        for _, r in t.iterrows():
+            rows.append(' & '.join([label, tex(r['mark']) + (' (repressive)' if r['repressive'] else ''),
+                                    r['interactions'], integer(r['n']), num(r['median_change'], 2),
+                                    num(r['shared_median_change'], 2), num(r['concordance_vs_shared'], 3),
+                                    'yes' if r['concordant'] else 'no',
+                                    pval(r['mannwhitney_p_expected_direction'])]) + r' \\')
+            label = ''
+        rows.append(r'\midrule')
+    table('table_s15.tex', 'lllrrrrlr',
+          'Comparison & Mark & Interactions & n & Median change & Shared & Concordance & Expected & $P$',
+          rows[:-1],
+          'Interaction changes and chromatin changes at the interacting fragments (egaExplain). Median change: '
+          '$\\log_2$ change of the mark (second over first condition), mean of the two ends of each interaction; '
+          'concordance: probability that an interaction gained (lost) in the second condition has a larger mark '
+          'change at its ends than a shared interaction of the same genomic distance (0.5 without relation); '
+          'expected: the concordance lies on the side expected for the mark (active marks up at gained and down at '
+          'lost interactions, repressive marks the opposite); $P$, one-sided Mann-Whitney test in the expected '
+          'direction without distance matching.', 'tab:s15', size=r'\scriptsize')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s15):
         build()
         print(build.__name__, flush=True)
 
