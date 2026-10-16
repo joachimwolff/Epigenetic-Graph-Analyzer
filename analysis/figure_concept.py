@@ -119,12 +119,66 @@ def panel_transitivity(ax):
     panel_label(ax, 'b', 'Transitivity')
 
 
+EDGES = [('P1', 'E1'), ('P1', 'E2'), ('P1', 'E3'), ('P2', 'E2'), ('P2', 'E3'), ('P2', 'E4'), ('P3', 'E4'),
+         ('P3', 'E5'), ('P2', 'P1')]
+# planar layout: P1 and P2 on a midline with their shared partners E2 above and E3 below, so that no two edges cross
+LAYOUT = {'E1': (0.5, 0.7), 'P1': (1.05, 0.7), 'E2': (1.68, 1.12), 'E3': (1.68, 0.28), 'P2': (2.3, 0.7),
+          'E4': (3.0, 0.7), 'P3': (3.62, 1.05), 'E5': (3.62, 0.35)}
+LABELS = {'E1': (-0.12, -0.25), 'P1': (0.0, -0.25), 'E2': (0.0, 0.11), 'E3': (0.0, -0.24), 'P2': (0.0, -0.25),
+          'E4': (0.0, -0.25), 'P3': (0.0, 0.11), 'E5': (0.0, -0.24)}
+# bow of each indirect contact (perpendicular offset of the curve's control point; 0 = straight)
+BOWS = {('E1', 'E2'): 0.25, ('E1', 'E3'): -0.25, ('E1', 'P2'): 1.3, ('E2', 'E3'): 0.0, ('E4', 'P1'): 1.3,
+        ('E2', 'E4'): 0.25, ('E3', 'E4'): -0.25, ('P2', 'P3'): 0.0, ('E4', 'E5'): 0.0}
+
+
+def two_step_pairs(edges):
+    neighbours = {}
+    for u, v in edges:
+        neighbours.setdefault(u, set()).add(v)
+        neighbours.setdefault(v, set()).add(u)
+    pairs = set()
+    for v, around in neighbours.items():
+        for u in around:
+            for w in around:
+                if u < w and w not in neighbours[u]:
+                    pairs.add((u, w))
+    return sorted(pairs)
+
+
+def draw_graph(ax, ox, mode):
+    """mode 'measured': edges in blue; 'indirect': edges grey, two-step contacts in orange, communities shaded."""
+    pos = {n: (x + ox, y) for n, (x, y) in LAYOUT.items()}
+    if mode == 'indirect':
+        ax.add_patch(mpatches.FancyBboxPatch((ox + 0.3, -0.02), 2.2, 1.44, boxstyle='round,pad=0.02,rounding_size=0.25',
+                                             facecolor=AQUA, alpha=0.13, lw=0))
+        ax.add_patch(mpatches.FancyBboxPatch((ox + 2.78, -0.02), 1.12, 1.44,
+                                             boxstyle='round,pad=0.02,rounding_size=0.25',
+                                             facecolor=YELLOW, alpha=0.15, lw=0))
+        ax.text(ox + 0.35, -0.25, 'community 1', fontsize=6.5, color=AQUA)
+        ax.text(ox + 2.8, -0.25, 'community 2', fontsize=6.5, color='#b07800')
+        t = np.linspace(0, 1, 60)[:, None]
+        for u, w in two_step_pairs(EDGES):
+            bow = BOWS.get((u, w), BOWS.get((w, u), 0.0))
+            (x1, y1), (x2, y2) = pos[u], pos[w]
+            length = np.hypot(x2 - x1, y2 - y1)
+            control = np.array([(x1 + x2) / 2 - bow * (y2 - y1) / length, (y1 + y2) / 2 + bow * (x2 - x1) / length])
+            points = (1 - t) ** 2 * np.array([x1, y1]) + 2 * (1 - t) * t * control + t ** 2 * np.array([x2, y2])
+            ax.plot(points[:, 0], points[:, 1], color=ORANGE, lw=1.1, ls=DASH, zorder=3)
+    for u, v in EDGES:
+        ax.plot(*zip(pos[u], pos[v]), color=BLUE if mode == 'measured' else GRID, lw=1.3, zorder=2)
+    for name, (x, y) in pos.items():
+        if name.startswith('P'):
+            promoter(ax, x, y, name, size=55, label=False)
+        else:
+            other_end(ax, x, y, name, size=45, label=False)
+        dx, dy = LABELS[name]
+        ax.text(x + dx, y + dy, name, fontsize=6, color=INK, zorder=5, ha='center')
+
+
 def panel_graph(ax):
-    # top: arcs along the genome
+    # left: arcs along the genome
     xs = {'E1': 0.2, 'P1': 0.8, 'E2': 1.5, 'E3': 2.0, 'P2': 2.6, 'E4': 3.3, 'E5': 3.9, 'P3': 4.4}
-    edges = [('P1', 'E1'), ('P1', 'E2'), ('P1', 'E3'), ('P2', 'E2'), ('P2', 'E3'), ('P2', 'E4'), ('P3', 'E4'),
-             ('P3', 'E5'), ('P2', 'P1')]
-    base = 2.0
+    base = 0.45
 
     def arc(x1, x2, height, **kw):
         t = np.linspace(0, np.pi, 60)
@@ -132,7 +186,7 @@ def panel_graph(ax):
         ax.plot(c - h * np.cos(t), base + height * np.sin(t), **kw)
 
     ax.plot([0, 4.6], [base, base], color=GRID, lw=0.8, zorder=0)
-    for u, v in edges:
+    for u, v in EDGES:
         arc(xs[u], xs[v], 0.18 + 0.16 * abs(xs[u] - xs[v]), color=BLUE, lw=1.1)
     for name, x in xs.items():
         if name.startswith('P'):
@@ -140,45 +194,15 @@ def panel_graph(ax):
         else:
             other_end(ax, x, base, name, size=34, label=False)
         ax.text(x, base - 0.2, name, ha='center', va='top', fontsize=6, color=INK)
-    ax.annotate('', xy=(2.3, 1.38), xytext=(2.3, 1.65), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
-    # bottom: the same interactions as a graph with communities and indirect contacts
-    # planar layout: P1 and P2 on a midline with their shared partners E2 above and E3 below, so that no two
-    # edges cross; indirect contacts are drawn as curves bowed away from the edges
-    pos = {'E1': (0.5, 0.7), 'P1': (1.05, 0.7), 'E2': (1.68, 1.08), 'E3': (1.68, 0.32), 'P2': (2.3, 0.7),
-           'E4': (3.0, 0.7), 'P3': (3.62, 1.02), 'E5': (3.62, 0.38)}
-    ax.add_patch(mpatches.FancyBboxPatch((0.3, 0.12), 2.2, 1.16, boxstyle='round,pad=0.02,rounding_size=0.25',
-                                         facecolor=AQUA, alpha=0.13, lw=0))
-    ax.add_patch(mpatches.FancyBboxPatch((2.78, 0.12), 1.12, 1.16, boxstyle='round,pad=0.02,rounding_size=0.25',
-                                         facecolor=YELLOW, alpha=0.15, lw=0))
-
-    def curve(u, v, bow):
-        (x1, y1), (x2, y2) = pos[u], pos[v]
-        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
-        length = np.hypot(x2 - x1, y2 - y1)
-        nx, ny = -(y2 - y1) / length, (x2 - x1) / length
-        cx, cy = mx + bow * nx, my + bow * ny
-        t = np.linspace(0, 1, 50)[:, None]
-        points = (1 - t) ** 2 * np.array([x1, y1]) + 2 * (1 - t) * t * np.array([cx, cy]) + t ** 2 * np.array([x2, y2])
-        ax.plot(points[:, 0], points[:, 1], color=ORANGE, lw=1.0, ls=DASH, zorder=2)
-
-    curve('E1', 'E2', 0.22)
-    curve('E1', 'E3', -0.22)
-    curve('E2', 'E4', 0.18)
-    curve('E4', 'E5', -0.12)
-    for u, v in edges:
-        ax.plot(*zip(pos[u], pos[v]), color=BLUE, lw=1.3, zorder=3)
-    for name, (x, y) in pos.items():
-        if name.startswith('P'):
-            promoter(ax, x, y, name, size=55, label=False)
-        else:
-            other_end(ax, x, y, name, size=45, label=False)
-        dx, dy = {'E1': (-0.12, -0.25), 'P1': (0.0, -0.25), 'E2': (0.0, 0.11), 'E3': (0.0, -0.24),
-                  'P2': (0.0, -0.25), 'E4': (0.0, -0.25), 'P3': (0.0, 0.11), 'E5': (0.0, -0.24)}[name]
-        ax.text(x + dx, y + dy, name, fontsize=6, color=INK, zorder=5, ha='center')
-    ax.text(0.35, -0.12, 'community 1', fontsize=6.5, color=AQUA)
-    ax.text(2.8, -0.12, 'community 2', fontsize=6.5, color='#b07800')
-    ax.set_xlim(-0.05, 4.65)
-    ax.set_ylim(-0.3, 2.75)
+    ax.text(2.3, -0.16, 'pairwise interactions along the genome', ha='center', fontsize=6.5, color=MUTED)
+    for x in (4.85, 9.35):
+        ax.annotate('', xy=(x + 0.45, 0.7), xytext=(x, 0.7), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
+    draw_graph(ax, 5.2, 'measured')
+    ax.text(5.2 + 2.2, -0.16, 'graph of the measured interactions', ha='center', fontsize=6.5, color=MUTED)
+    draw_graph(ax, 9.7, 'indirect')
+    ax.text(9.7 + 2.2, 1.55, 'indirect contacts and communities', ha='center', fontsize=6.5, color=MUTED)
+    ax.set_xlim(-0.05, 13.7)
+    ax.set_ylim(-0.35, 1.7)
     ax.set_aspect('equal')
     ax.axis('off')
     panel_label(ax, 'c', 'From arcs to a graph')
@@ -187,16 +211,17 @@ def panel_graph(ax):
 def main():
     output = sys.argv[1]
     plt.rcParams.update({'font.size': 8})
-    fig, axes = plt.subplots(1, 3, figsize=(7.2, 2.75), gridspec_kw={'width_ratios': [5.25, 2.2, 4.7]})
-    panel_ligation(axes[0])
-    panel_transitivity(axes[1])
-    panel_graph(axes[2])
+    fig = plt.figure(figsize=(7.2, 3.95))
+    grid = fig.add_gridspec(2, 2, height_ratios=[2.75, 1.55], width_ratios=[5.25, 2.2], hspace=0.12, wspace=0.12)
+    panel_ligation(fig.add_subplot(grid[0, 0]))
+    panel_transitivity(fig.add_subplot(grid[0, 1]))
+    panel_graph(fig.add_subplot(grid[1, :]))
     handles = [plt.Line2D([], [], marker='s', color=INK, ls='', label='baited promoter'),
                plt.Line2D([], [], marker='o', mfc='white', mec=INK, ls='', label='other end'),
                plt.Line2D([], [], color=BLUE, lw=1.4, label='measured interaction (edge)'),
                plt.Line2D([], [], color=ORANGE, lw=1.2, ls=DASH, label='indirect contact (two steps)')]
-    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False, fontsize=6.5, bbox_to_anchor=(0.5, 0.07))
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.9, bottom=0.08, wspace=0.12)
+    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False, fontsize=6.5, bbox_to_anchor=(0.5, 0.0))
+    fig.subplots_adjust(left=0.01, right=0.99, top=0.95, bottom=0.07)
     fig.savefig(output, bbox_inches='tight', pad_inches=0.02)
     print(output)
 
