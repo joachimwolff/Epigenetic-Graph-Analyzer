@@ -774,10 +774,15 @@ def community_expression_changes(communities_a, communities_b, main, transitions
                      'mean_rna_log2FC': mean_change, 'coherence_p': float(p)})
     table = pd.DataFrame(rows)
     if len(table):
-        # A communities with the same main B community form one unit: keep the pair with most genes, list all A ids
-        sources = table.groupby('community_b')['community_a'].apply(lambda v: ','.join(str(x) for x in sorted(v)))
-        table = table.sort_values('n_genes', ascending=False).drop_duplicates('community_b')
-        table['communities_a'] = table['community_b'].map(sources)
+        # A communities with the same main B community form one unit: keep the pair with most genes, list all A ids;
+        # A communities without a main B community (-1) stay separate units
+        matched = table[table['community_b'] >= 0]
+        sources = matched.groupby('community_b')['community_a'].apply(lambda v: ','.join(str(x) for x in sorted(v)))
+        matched = matched.sort_values('n_genes', ascending=False).drop_duplicates('community_b')
+        matched = matched.assign(communities_a=matched['community_b'].map(sources))
+        unmatched = table[table['community_b'] < 0]
+        unmatched = unmatched.assign(communities_a=unmatched['community_a'].astype(str))
+        table = pd.concat([matched, unmatched], ignore_index=True)
         table['coherence_q'] = _benjamini_hochberg(table['coherence_p'].to_numpy())
         table = table.sort_values('coherence_p').reset_index(drop=True)
     return table

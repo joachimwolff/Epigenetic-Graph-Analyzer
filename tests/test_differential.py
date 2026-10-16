@@ -213,6 +213,17 @@ def test_community_transitions_and_gene_switches():
     by_a = result.set_index('community_a')
     assert by_a.loc[0, 'edges_shared'] == 1 and by_a.loc[0, 'edges_lost'] == 1
     assert by_a.loc[2, 'coherence_p'] < 0.01 and by_a.loc[0, 'coherence_p'] > 0.2
+    # A communities without a main B community are tested separately, A communities sharing one B are one unit
+    a = [{'u1', 'u2', 'u3'}, {'v1', 'v2', 'v3'}, {'w1', 'w2', 'w3'}, {'y1', 'y2', 'y3'}]
+    b = [{'w1', 'w2', 'w3', 'y1', 'y2', 'y3'}]
+    expression = {n: 1.0 for n in set().union(*a)}
+    expression.update({'x{}'.format(i): v for i, v in enumerate(np.random.default_rng(2).normal(0, 1, 100))})
+    empty = pd.DataFrame({'node_a': [], 'node_b': [], 'status': []})
+    transitions = pd.DataFrame({'side': ['A'] * 4, 'community_a': [0, 1, 2, 3],
+                                'transition': ['dissolved', 'dissolved', 'merged', 'merged']})
+    result = community_expression_changes(a, b, {2: 0, 3: 0}, transitions, empty, expression, n_permutations=100)
+    assert sorted(result.loc[result['community_b'] < 0, 'community_a']) == [0, 1]
+    assert list(result.loc[result['community_b'] == 0, 'communities_a']) == ['2,3']
 
 
 def test_replicate_rule_present_in_all_called_in_one():
