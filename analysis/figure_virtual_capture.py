@@ -5,7 +5,7 @@ bin tolerance; analysis/virtual_capture_benchmark.py), with two capture experime
 (b) Multi-way support by graph distance for graphs from virtual calls and from capture calls of the same cell type
 (analysis/hop_distance.py).
 
-Usage: python figure_virtual_capture.py <results dir> <output.pdf>
+Usage: python figure_virtual_capture.py <results dir> <output prefix>   (writes <prefix>a.pdf and <prefix>b.pdf)
 """
 
 import os
@@ -19,17 +19,16 @@ import pandas as pd  # noqa: E402
 
 BENCHMARKS = (('GM12878, two\ncapture sets', 'GM12878_cairns_vs_mifsud20'),
               ('GM12878\nHi-C', 'GM12878'), ('K562\nHi-C', 'K562'), ('H1-hESC\nMicro-C', 'H1_microc_matched'))
-CURVES = (('GM12878, SPRITE', 'virtual_capture/graphs/VC_GM12878_sprite_hops.tsv',
-           'hops/GM_chicago_sprite_GM12878_hg19_HindIII_fragments.tsv', '#1f5f8b'),
-          ('H1-hESC, GAM', 'virtual_capture/graphs/VC_H1_microc_gam_hops.tsv', 'hops/H1_gam_H1_hg38_30kb.tsv',
-           '#d99a4e'))
+CURVES = (('GM12878, SPRITE', 'reviewer_controls/VC_GM12878_sprite_hops_coverage.tsv',
+           'reviewer_controls/GM_chicago_sprite_hops_coverage.tsv', '#1f5f8b'),
+          ('H1-hESC, GAM', 'reviewer_controls/VC_H1_microc_gam_hops_coverage.tsv',
+           'reviewer_controls/H1_gam_hops_coverage.tsv', '#d99a4e'))
 
 
 def main():
-    results, output = sys.argv[1:3]
+    results, prefix = sys.argv[1:3]
     plt.rcParams.update({'font.size': 8, 'axes.spines.top': False, 'axes.spines.right': False})
-    fig, axes = plt.subplots(1, 2, figsize=(7.0, 2.9), gridspec_kw={'width_ratios': [1.3, 1]})
-    ax = axes[0]
+    fig, ax = plt.subplots(figsize=(3.9, 2.9))
     width = 0.2
     for i, (label, name) in enumerate(BENCHMARKS):
         table = pd.read_csv(os.path.join(results, 'virtual_capture', name + '_benchmark.tsv'), sep='\t')
@@ -44,22 +43,27 @@ def main():
     ax.set_xticklabels([b[0] for b in BENCHMARKS], fontsize=7)
     ax.set_ylabel('agreement with capture calls (%)')
     ax.legend(frameon=False, fontsize=6.5, loc='upper right')
-    ax.set_title('a', loc='left', fontweight='bold')
-    ax = axes[1]
+    save(fig, prefix + 'a.pdf')
+    fig, ax = plt.subplots(figsize=(3.1, 2.9))
     ax.axhline(0.5, color='#999999', lw=0.8, ls='--')
     for label, virtual, capture, color in CURVES:
         v = pd.read_csv(os.path.join(results, virtual), sep='\t')
         c = pd.read_csv(os.path.join(results, capture), sep='\t')
+        ax.fill_between(v['steps'], v['ci_low'], v['ci_high'], color=color, alpha=0.15, lw=0)
         ax.plot(v['steps'], v['concordance'], marker='o', color=color, lw=1.5, ms=4.5, label=label + ', virtual')
         ax.plot(c['steps'], c['concordance'], marker='s', color=color, lw=1.2, ms=4, ls=':', label=label + ', capture')
     ax.set_xticks(range(1, 6))
     ax.set_xlabel('graph distance (steps)')
     ax.set_ylabel('P(graph pair > matched pair)')
     ax.legend(frameon=False, fontsize=6.5)
-    ax.set_title('b', loc='left', fontweight='bold')
+    save(fig, prefix + 'b.pdf')
+
+
+def save(fig, path):
     fig.tight_layout()
-    fig.savefig(output)
-    print(output)
+    fig.savefig(path)
+    plt.close(fig)
+    print(path)
 
 
 if __name__ == '__main__':

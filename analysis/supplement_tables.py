@@ -129,11 +129,11 @@ def s1():
 
 
 def s2():
-    hops = [('GM12878 (CHiCAGO)', 'GM12878 SPRITE', 'hops/GM_chicago_sprite_GM12878_hg19_HindIII_fragments.tsv'),
-            ('H9 hESC', 'H1-hESC GAM', 'hops/hESC_gam_H1_hg38_30kb.tsv'),
-            ('H1-hESC', 'H1-hESC GAM', 'hops/H1_gam_H1_hg38_30kb.tsv'),
-            ('GM12878, virtual', 'GM12878 SPRITE', 'virtual_capture/graphs/VC_GM12878_sprite_hops.tsv'),
-            ('H1-hESC, virtual', 'H1-hESC GAM', 'virtual_capture/graphs/VC_H1_microc_gam_hops.tsv')]
+    hops = [('GM12878 (CHiCAGO)', 'GM12878 SPRITE', 'reviewer_controls/GM_chicago_sprite_hops_coverage.tsv'),
+            ('H9 hESC', 'H1-hESC GAM', 'reviewer_controls/hESC_gam_hops_coverage.tsv'),
+            ('H1-hESC', 'H1-hESC GAM', 'reviewer_controls/H1_gam_hops_coverage.tsv'),
+            ('GM12878, virtual', 'GM12878 SPRITE', 'reviewer_controls/VC_GM12878_sprite_hops_coverage.tsv'),
+            ('H1-hESC, virtual', 'H1-hESC GAM', 'reviewer_controls/VC_H1_microc_gam_hops_coverage.tsv')]
     rows = [r'\multicolumn{9}{@{}l}{\textit{By graph distance}} \\']
     for graph, assay, f in hops:
         t = pd.read_csv(path(f), sep='\t').set_index('steps')
@@ -164,7 +164,7 @@ def s2():
           'Multi-way support of the interaction graphs: probability that a graph item co-occurs more in the '
           'multi-way data than a matched control (0.5 expected without relation). Top, fragment pairs at graph '
           'distance 1 to 5 (50,000 per distance) against pairs at the same offset from the same pools of captured '
-          'fragments and coverage classes; the median genomic distance of the pairs is given for 1 and 5 steps. '
+          'fragments and coverage classes (95\\% confidence intervals in Supplementary Table~S18); the median genomic distance of the pairs is given for 1 and 5 steps. '
           'Bottom, NPMI concordance for direct interactions, indirect contacts, indirect contacts between two other '
           'ends, mediated triplets, and the number of multi-way groups holding at least three loci of a community '
           'against the community shifted along the chromosome ($^a$any position; $^b$positions in captured '
@@ -529,10 +529,150 @@ def s14():
           'direction without distance matching.', 'tab:s14', size=r'\scriptsize')
 
 
+def s18():
+    def ci(t, k):
+        return '{} ({}--{})'.format(num(t.loc[k, 'concordance']), num(t.loc[k, 'ci_low']), num(t.loc[k, 'ci_high']))
+    runs = [('GM12878 (CHiCAGO)', 'GM12878 SPRITE', 'GM_chicago_sprite'), ('H9 hESC', 'H1-hESC GAM', 'hESC_gam'),
+            ('H1-hESC', 'H1-hESC GAM', 'H1_gam'), ('GM12878, virtual', 'GM12878 SPRITE', 'VC_GM12878_sprite'),
+            ('H1-hESC, virtual', 'H1-hESC GAM', 'VC_H1_microc_gam')]
+    rows = []
+    for control, suffix in (('coverage', 'coverage'), ('coverage, compartment, domain', 'domains')):
+        rows.append(r'\multicolumn{7}{@{}l}{\textit{Controls matched for offset, ' + control + r'}} \\')
+        for graph, assay, name in runs:
+            f = path('reviewer_controls', '{}_hops_{}.tsv'.format(name, suffix))
+            if not os.path.exists(f):
+                continue
+            t = pd.read_csv(f, sep='\t').set_index('steps')
+            rows.append(' & '.join([graph, assay] + [ci(t, k) for k in range(1, 6)]) + r' \\')
+        rows.append(r'\midrule')
+    rows.append(r'\multicolumn{7}{@{}l}{\textit{Cell-type specific interactions, controls matched for offset, '
+                r'compartment and domain}} \\')
+    t = pd.read_csv(path('reviewer_controls', 'GM_vs_hESC_domains.tsv'), sep='\t')
+    for _, r in t.iterrows():
+        rows.append(' & '.join([tex(r['interactions']), tex(r['multiway'].replace('_', ' ')),
+                                '{} ({}--{})'.format(num(r['concordance']), num(r['ci_low']), num(r['ci_high'])),
+                                integer(r['n']), '', '', '']) + r' \\')
+    table('table_s18.tex', 'llccccc', 'Graph & Multi-way data & 1 step & 2 steps & 3 steps & 4 steps & 5 steps',
+          rows,
+          'Multi-way support by graph distance with 95\\% confidence intervals from 1,000 bootstrap samples of '
+          'chromosomes. Concordance: probability that a fragment pair at the given graph distance co-occurs more '
+          'than a matched pair at the same genomic offset, drawn from the same pools of captured fragments and '
+          'coverage classes of the multi-way data (top), and in addition with the same A/B compartment of both '
+          'ends and the same domain membership (both ends in one domain or not; middle). Compartments and domains: '
+          'subcompartments and Arrowhead domains of \\citet{rao2014} for GM12878, compartment eigenvector and '
+          'domains between insulation boundaries of the 4D Nucleome Micro-C data for H1-hESC. Bottom: interactions '
+          'called in GM12878 only, in H9 hESC only or in both graphs, against SPRITE of GM12878 and GAM of H1-hESC '
+          '(third column: concordance, fourth: number of pairs).', 'tab:s18', size=r'\scriptsize')
+
+
+def s19():
+    comparisons = [('hESC / hNEC', 'hESC_vs_hNEC', 'hESC_vs_hNEC_subthreshold_H1', 'H1-hESC calls, score 5--12'),
+                   ('Md / PA2', 'Md_vs_PA2', 'Md_vs_PA2_subthreshold', 'called in one replicate'),
+                   ('Kasumi-1 siMM / siRE', 'siMM_vs_siRE', 'siMM_vs_siRE_subthreshold', 'score 2--5')]
+    rows = []
+    for name, run, sub, source in comparisons:
+        tests = {}
+        for n in (20000, 200000):
+            f = path('robustness_candidates', '{}_perm{}_indirect_gene_test.json'.format(run, n))
+            if os.path.exists(f):
+                with open(f) as handle:
+                    tests[n] = json.load(handle)
+        f = path('robustness_candidates', sub + '_summary.json')
+        if not tests or not os.path.exists(f):
+            continue
+        with open(f) as handle:
+            summary = json.load(handle)
+        last = tests[max(tests)]
+        rows.append(' & '.join([name, integer(last['tested_genes']),
+                                ' / '.join(integer(tests[n]['genes_p_lt_0.05']) for n in sorted(tests)),
+                                ' / '.join(integer(tests[n]['genes_q_lt_0.1']) for n in sorted(tests)),
+                                integer(last['candidates_beyond_mirror_p_lt_0.05']), integer(last['candidates_q_lt_0.1']),
+                                source, integer(summary['candidates_with_explaining_pair_ge_sub']),
+                                integer(summary['added_edges']),
+                                integer(summary['remain_beyond_mirror'])]) + r' \\')
+    table('table_s19.tex', '>{\\raggedright\\arraybackslash}p{1.9cm}rrrrr>{\\raggedright\\arraybackslash}p{2.1cm}rrr',
+          'Comparison & Tested & $P<0.05$ & FDR $<$ 0.1 & Candidates & FDR $<$ 0.1 & Sub-threshold pairs & '
+          'With pair & Added & Remain', rows,
+          'Robustness of the candidates for regulation through indirect contacts. Tested: baited promoter fragments '
+          'of differentially expressed genes; $P<0.05$ and FDR $<$ 0.1: fragments whose concordant change at '
+          'indirect neighbours exceeds that of permuted signals, with 20,000 / 200,000 permutations; candidates: '
+          'explained at the indirect level only, beyond the mirrored loci and $P<0.05$ (200,000 permutations), and '
+          'among them FDR $<$ 0.1. Sub-threshold pairs: source of pairs below the calling threshold of the graph; '
+          'with pair: candidates with at least one such pair to a node that explains them; added: pairs added as '
+          'direct edges; remain: candidates still explained at the indirect level only and beyond the mirrored loci '
+          'after the reclassification.', 'tab:s19', size=r'\scriptsize')
+
+
+def s20():
+    rows = []
+    for cell, matrix in (('GM12878', 'Hi-C'), ('K562', 'Hi-C'), ('H1', 'Micro-C')):
+        label = '{} {}'.format('H1-hESC' if cell == 'H1' else cell, matrix)
+        for tool, name in (('mustache', 'Mustache'), ('chromosight', 'Chromosight')):
+            sets = [(name, '{}_{}'.format(cell, tool)), ('virtual, top calls', '{}_virtual_top_{}'.format(cell, tool))]
+            for method, stem in sets:
+                f = path('loopcallers', stem + '_benchmark.tsv')
+                if not os.path.exists(f):
+                    continue
+                t = pd.read_csv(f, sep='\t')
+                t = t[t['stratum'] == 'all'].set_index('tolerance_bins')
+                rows.append(' & '.join([label, method, integer(t.loc[0, 'virtual_pairs']),
+                                        '{:.1f} ({:.1f})'.format(100 * t.loc[0, 'precision'], 100 * t.loc[1, 'precision']),
+                                        '{:.2f} ({:.2f})'.format(100 * t.loc[0, 'recall'], 100 * t.loc[1, 'recall'])])
+                            + r' \\')
+                label = ''
+        f = path('virtual_capture', {'H1': 'H1_microc'}.get(cell, cell) + '_benchmark.tsv')
+        if os.path.exists(f):
+            t = pd.read_csv(f, sep='\t')
+            t = t[t['stratum'] == 'all'].set_index('tolerance_bins')
+            rows.append(' & '.join(['', 'virtual, all calls', integer(t.loc[0, 'virtual_pairs']),
+                                    '{:.1f} ({:.1f})'.format(100 * t.loc[0, 'precision'], 100 * t.loc[1, 'precision']),
+                                    '{:.2f} ({:.2f})'.format(100 * t.loc[0, 'recall'], 100 * t.loc[1, 'recall'])])
+                        + r' \\')
+        rows.append(r'\midrule')
+    table('table_s20.tex', 'llrrr', 'Matrix & Calls & Pairs & Precision (\\%) & Recall (\\%)', rows[:-1],
+          'Promoter interactions from loop callers and from virtual capture on the same contact matrices (5\\,kb), '
+          'against the promoter capture calls of the same cell type on shared baited bins (cis, within 2\\,Mb). '
+          'Loop callers: Mustache and Chromosight loops with at least one anchor in a baited bin; virtual, top '
+          'calls: the same number of the highest-scoring virtual calls; pairs: calls on shared baited bins; in '
+          'parentheses, with a tolerance of one bin at the other end.', 'tab:s20', size=r'\small')
+
+
+def s21():
+    with open(path('robustness_communities', 'summary.json')) as handle:
+        summary = json.load(handle)
+    gm, hh = summary['gm12878'], summary['hesc_hnec']
+    variants = [('Reference (Leiden, resolution 1, score weights)', 'reference'),
+                ('Resolution 0.5', 'resolution_0.5'), ('Resolution 2', 'resolution_2'),
+                ('Ten random seeds, minimum', 'seeds_min'), ('Ten random seeds, maximum', 'seeds_max'),
+                ('Louvain', 'louvain'), ('Weights $\\log$ score', 'weight_log_score'),
+                ('Unweighted', 'weight_unweighted'), ('Score $\\geq$ 15 (hESC, hNEC), $\\geq$ 7 (GM12878)', 'threshold')]
+    rows = []
+    for label, key in variants:
+        gm_key = 'threshold_7' if key == 'threshold' else key
+        hh_key = 'threshold_15' if key == 'threshold' else key
+        values = [num(gm['ari'][gm_key]), num(hh['hESC_ari'][hh_key]), num(hh['hNEC_ari'][hh_key]),
+                  num(hh['fraction_same_transition'][hh_key]), integer(hh['coherent_q_lt_0_1'][hh_key]),
+                  integer(hh['reference_coherent_recovered'][hh_key]),
+                  num(hh['rewiring_abs_expression_rho'][hh_key]), pval(hh['rewiring_abs_expression_p'][hh_key])]
+        rows.append(' & '.join([label] + values) + r' \\')
+    table('table_s21.tex', '>{\\raggedright\\arraybackslash}p{4.2cm}rrrrrrrr',
+          'Variant & ARI GM12878 & ARI hESC & ARI hNEC & Same transition & Coordinated & Recovered & $\\rho$ & $P$',
+          rows,
+          'Stability of communities and of the differential community results. ARI: adjusted Rand index of the '
+          'partition against the reference; same transition: fraction of hESC communities whose transition '
+          '(stable, split, merged, remodelled, dissolved) is unchanged; coordinated: communities of hNEC with a '
+          'coordinated expression change (FDR $<$ 0.1); recovered: of the 17 coordinated communities of the '
+          'reference, those whose best-matching community (largest gene overlap) is coordinated; $\\rho$, $P$: '
+          'Spearman correlation between the fraction of rewired interactions of a community and the absolute mean '
+          'expression change of its genes. For the seeds, each column gives its own minimum or maximum over the ten '
+          'seeds. Most communities are whole connected components (GM12878: 2,905 of 2,944; hESC: 2,528 of 2,580).',
+          'tab:s21', size=r'\scriptsize')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21):
         build()
         print(build.__name__, flush=True)
 

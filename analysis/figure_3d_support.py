@@ -27,9 +27,9 @@ import pandas as pd  # noqa: E402
 from figure_concept import (AQUA, BLUE, DASH, EDGES, GRID, INK, LAYOUT, MUTED, ORANGE, YELLOW, other_end,  # noqa: E402
                             promoter)
 
-SERIES = (('GM12878 graph, GM12878 SPRITE', 'hops/GM_chicago_sprite_GM12878_hg19_HindIII_fragments.tsv', '#1f5f8b', 'o'),
-          ('H9 hESC graph, H1-hESC GAM', 'hops/hESC_gam_H1_hg38_30kb.tsv', '#c0504d', 's'),
-          ('H1-hESC graph, H1-hESC GAM', 'hops/H1_gam_H1_hg38_30kb.tsv', '#d99a4e', '^'))
+SERIES = (('GM12878 graph, GM12878 SPRITE', 'reviewer_controls/GM_chicago_sprite_hops_coverage.tsv', '#1f5f8b', 'o'),
+          ('H9 hESC graph, H1-hESC GAM', 'reviewer_controls/hESC_gam_hops_coverage.tsv', '#c0504d', 's'),
+          ('H1-hESC graph, H1-hESC GAM', 'reviewer_controls/H1_gam_hops_coverage.tsv', '#d99a4e', '^'))
 BARCODE = ('#7b5ea7', '#2a9d8f', '#e9c46a')
 ASSEMBLY = {'P': (0.0, 0.0), 'E1': (-0.32, 0.22), 'E2': (0.3, 0.26), 'E3': (0.05, -0.3)}
 
@@ -180,6 +180,7 @@ def panel_steps(ax, results):
     ax.axhline(0.5, color='#999999', lw=0.8, ls='--')
     for name, path, color, marker in SERIES:
         table = pd.read_csv(os.path.join(results, path), sep='\t')
+        ax.fill_between(table['steps'], table['ci_low'], table['ci_high'], color=color, alpha=0.15, lw=0)
         ax.plot(table['steps'], table['concordance'], marker=marker, color=color, lw=1.5, ms=5, label=name)
     ax.set_xticks(range(1, 6))
     ax.set_xlabel('graph distance (steps)')
