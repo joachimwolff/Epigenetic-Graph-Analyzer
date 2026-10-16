@@ -300,7 +300,6 @@ def draw_arcs(ax, sub, names):
 edge_norm = mcolors.TwoSlopeNorm(vmin=-EDGE_MAX_LOG2, vcenter=0, vmax=EDGE_MAX_LOG2)
 
 
-NEUTRAL = '#d9d8d2'
 
 
 def node_change(data, mark, names):
@@ -325,7 +324,7 @@ def draw_graph(ax, sub, positions, names, mark, max_log2, mode='edges', candidat
             continue
         style, alpha = '-', 0.9
         if mode in ('A', 'B'):
-            color, width = '#7f7f7a', edge_width(edge_strength(data, mode))
+            color, width = '#9a9994', edge_width(edge_strength(data, mode))
         elif mode == 'nodes':
             color, width, alpha = '#b9b8b2', 0.4, 0.8
         elif status == 'shared':
@@ -340,7 +339,8 @@ def draw_graph(ax, sub, positions, names, mark, max_log2, mode='edges', candidat
         if n not in positions:
             continue
         bait = bool(data.get('bait'))
-        face, outline, width = NEUTRAL, INK, 0.5
+        # neutral nodes as in the concept figure: baited promoters black, other ends white
+        face, outline, width = (INK if bait else '#ffffff'), INK, 0.5
         if mode == 'nodes':
             value = node_change(data, mark, names)
             face = '#ffffff' if np.isnan(value) else cmap(norm(np.clip(value, -max_log2, max_log2)))
@@ -362,9 +362,11 @@ def draw_graph(ax, sub, positions, names, mark, max_log2, mode='edges', candidat
     ax.set_title(title, loc='left', fontsize=7.5)
 
 
-def shape_handles():
-    return [plt.Line2D([0], [0], marker='s', ls='', color=NEUTRAL, markeredgecolor=INK, ms=6, label='baited promoter'),
-            plt.Line2D([0], [0], marker='o', ls='', color=NEUTRAL, markeredgecolor=INK, ms=4, label='other end (OE)')]
+def shape_handles(neutral=True):
+    promoter = INK if neutral else '#ffffff'
+    return [plt.Line2D([0], [0], marker='s', ls='', color=promoter, markeredgecolor=INK, ms=6, label='baited promoter'),
+            plt.Line2D([0], [0], marker='o', ls='', color='#ffffff', markeredgecolor=INK, ms=4,
+                       label='other end (OE)')]
 
 
 def width_handles():
@@ -405,7 +407,7 @@ def panel_legend(fig, ax, mode, names, mark, max_log2, candidates):
         bar.set_label('log2 change {} / {} of shared interactions'.format(names[1], names[0]), fontsize=6.5)
         bar.ax.tick_params(labelsize=6)
     else:
-        handles = shape_handles() + (candidate_handles() if candidates else [])
+        handles = shape_handles(neutral=False) + (candidate_handles() if candidates else [])
         norm = mcolors.TwoSlopeNorm(vmin=-max_log2, vcenter=0, vmax=max_log2)
         cax = ax.inset_axes([0.05, -0.1, 0.9, 0.03])
         bar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap='RdBu_r'), cax=cax, orientation='horizontal')

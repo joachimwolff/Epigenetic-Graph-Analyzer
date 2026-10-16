@@ -77,7 +77,8 @@ def main():
     with gzip.open(args.output, 'wt') as out:
         for chunk in read_chunks(args.input, columns, args.sep):
             if args.mapq:
-                chunk = chunk[chunk[args.mapq] >= args.minMapq]
+                # non-numeric values are repeated header lines inside concatenated CSV exports
+                chunk = chunk[pd.to_numeric(chunk[args.mapq], errors='coerce') >= args.minMapq]
             for chrom_col, start_col, end_col in ends:
                 starts = chunk[start_col].astype('int64')
                 middle = (starts + chunk[end_col].astype('int64')) // 2 if end_col else starts
