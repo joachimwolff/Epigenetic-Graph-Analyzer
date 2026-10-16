@@ -162,50 +162,65 @@ def separate(positions, sub, min_distance=0.035, rounds=200):
     return {n: xy[i] for i, n in enumerate(nodes)}
 
 
-def place_labels(ax, labelled, positions, fontsize=6, rounds=300):
-    """Gene labels above their nodes, moved apart until their boxes do not overlap; moved labels get a leader line."""
+def place_labels(ax, labelled, positions, fontsize=6, obstacles=None, marker_points=9.0, **_):
+    """Gene labels next to their nodes without overlapping each other or any node marker.
+
+    Labels are placed one after another (top to bottom); each takes the first free position from a list of
+    candidates around its node (above, below, right, left, the diagonals, then the same at two and three times the
+    distance). A position is free if the label box overlaps neither a placed label nor a node marker (`obstacles`,
+    default all of `positions`, squares of `marker_points` points). Labels placed beyond the first ring get a leader
+    line; if no candidate is free, the label takes the candidate with the least overlap."""
     if not labelled:
         return
     fig = ax.figure
     fig.canvas.draw()
-    transform = ax.transData
-    anchors = np.array([positions[n] for n, _ in labelled])
-    texts = [ax.text(x, y + 0.03, label, fontsize=fontsize, style='italic', ha='center', va='bottom', color=INK,
-                     zorder=5, bbox=dict(facecolor='white', edgecolor='none', alpha=0.75, pad=0.15))
-             for (n, label), (x, y) in zip(labelled, anchors)]
+    inverse = ax.transData.inverted()
     renderer = fig.canvas.get_renderer()
-    inverse = transform.inverted()
-    sizes = []
-    for t in texts:
+    origin = inverse.transform([[0, 0]])[0]
+    pixels = marker_points * fig.dpi / 72.0
+    half = np.abs(inverse.transform([[pixels, pixels]])[0] - origin) / 2
+    blocks = np.array(list((obstacles if obstacles is not None else positions).values()), dtype=float)
+    texts, sizes = [], []
+    for n, label in labelled:
+        t = ax.text(0, 0, label, fontsize=fontsize, style='italic', ha='center', va='center', color=INK, zorder=5,
+                    bbox=dict(facecolor='white', edgecolor='none', alpha=0.75, pad=0.15))
         box = t.get_window_extent(renderer)
         (x0, y0), (x1, y1) = inverse.transform([[box.x0, box.y0], [box.x1, box.y1]])
+        texts.append(t)
         sizes.append((abs(x1 - x0), abs(y1 - y0)))
     sizes = np.array(sizes)
-    centres = anchors + np.array([0.0, 0.03]) + np.column_stack([np.zeros(len(texts)), sizes[:, 1] / 2])
-    for _ in range(rounds):
-        moved = False
-        for i in range(len(texts)):
-            for j in range(i + 1, len(texts)):
-                dx = centres[j, 0] - centres[i, 0]
-                dy = centres[j, 1] - centres[i, 1]
-                ox = (sizes[i, 0] + sizes[j, 0]) / 2 - abs(dx)
-                oy = (sizes[i, 1] + sizes[j, 1]) / 2 - abs(dy)
-                if ox > 0 and oy > 0:
-                    moved = True
-                    if oy < ox:
-                        shift = (oy / 2 + 1e-4) * (1 if dy >= 0 else -1)
-                        centres[i, 1] -= shift
-                        centres[j, 1] += shift
-                    else:
-                        shift = (ox / 2 + 1e-4) * (1 if dx >= 0 else -1)
-                        centres[i, 0] -= shift
-                        centres[j, 0] += shift
-        if not moved:
-            break
-    for t, (cx, cy), (w, h), (ax0, ay0) in zip(texts, centres, sizes, anchors):
-        t.set_position((cx, cy - h / 2))
-        if np.hypot(cx - ax0, cy - h / 2 - ay0) > 0.06:
-            ax.plot([ax0, cx], [ay0, cy - h / 2], color='#8c8c88', lw=0.4, zorder=4)
+    placed = []   # (cx, cy, w, h)
+
+    def overlap(cx, cy, w, h):
+        total = 0.0
+        for px, py, pw, ph in placed:
+            ox = (w + pw) / 2 - abs(cx - px)
+            oy = (h + ph) / 2 - abs(cy - py)
+            if ox > 0 and oy > 0:
+                total += ox * oy
+        ox = w / 2 + half[0] - np.abs(cx - blocks[:, 0])
+        oy = h / 2 + half[1] - np.abs(cy - blocks[:, 1])
+        hit = (ox > 0) & (oy > 0)
+        return total + float((ox[hit] * oy[hit]).sum())
+
+    order = sorted(range(len(labelled)), key=lambda i: -positions[labelled[i][0]][1])
+    for i in order:
+        x, y = positions[labelled[i][0]]
+        w, h = sizes[i]
+        candidates = []
+        for ring in (1, 2, 3):
+            dx = (w / 2 + half[0]) * 1.05 + (ring - 1) * w * 0.6
+            dy = (h / 2 + half[1]) * 1.1 + (ring - 1) * h
+            candidates += [(ring, x, y + dy), (ring, x, y - dy), (ring, x + dx, y), (ring, x - dx, y),
+                           (ring, x + dx, y + dy), (ring, x - dx, y + dy), (ring, x + dx, y - dy),
+                           (ring, x - dx, y - dy)]
+        scored = [(overlap(cx, cy, w, h), k, ring, cx, cy) for k, (ring, cx, cy) in enumerate(candidates)]
+        free = [c for c in scored if c[0] == 0]
+        _, _, ring, cx, cy = free[0] if free else min(scored)
+        texts[i].set_position((cx, cy))
+        placed.append((cx, cy, w, h))
+        if ring > 1:
+            ax.plot([x, cx], [y, cy], color='#8c8c88', lw=0.4, zorder=4)
 
 
 def draw_arcs(ax, sub, names):
@@ -330,6 +345,10 @@ def main(args=None):
         names[1], names[0], ', {} (circles)'.format(mark) if mark else ''), fontsize=7)
     bar.ax.tick_params(labelsize=6)
     handles = [plt.Line2D([0], [0], color=c, lw=2, label=s) for s, c in STATUS_COLORS.items()]
+    handles += [plt.Line2D([0], [0], marker='s', ls='', color='#9a9994', markeredgecolor=INK, ms=6,
+                           label='baited promoter'),
+                plt.Line2D([0], [0], marker='o', ls='', color='#9a9994', markeredgecolor=INK, ms=4,
+                           label='other end (OE)')]
     if candidates:
         handles.append(plt.Line2D([0], [0], marker='s', color='white', markeredgecolor='#000000', markeredgewidth=1.8,
                                   ms=7, lw=0, label='candidate (indirect only)'))

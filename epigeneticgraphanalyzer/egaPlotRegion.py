@@ -31,6 +31,7 @@ def parse_arguments(args=None):
     parser.add_argument('--title', default=None)
     parser.add_argument('--geneFontSize', type=float, default=9, help='Font size of gene names in the gene track')
     parser.add_argument('--arcHeight', type=float, default=7, help='Height of the interaction track (cm)')
+    parser.add_argument('--genesHeight', type=float, default=4, help='Height of the gene track (cm)')
     parser.add_argument('--multiway', help='SPRITE / GAM .npz on the assembly of the graph; adds a track with the '
                                          'clusters or tubes that contain several loci of the region')
     parser.add_argument('--chain', help='Chain file from the graph assembly to the assembly of --multiway; the '
@@ -72,6 +73,7 @@ def node_color(sub, colors, node):
 
 
 def write_tracks(sub, colors, prefix, genes, title, indirect=True, gene_font_size=9, arc_height=7, events=None,
+                 genes_height=4,
                  events_height=6, min_loci=3, max_events=60):
     """pyGenomeTracks configuration with one links file per community, the rest grey, and indirect contacts."""
     directory = os.path.dirname(os.path.abspath(prefix))
@@ -95,10 +97,10 @@ def write_tracks(sub, colors, prefix, genes, title, indirect=True, gene_font_siz
 
     # one shared y scale for all overlaid links tracks: the longest arc of the region
     ylim = int(max((distance(u, v) for u, v in sub.edges), default=1) * 1.1) + 1
-    sections = ['[x-axis]\nwhere = top\n', '[spacer]\nheight = 0.3\n']
+    sections = ['[x-axis]\nwhere = top\nfontsize = {}\n'.format(gene_font_size), '[spacer]\nheight = 0.3\n']
     if genes:
-        sections.append('[genes]\nfile = {}\nfile_type = gtf\ntitle = genes\nheight = 4\nmerge_transcripts = true\n'
-                        'prefered_name = gene_name\nlabels = true\nall_labels_inside = true\nmax_labels = 400\nfontsize = {}\n'.format(os.path.abspath(genes), gene_font_size))
+        sections.append('[genes]\nfile = {}\nfile_type = gtf\ntitle = genes\nheight = {}\nmerge_transcripts = true\n'
+                        'prefered_name = gene_name\nlabels = true\nall_labels_inside = true\nmax_labels = 400\nfontsize = {}\n'.format(os.path.abspath(genes), genes_height, gene_font_size))
         sections.append('[spacer]\nheight = 0.3\n')
     first = True
     for key in ['other'] + [c for c in colors if c in groups]:
@@ -186,6 +188,36 @@ def write_events(sub, colors, data, prefix, min_loci=3, max_events=60):
     return path, len(groups)
 
 
+def gene_labels(sub, nodes):
+    """One label per gene: the first informative gene name of each bait, given to the bait with most partners when
+    several baits (alternative promoters) carry the same gene."""
+    best = {}
+    for n in nodes:
+        if not sub.nodes[n].get('bait'):
+            continue
+        names = [g for g in str(sub.nodes[n].get('genes', '')).split(',')
+                 if g and g != 'nan' and not g.startswith(('Gm', 'LOC', 'RP', 'AC0', 'CTD', 'CTC'))]
+        if names and (names[0] not in best or sub.degree[n] > sub.degree[best[names[0]]]):
+            best[names[0]] = n
+    return [(n, name) for name, n in best.items()]
+
+
+def node_legend(ax, loc='lower right', extra=()):
+    """Legend of the node shapes: baited promoter (square) and other end (circle)."""
+    handles = [plt.Line2D([0], [0], marker='s', ls='', color='#9a9994', markeredgecolor=INK, markersize=6,
+                          label='baited promoter'),
+               plt.Line2D([0], [0], marker='o', ls='', color='#9a9994', markeredgecolor=INK, markersize=4,
+                          label='other end (OE)')] + list(extra)
+    ax.legend(handles=handles, loc=loc, fontsize=6, frameon=False, handletextpad=0.3, borderaxespad=0.2)
+
+
+def layout_limits(ax, positions, pad=0.12):
+    """Identical axis limits for every panel drawn on the same layout."""
+    xy = np.array(list(positions.values()))
+    ax.set_xlim(xy[:, 0].min() - pad, xy[:, 0].max() + pad)
+    ax.set_ylim(xy[:, 1].min() - pad - 0.25, xy[:, 1].max() + pad)
+
+
 def promoter_centred_layout(sub, seed=0, aspect=1.4):
     """Hub layout: every connected part of the region is laid out on its own, which places each promoter in the
     centre of its partner fragments and pulls promoters with shared partners together; the parts are arranged in
@@ -204,11 +236,12 @@ def promoter_centred_layout(sub, seed=0, aspect=1.4):
         coordinates = np.array(list(layout.values()))
         coordinates -= coordinates.mean(axis=0)
         scale = np.abs(coordinates).max() or 1.0
-        size = 0.42 * np.sqrt(len(nodes) / max(len(c) for c in components)) + 0.18
+        size = 0.46 * np.sqrt(len(nodes) / max(len(c) for c in components)) + 0.14
         row, column = divmod(k, columns)
         for n, xy in zip(layout, coordinates):
             positions[n] = xy / scale * size + np.array([column, -row])
-    return positions
+    from .egaPlotDifferential import separate
+    return separate(positions, sub, min_distance=0.1)
 
 
 def plot_graph(sub, colors, output, title=None, size=(7.0, 5.0)):
@@ -227,13 +260,10 @@ def plot_graph(sub, colors, output, title=None, size=(7.0, 5.0)):
             continue
         ax.scatter(*positions[n], marker='s' if bait else 'o', s=60 if bait else 10, color=node_color(sub, colors, n),
                    edgecolor=INK, lw=0.5, zorder=2 if not bait else 3)
-        if bait:
-            names = [g for g in str(sub.nodes[n].get('genes', '')).split(',')
-                     if g and not g.startswith(('Gm', 'LOC', 'RP', 'AC0', 'CTD', 'CTC'))]
-            if names:
-                ax.text(positions[n][0], positions[n][1] + 0.05, names[0], fontsize=6, style='italic',
-                        ha='center', va='bottom', color=INK, zorder=4,
-                        bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=0.2))
+    from .egaPlotDifferential import place_labels
+    place_labels(ax, gene_labels(sub, [n for n in sub.nodes if n in positions]), positions, fontsize=6)
+    layout_limits(ax, positions)
+    node_legend(ax)
     ax.set_axis_off()
     ax.set_title(title or 'promoter-centred graph', loc='left', fontsize=8)
     fig.savefig(ensure_parent(output), bbox_inches='tight')
@@ -251,16 +281,16 @@ def _locus_of(data, attrs, liftover=None):
 
 
 def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max_overlap=0.5, title=None,
-                        example_bins=(4, 8), liftover=None):
+                        example_bins=(4, 8), liftover=None, aspect=1.3, size=(3.6, 2.9)):
     """Promoter-centred graph with multi-way evidence.
 
-    Panel a: interactions coloured by the number of groups (SPRITE clusters / GAM tubes) holding both fragments,
-    nodes by the number of groups with at least `min_loci` region loci that hold them. Further panels: the same
-    graph with the fragments of single groups highlighted; examples are the largest groups whose bin sets overlap
-    each other by at most `max_overlap` (Jaccard).
+    `output`: interactions coloured by the NPMI of their two ends in the multi-way data relative to locus pairs at
+    the same offset. `<output stem>_example<k>.pdf`: the same graph with the fragments of single groups (SPRITE
+    clusters / GAM tubes) highlighted; examples are the largest groups whose bin sets overlap each other by at most
+    `max_overlap` (Jaccard). Every panel is a separate file, so that figures are assembled in the manuscript.
     """
     from .egaPlotLocus import groups_with_loci
-    positions = promoter_centred_layout(sub, aspect=1.3)
+    positions = promoter_centred_layout(sub, aspect=aspect)
     node_bin = {}
     for n, d in sub.nodes(data=True):
         if n in positions:
@@ -296,9 +326,9 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
     group = 'tube' if data.kind == 'gam' else 'cluster'
     assay = 'GAM' if data.kind == 'gam' else 'SPRITE'
 
-    fig = plt.figure(figsize=(7.1, 4.6))
-    grid = fig.add_gridspec(2, 4, wspace=0.08, hspace=0.25)
-    ax_main = fig.add_subplot(grid[:, :2])
+    from .egaPlotDifferential import place_labels
+    # main panel: interactions coloured by the co-occurrence of their two ends
+    fig, ax_main = plt.subplots(figsize=tuple(size))
     cmap = plt.get_cmap('RdBu_r')
     finite = pair[np.isfinite(pair)] if len(pair) else np.zeros(1)
     limit = max(np.nanpercentile(np.abs(finite), 95), 0.1)
@@ -315,21 +345,22 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
         bait = sub.nodes[n].get('bait')
         ax_main.scatter(*positions[n], marker='s' if bait else 'o', s=34 if bait else 8, color=node_color(sub, colors, n),
                         edgecolor=INK, lw=0.4, zorder=2)
-    for n in nodes:
-        names = [g for g in str(sub.nodes[n].get('genes', '')).split(',')
-                 if g and not g.startswith(('Gm', 'LOC', 'RP', 'AC0', 'CTD', 'CTC'))]
-        if sub.nodes[n].get('bait') and names:
-            ax_main.text(positions[n][0], positions[n][1] + 0.04, names[0], fontsize=5.5, style='italic',
-                         ha='center', va='bottom', color=INK, zorder=4,
-                         bbox=dict(facecolor='white', edgecolor='none', alpha=0.7, pad=0.1))
-    bar = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), ax=ax_main, orientation='horizontal',
-                       fraction=0.05, pad=0.02, shrink=0.7)
-    bar.set_label('{} NPMI of the two ends minus NPMI at the same offset'.format(assay), fontsize=6.5)
-    bar.ax.tick_params(labelsize=6)
+    place_labels(ax_main, gene_labels(sub, nodes), positions, fontsize=5.5)
+    layout_limits(ax_main, positions)
+    cax = ax_main.inset_axes([0.56, 0.05, 0.4, 0.035])
+    bar = fig.colorbar(plt.cm.ScalarMappable(cmap=cmap, norm=norm), cax=cax, orientation='horizontal')
+    bar.set_label('$\\Delta$NPMI: {} co-occurrence above\npairs at the same distance'.format(assay), fontsize=6)
+    bar.ax.tick_params(labelsize=5.5, length=2)
+    node_legend(ax_main, loc='lower left')
     ax_main.set_axis_off()
-    ax_main.set_title('a  interactions by {} co-occurrence'.format(assay), loc='left', fontsize=7.5)
+    ax_main.set_title('interactions by {} co-occurrence'.format(assay), loc='left', fontsize=7.5)
+    fig.savefig(ensure_parent(output), bbox_inches='tight')
+    plt.close(fig)
+    # one file per example group: the same graph with the fragments of one cluster / tube highlighted
+    stem = output[:-4] if output.endswith('.pdf') else output
+    unit = 'fragments' if not data.bins.fixed else '{} kb windows'.format(data.bins.bin_size // 1000)
     for k, members in enumerate(examples):
-        ax = fig.add_subplot(grid[k // 2, 2 + k % 2])
+        fig, ax = plt.subplots(figsize=(size[0] / 2, size[1] / 2))
         inside = {n for n, b in node_bin.items() if b in members}
         for u, v in sub.edges:
             if u in positions and v in positions:
@@ -341,11 +372,11 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, n_examples=4, max
             ax.scatter(*positions[n], marker='s' if sub.nodes[n].get('bait') else 'o',
                        s=(26 if sub.nodes[n].get('bait') else 7), color='#eb6834' if hit else '#e2e1dc',
                        edgecolor=INK if hit else 'none', lw=0.3, zorder=3 if hit else 1)
+        layout_limits(ax, positions)
         ax.set_axis_off()
-        unit = 'fragments' if not data.bins.fixed else '{} kb windows'.format(data.bins.bin_size // 1000)
-        ax.set_title('{}  one {}: {} {}'.format('bcde'[k], group, len(members), unit), loc='left', fontsize=6.5)
-    fig.savefig(ensure_parent(output), bbox_inches='tight')
-    plt.close(fig)
+        ax.set_title('one {}: {} {}'.format(group, len(members), unit), loc='left', fontsize=6.5)
+        fig.savefig('{}_example{}.pdf'.format(stem, k + 1), bbox_inches='tight')
+        plt.close(fig)
 
 
 def main(args=None):
@@ -366,11 +397,14 @@ def main(args=None):
             path, count = write_events(sub, colors, data, args.outputPrefix, args.minLoci, args.maxEvents)
             events = (path, count, 'GAM' if data.kind == 'gam' else 'SPRITE')
             log.info('%d multi-way groups with >= %d loci of the region', count, args.minLoci)
+        # same layout as the promoter-centred graph, so that the panels can be compared node by node
         plot_graph_multiway(sub, colors, data, args.outputPrefix + '_graph_multiway.pdf', args.minLoci,
-                            title=args.title, liftover=liftover)
+                            title=args.title, liftover=liftover, aspect=args.graphSize[0] / args.graphSize[1],
+                            size=args.graphSize)
     ini = write_tracks(sub, colors, args.outputPrefix, args.genes, args.title, indirect=not args.noIndirect,
                        gene_font_size=args.geneFontSize, arc_height=args.arcHeight, events=events,
-                       events_height=args.eventsHeight, min_loci=args.minLoci, max_events=args.maxEvents)
+                       events_height=args.eventsHeight, min_loci=args.minLoci, max_events=args.maxEvents,
+                       genes_height=args.genesHeight)
     plot_graph(sub, colors, args.outputPrefix + '_graph.pdf', args.title, args.graphSize)
     # region spanned by the fragments with contacts, for plotting without empty flanks
     connected = [n for n in sub.nodes if sub.degree[n] > 0]
