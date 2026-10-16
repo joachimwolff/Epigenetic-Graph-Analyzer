@@ -669,10 +669,101 @@ def s21():
           'tab:s21', size=r'\scriptsize')
 
 
+def s22():
+    labels = {'all_5': 'reference: both replicates, score $\\geq$ 5 in one', 'all_3': 'score $\\geq$ 3',
+              'all_8': 'score $\\geq$ 8', 'all_10': 'score $\\geq$ 10',
+              'matched_all_5': 'knockdown down-sampled to control depth',
+              'half_all_5': 'all libraries down-sampled to 50\\%',
+              'both_5': 'reference: score $\\geq$ 5 in both replicates', 'both_8': 'score $\\geq$ 8 in both',
+              'both_10': 'score $\\geq$ 10 in both', 'either_5': 'score $\\geq$ 5 in either replicate',
+              'either_8': 'score $\\geq$ 8 in either', 'either_10': 'score $\\geq$ 10 in either'}
+    runs = [('Kasumi-1', 'siMM_vs_siRE_threshold'), ('', 'siMM_vs_siRE_depth'), ('Md / PA2', 'Md_vs_PA2_threshold')]
+    rows, seen = [], set()
+    for name, run in runs:
+        variants = pd.read_csv(path('robustness_differential', run + '_variants.tsv'), sep='\t')
+        transfer = pd.read_csv(path('robustness_differential', run + '_status_transfer.tsv'), sep='\t')
+        transfer = transfer[(transfer['subset'] == 'all') & (transfer['direction'] == 'reference_to_variant')]
+        for _, v in variants.iterrows():
+            if v['variant'] in seen:
+                continue
+            seen.add(v['variant'])
+            t = transfer[transfer['variant'] == v['variant']].set_index('status')
+            rows.append(' & '.join([name, labels.get(v['variant'], tex(v['variant'])), integer(v['n_gained']),
+                                    integer(v['n_lost']), num(t.loc['gained', 'fraction_gained'], 2),
+                                    num(t.loc['lost', 'fraction_lost'], 2),
+                                    '{} / {}'.format(num(v['ari_a'], 2), num(v['ari_b'], 2)),
+                                    '{} of {}'.format(integer(v['recomputed_coherent_recovered']),
+                                                      integer(v['recomputed_coherent'])),
+                                    num(v['rewiring_abs_expression_rho'], 3),
+                                    pval(v['rewiring_abs_expression_p'])]) + r' \\')
+            name = ''
+        rows.append(r'\midrule')
+    table('table_s22.tex', '>{\\raggedright\\arraybackslash}p{1.4cm}>{\\raggedright\\arraybackslash}p{4.0cm}rrrrrrrr',
+          'Data & Calling & Gained & Lost & Gained kept & Lost kept & ARI & Recovered & $\\rho$ & $P$', rows[:-1],
+          'Robustness of the differential graph to the calling threshold and to sequencing depth. Gained, lost: '
+          'interactions of the variant; gained kept, lost kept: fraction of the gained (lost) interactions of the '
+          'reference that keep their status in the variant (with the replicate rule of the reference, the others '
+          'become shared or are not called and none changes direction); ARI: adjusted Rand index of the communities of the two conditions '
+          'against the reference; recovered: coordinated communities of the reference whose best-matching community '
+          'in the variant is coordinated (FDR $<$ 0.1); $\\rho$, $P$: Spearman correlation between rewiring and '
+          'absolute expression change of communities. Kasumi-1: CHiCAGO calls of both replicates at the given '
+          'score, down-sampling binomial on the read pairs of each replicate; Md / PA2: published calls (score '
+          '$\\geq$ 5 only).', 'tab:s22', size=r'\scriptsize')
+
+
+def s23():
+    runs = [('GM12878 (CHiCAGO)', 'GM12878', 'GM_chicago_hiporec'), ('K562 (DMSO)', 'K562', 'K562_hiporec')]
+    rows = [r'\multicolumn{7}{@{}l}{\textit{By graph distance (95\% confidence interval)}} \\',
+            r' & & 1 step & 2 steps & 3 steps & 4 steps & 5 steps \\', r'\midrule']
+    for graph, cell, run in runs:
+        t = pd.read_csv(path('porec', run + '_hops.tsv'), sep='\t').set_index('steps')
+        rows.append(' & '.join([graph, 'HiPore-C ' + cell] + [
+            '{} ({}--{})'.format(num(t.loc[k, 'concordance']), num(t.loc[k, 'ci_low']), num(t.loc[k, 'ci_high']))
+            for k in range(1, 6)]) + r' \\')
+    rows += [r'\midrule', r'\multicolumn{7}{@{}l}{\textit{By item}} \\',
+             r' & & Direct & Indirect & Other-other & Triplets & Communities$^a$ / $^b$ \\', r'\midrule']
+    for graph, cell, run in runs:
+        t = pd.read_csv(path('porec', run + '_summary.tsv'), sep='\t')
+        t = t[t['stratum'] == 'all']
+
+        def get(s, cls, metric):
+            hit = t[(t['set'] == s) & (t['pair_class'] == cls) & (t['metric'] == metric)]
+            return hit['fraction_above_control'].iloc[0] if len(hit) else float('nan')
+        rows.append(' & '.join([graph, 'HiPore-C ' + cell, num(get('direct', 'all', 'npmi')),
+                                num(get('indirect', 'all', 'npmi')), num(get('indirect', 'oe-oe', 'npmi')),
+                                num(get('triplets', 'all', 'c_uvw')),
+                                '{} / {}'.format(num(get('communities', 'null_shift', 'groups_with_3_members')),
+                                                 num(get('communities', 'null_locus', 'groups_with_3_members')))])
+                    + r' \\')
+    rows += [r'\midrule', r'\multicolumn{7}{@{}l}{\textit{Per contact and hubs}} \\',
+             r' & & Direct $>$ P95 & Control & Indirect $>$ P95 & Control & Hubs of 3 / shifted \\', r'\midrule']
+    for graph, cell, run in runs:
+        c = pd.read_csv(path('porec', run + '_confirm_summary.tsv'), sep='\t')
+        c = c[(c['stratum'] == 'all') & (c['pair_class'] == 'all')].set_index('set')
+        h = pd.read_csv(path('porec', run + '_hubs_hub_summary.tsv'), sep='\t').set_index('hub_size')
+        rows.append(' & '.join([graph, 'HiPore-C ' + cell,
+                                '{:.1f}\\%'.format(100 * c.loc['direct', 'confirmed_p']),
+                                '{:.1f}\\%'.format(100 * c.loc['direct', 'control_confirmed_p']),
+                                '{:.1f}\\%'.format(100 * c.loc['indirect', 'confirmed_p']),
+                                '{:.1f}\\%'.format(100 * c.loc['indirect', 'control_confirmed_p']),
+                                '{:.0f}\\% / {:.0f}\\%'.format(100 * h.loc['3-3', 'hubs_with_promoter_plus2_in_one_group'],
+                                                             100 * h.loc['3-3', 'shifted'])]) + r' \\')
+    table('table_s23.tex', 'llccccc', 'Graph & Multi-way data & & & & &', rows,
+          'Support of the interaction graphs in HiPore-C concatemers \\citep{zhong2023}, assigned to hg19 HindIII '
+          'fragments. Top: probability that fragment pairs at graph distance 1 to 5 co-occur more than matched pairs '
+          'at the same offset from the same pools and coverage classes, with 95\\% confidence intervals from '
+          'resampling chromosomes. Middle: concordance of direct interactions, indirect contacts, indirect contacts '
+          'between two other ends, mediated triplets and communities against shifted communities ($^a$any position; '
+          '$^b$positions in captured chromatin). Bottom: fraction of contacts above the 95th percentile of their '
+          'matched pairs, against held-out controls, and fraction of hubs of three fragments with the promoter and '
+          'both partners in one concatemer, against shifted hubs. The K562 graph (hg38) was lifted to hg19.',
+          'tab:s23', size=r'\scriptsize')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23):
         build()
         print(build.__name__, flush=True)
 
