@@ -142,14 +142,29 @@ def panel_graph(ax):
         ax.text(x, base - 0.2, name, ha='center', va='top', fontsize=6, color=INK)
     ax.annotate('', xy=(2.3, 1.38), xytext=(2.3, 1.65), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
     # bottom: the same interactions as a graph with communities and indirect contacts
-    pos = {'E1': (0.55, 0.55), 'P1': (1.05, 0.85), 'E2': (1.65, 1.05), 'E3': (1.65, 0.5), 'P2': (2.3, 0.8),
-           'E4': (3.0, 0.75), 'P3': (3.6, 0.95), 'E5': (3.75, 0.4)}
-    ax.add_patch(mpatches.FancyBboxPatch((0.3, 0.25), 2.25, 1.0, boxstyle='round,pad=0.02,rounding_size=0.25',
+    # planar layout: P1 and P2 on a midline with their shared partners E2 above and E3 below, so that no two
+    # edges cross; indirect contacts are drawn as curves bowed away from the edges
+    pos = {'E1': (0.5, 0.7), 'P1': (1.05, 0.7), 'E2': (1.68, 1.08), 'E3': (1.68, 0.32), 'P2': (2.3, 0.7),
+           'E4': (3.0, 0.7), 'P3': (3.62, 1.02), 'E5': (3.62, 0.38)}
+    ax.add_patch(mpatches.FancyBboxPatch((0.3, 0.12), 2.2, 1.16, boxstyle='round,pad=0.02,rounding_size=0.25',
                                          facecolor=AQUA, alpha=0.13, lw=0))
-    ax.add_patch(mpatches.FancyBboxPatch((2.8, 0.18), 1.2, 1.0, boxstyle='round,pad=0.02,rounding_size=0.25',
+    ax.add_patch(mpatches.FancyBboxPatch((2.78, 0.12), 1.12, 1.16, boxstyle='round,pad=0.02,rounding_size=0.25',
                                          facecolor=YELLOW, alpha=0.15, lw=0))
-    for u, v in (('E1', 'E2'), ('E1', 'E3'), ('E4', 'E2'), ('E5', 'E4')):
-        ax.plot(*zip(pos[u], pos[v]), color=ORANGE, lw=1.0, ls=DASH, zorder=2)
+
+    def curve(u, v, bow):
+        (x1, y1), (x2, y2) = pos[u], pos[v]
+        mx, my = (x1 + x2) / 2, (y1 + y2) / 2
+        length = np.hypot(x2 - x1, y2 - y1)
+        nx, ny = -(y2 - y1) / length, (x2 - x1) / length
+        cx, cy = mx + bow * nx, my + bow * ny
+        t = np.linspace(0, 1, 50)[:, None]
+        points = (1 - t) ** 2 * np.array([x1, y1]) + 2 * (1 - t) * t * np.array([cx, cy]) + t ** 2 * np.array([x2, y2])
+        ax.plot(points[:, 0], points[:, 1], color=ORANGE, lw=1.0, ls=DASH, zorder=2)
+
+    curve('E1', 'E2', 0.22)
+    curve('E1', 'E3', -0.22)
+    curve('E2', 'E4', 0.18)
+    curve('E4', 'E5', -0.12)
     for u, v in edges:
         ax.plot(*zip(pos[u], pos[v]), color=BLUE, lw=1.3, zorder=3)
     for name, (x, y) in pos.items():
@@ -157,11 +172,11 @@ def panel_graph(ax):
             promoter(ax, x, y, name, size=55, label=False)
         else:
             other_end(ax, x, y, name, size=45, label=False)
-        dx, dy = {'E1': (-0.12, 0.12), 'P1': (-0.05, 0.13), 'E2': (0.0, 0.12), 'E3': (0.0, -0.22),
-                  'P2': (0.05, 0.1), 'E4': (-0.08, 0.13), 'P3': (0.0, 0.12), 'E5': (0.2, -0.08)}[name]
+        dx, dy = {'E1': (-0.12, -0.25), 'P1': (0.0, -0.25), 'E2': (0.0, 0.11), 'E3': (0.0, -0.24),
+                  'P2': (0.0, -0.25), 'E4': (0.0, -0.25), 'P3': (0.0, 0.11), 'E5': (0.0, -0.24)}[name]
         ax.text(x + dx, y + dy, name, fontsize=6, color=INK, zorder=5, ha='center')
-    ax.text(0.35, 0.07, 'community 1', fontsize=6.5, color=AQUA)
-    ax.text(2.85, 0.0, 'community 2', fontsize=6.5, color='#b07800')
+    ax.text(0.35, -0.12, 'community 1', fontsize=6.5, color=AQUA)
+    ax.text(2.8, -0.12, 'community 2', fontsize=6.5, color='#b07800')
     ax.set_xlim(-0.05, 4.65)
     ax.set_ylim(-0.3, 2.75)
     ax.set_aspect('equal')
