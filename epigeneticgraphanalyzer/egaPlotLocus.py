@@ -14,6 +14,7 @@ from .genome import LiftOver, parse_node_id  # noqa: E402
 from .graph import read_graph  # noqa: E402
 from .indirect import indirect_contacts  # noqa: E402
 from .multiway import MultiwayData, npmi_from_counts  # noqa: E402
+from .egaPlotRegion import ordered_subgraph  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -114,7 +115,7 @@ def plot_locus(graph, data, region, output, liftover=None, metric='auto', commun
                  original[1] - margin <= int(d.get('start', -1)) <= original[2] + margin]
     positions = node_positions(graph, in_region, liftover)
     positions = {n: p for n, p in positions.items() if p[0] == chrom and start <= p[1] < end}
-    sub = graph.subgraph(positions)
+    sub = ordered_subgraph(graph, list(positions))
     pairs = indirect_contacts(sub) if sub.number_of_edges() else None
 
     fig = plt.figure(figsize=(7.1, 5.2))
@@ -277,7 +278,7 @@ def plot_events(graph, data, community, output, liftover=None, min_loci=3, max_r
     ax_rows = fig.add_subplot(grid[1, 0], sharex=ax_arcs)
     ax_bar = fig.add_subplot(grid[1, 1])
 
-    sub = graph.subgraph(members)
+    sub = ordered_subgraph(graph, list(members))
     x_of = {n: mb(node_bins[n])[0] for n in node_bins}
     span = max(x_of.values()) - min(x_of.values()) or 1.0
     for u, v in sub.edges:
@@ -371,7 +372,7 @@ def plot_communities(graph, data, region, output, liftover=None, min_loci=3, max
     data_chrom = next(iter(positions.values()))[0]
     node_bins = {n: data.bins.bin_of(c, p) for n, (c, p) in positions.items() if c == data_chrom}
     node_bins = {n: b for n, b in node_bins.items() if b >= 0 and data.coverage_raw[b] > 0}
-    sub = graph.subgraph(node_bins)
+    sub = ordered_subgraph(graph, list(node_bins))
 
     # same colour assignment as egaPlotRegion: communities ranked by nodes inside the region, in genomic order
     from .egaPlotRegion import community_colors, region_subgraph

@@ -24,6 +24,7 @@ from matplotlib.patches import Arc  # noqa: E402
 from ._cli import base_parser, ensure_parent, setup_logging  # noqa: E402
 from .egaPlotRegion import parse_region, region_subgraph  # noqa: E402
 from .graph import read_graph  # noqa: E402
+from .egaPlotRegion import ordered_subgraph  # noqa: E402
 
 log = logging.getLogger(__name__)
 
@@ -90,7 +91,7 @@ def neighbourhood(graph, gene, steps):
     nodes = set()
     for seed in seeds:
         nodes |= set(nx.single_source_shortest_path_length(graph, seed, cutoff=steps))
-    return graph.subgraph(nodes), seeds
+    return ordered_subgraph(graph, nodes), seeds
 
 
 def mark_change(data, mark, names, pseudo=1.0):
@@ -128,7 +129,7 @@ def spread_layout(sub, aspect=1.6, seed=0, iterations=400):
     largest = max(len(c) for c in components)
     positions = {}
     for k, nodes in enumerate(components):
-        part = sub.subgraph(nodes)
+        part = ordered_subgraph(sub, nodes)
         if len(nodes) <= 2:
             layout = {n: np.array([i - 0.5, 0.0]) for i, n in enumerate(nodes)}
         else:
@@ -321,7 +322,7 @@ def main(args=None):
         sub = region_subgraph(graph, parse_region(args.region))
     else:
         sub, _ = neighbourhood(graph, args.gene, args.steps)
-    sub = sub.subgraph([n for n in sub.nodes if sub.degree[n] > 0]).copy()
+    sub = ordered_subgraph(sub, [n for n in sub.nodes if sub.degree[n] > 0])
     if sub.number_of_edges() == 0:
         raise ValueError('No interactions in the selection')
     status = pd.Series([d.get('status') for _, _, d in sub.edges(data=True)]).value_counts().to_dict()

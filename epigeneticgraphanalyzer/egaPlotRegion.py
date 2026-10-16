@@ -56,7 +56,22 @@ def region_subgraph(graph, region):
     chrom, start, end = region
     nodes = [n for n, d in graph.nodes(data=True)
              if d.get('chrom') == chrom and start <= int(d['start']) and int(d['end']) <= end]
-    return graph.subgraph(nodes)
+    return ordered_subgraph(graph, nodes)
+
+
+def ordered_subgraph(graph, nodes):
+    """Subgraph with nodes and edges in genomic order; graph.subgraph() iterates in set order, which changes with
+    the hash seed of each process and would change the layouts between runs."""
+    import networkx as nx
+    key = {n: (str(graph.nodes[n].get('chrom', '')), int(graph.nodes[n].get('start', 0)), str(n)) for n in nodes}
+    order = sorted(nodes, key=key.get)
+    sub = nx.Graph()
+    sub.add_nodes_from((n, graph.nodes[n]) for n in order)
+    members = set(order)
+    edges = [(u, v, d) for u, v, d in graph.edges(order, data=True) if v in members]
+    edges.sort(key=lambda e: (key[e[0]], key[e[1]]))
+    sub.add_edges_from(edges)
+    return sub
 
 
 def community_colors(sub, max_communities):
@@ -229,7 +244,7 @@ def promoter_centred_layout(sub, seed=0, aspect=1.4):
     columns = int(np.ceil(np.sqrt(len(components) * aspect))) or 1
     positions = {}
     for k, nodes in enumerate(components):
-        part = sub.subgraph(nodes)
+        part = ordered_subgraph(sub, nodes)
         if len(nodes) == 2:
             layout = {n: np.array([i - 0.5, 0.0]) * 0.6 for i, n in enumerate(nodes)}
         else:
@@ -289,8 +304,8 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, max_overlap=0.5, 
     `output`: interactions coloured by the NPMI of their two ends in the multi-way data relative to locus pairs at
     the same offset. `<output stem>_example<k>.pdf`: the same graph with the fragments of single groups (SPRITE
     clusters / GAM tubes) highlighted; examples are groups whose bin sets overlap each other by at most
-    `max_overlap` (Jaccard), one per class of `size_classes` (number of region loci), chosen at random with a fixed
-    seed. `<output stem>_sizes.pdf`: groups by their number of region loci, with the examples marked.
+    `max_overlap` (Jaccard), the largest of each class of `size_classes` (number of region loci), from the largest
+    class down. `<output stem>_sizes.pdf`: groups by their number of region loci, with the examples marked.
     `<output stem>_neighbourhood.pdf`: the largest example with its graph neighbourhood. Every panel is a separate
     file, so that figures are assembled in the manuscript.
     """
@@ -319,13 +334,12 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, max_overlap=0.5, 
         pair[a == b] = np.nan
     else:
         pair = np.zeros(0)
-    # one example per size class of region loci, chosen at random (fixed seed) among groups that overlap the
-    # examples chosen before by at most max_overlap (Jaccard)
-    rng = np.random.default_rng(0)
+    # one example per size class of region loci, from the largest class down: the largest group of each class that
+    # overlaps the examples chosen before by at most max_overlap (Jaccard)
     examples, chosen = [], []
-    for low, high in size_classes:
-        candidates = sorted(g for g in groups if low <= len(groups[g]) <= high)
-        for g in rng.permutation(candidates) if candidates else []:
+    for low, high in sorted(size_classes, reverse=True):
+        candidates = sorted((g for g in groups if low <= len(groups[g]) <= high), key=lambda g: (-len(groups[g]), g))
+        for g in candidates:
             current = set(groups[g].tolist())
             if all(len(current & c) / len(current | c) <= max_overlap for c in chosen):
                 chosen.append(current)
@@ -367,7 +381,18 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, max_overlap=0.5, 
     # one file per example group: the same graph with the fragments of one cluster / tube highlighted
     stem = output[:-4] if output.endswith('.pdf') else output
     unit = 'fragments' if not data.bins.fixed else '{} kb windows'.format(data.bins.bin_size // 1000)
+    import networkx as nx
     for k, members in enumerate(examples):
+        # graph distance between the nodes of the group: direct interactions, indirect paths, not connected
+        inside_nodes = sorted(n for n, b in node_bin.items() if b in members)
+        steps = []
+        for i, u in enumerate(inside_nodes):
+            reach = nx.single_source_shortest_path_length(sub, u)
+            steps += [reach.get(v, 0) for v in inside_nodes[i + 1:]]
+        steps = np.array(steps)
+        log.info('example %d: %d nodes, %d pairs: %d at 1 step, %d at 2, %d at 3, %d at 4+, %d not connected',
+                 k + 1, len(inside_nodes), len(steps), (steps == 1).sum(), (steps == 2).sum(), (steps == 3).sum(),
+                 (steps >= 4).sum(), (steps == 0).sum())
         fig, ax = plt.subplots(figsize=(size[0] / 2, size[1] / 2))
         inside = {n for n, b in node_bin.items() if b in members}
         for u, v in sub.edges:
