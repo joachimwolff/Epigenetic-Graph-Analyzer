@@ -323,17 +323,18 @@ def s7():
         perm = json.load(open(path(prefix + '_permutation.json')))
         counts = perm['class_counts']
         test = pd.read_csv(path(prefix + '_indirect_gene_test.tsv'), sep='\t')
-        rows.append(' & '.join([label, integer(perm['n_differential_genes'])]
+        rows.append(' & '.join([label, integer(perm['n_differential_genes']), integer(sum(counts.values()))]
                                + [integer(counts.get(k, 0)) for k in ('promoter', 'direct', 'indirect', 'unexplained')]
                                + ['{:.1f} ({:.1f} $\\pm$ {:.1f})'.format(100 * perm['observed_fraction_indirect'],
                                                                          100 * perm['null_fraction_indirect_mean'],
                                                                          100 * perm['null_fraction_indirect_sd']),
                                   '{} / {}'.format(int((test['indirect_p'] < 0.05).sum()), len(test)),
                                   str(int((test['indirect_q'] < 0.1).sum()))]) + r' \\')
-    table('table_s7.tex', 'lrrrrrlrr',
-          'Comparison & DE genes & Promoter & Direct & Indirect only & Unexplained & Indirect only, \\% (null) & '
+    table('table_s7.tex', 'lrrrrrrlrr',
+          'Comparison & DE genes & DE promoter fragments & Promoter & Direct & Indirect only & Unexplained & '
+          'Indirect only, \\% (null) & '
           '$P<0.05$ & $q<0.1$', rows,
-          'Hierarchical classification of differentially expressed genes by the first level (promoter, direct '
+          'Hierarchical classification of the baited promoter fragments of differentially expressed genes (several genes can share a fragment) by the first level (promoter, direct '
           'neighbours, indirect neighbours) with a concordant chromatin change, the fraction explained at the '
           'indirect level only against 200 permutations of the node signals (mean $\\pm$ s.d.), and the per-gene '
           'permutation test of the concordant change at indirect neighbours (1,000 permutations, '
@@ -503,7 +504,7 @@ def s13():
           'least three hub pairs. $^a$All viewpoints, with the viewpoint as covariate.', 'tab:s13')
 
 
-def s15():
+def s14():
     rows = []
     for label, name in (('hESC / hNEC', 'hESC_vs_hNEC'), ('Md / PA2', 'Md_vs_PA2'),
                         ('Kasumi-1 siMM / siRE', 'siMM_vs_siRE'), ('AML t(8;21) / FLT3-ITD', 't821_vs_FLT3ITD')):
@@ -516,7 +517,7 @@ def s15():
                                     pval(r['mannwhitney_p_expected_direction'])]) + r' \\')
             label = ''
         rows.append(r'\midrule')
-    table('table_s15.tex', 'lllrrrrlr',
+    table('table_s14.tex', 'lllrrrrlr',
           'Comparison & Mark & Interactions & n & Median change & Shared & Concordance & Expected & $P$',
           rows[:-1],
           'Interaction changes and chromatin changes at the interacting fragments (egaExplain). Median change: '
@@ -525,13 +526,13 @@ def s15():
           'change at its ends than a shared interaction of the same genomic distance (0.5 without relation); '
           'expected: the concordance lies on the side expected for the mark (active marks up at gained and down at '
           'lost interactions, repressive marks the opposite); $P$, one-sided Mann-Whitney test in the expected '
-          'direction without distance matching.', 'tab:s15', size=r'\scriptsize')
+          'direction without distance matching.', 'tab:s14', size=r'\scriptsize')
 
 
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s15):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14):
         build()
         print(build.__name__, flush=True)
 
