@@ -30,10 +30,10 @@ for entry in "${regions[@]}"; do
             '$1==c && $5>=s-300000 && $4<=e+300000 && ($3=="exon"||$3=="transcript"||$3=="gene") &&
              $9 ~ /gene_type "protein_coding"/' > "$work/${name}_genes.gtf"
     egaPlotRegion -g "$results/graphs/$graph.graphml" --region "$region" --genes "$work/${name}_genes.gtf" \
-        --title "$label capture Hi-C" --graphSize 3.6 2.9 --geneFontSize 5 --genesHeight 1.6 --arcHeight 3 --eventsHeight 4 $extra -o "$work/${name}_region"
+        --title "$label capture Hi-C" --graphSize 3.6 2.9 --geneFontSize 6.5 --genesHeight 1.8 --arcHeight 3 --eventsHeight 4 $extra -o "$work/${name}_region"
     # plot from the first to the last fragment with a contact
     "$pgt" --tracks "$work/${name}_region_tracks.ini" --region "$(cat "$work/${name}_region_extent.txt")" \
-        --width 17 --fontSize 6 --trackLabelFraction 0.2 \
+        --width 24 --fontSize 8 --trackLabelFraction 0.15 \
         -o "$figures/${figure}_${name}_arcs.pdf"
     cp "$work/${name}_region_graph.pdf" "$figures/${figure}_${name}_graph.pdf"
     # promoter-centred graph with the multi-way evidence
