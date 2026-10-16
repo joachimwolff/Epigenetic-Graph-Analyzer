@@ -281,19 +281,55 @@ def pair_concordance(test_values, control_values, control_index, n_tests):
     return score
 
 
+def block_resamples(blocks, n_boot=1000, seed=0):
+    """Block bootstrap resamples: for each of `n_boot` resamples, the array of block indices (into the sorted unique
+    labels, returned first) drawn with replacement. Items of one block always enter a resample together."""
+    labels = np.unique(np.asarray(blocks))
+    rng = np.random.default_rng(seed)
+    return labels, [rng.integers(0, len(labels), len(labels)) for _ in range(n_boot)]
+
+
+def block_resample_items(blocks, n_boot=1000, seed=0):
+    """As `block_resamples`, but yields, per resample, the item indices of the chosen blocks (a block drawn twice
+    contributes its items twice)."""
+    blocks = np.asarray(blocks)
+    labels, resamples = block_resamples(blocks, n_boot, seed)
+    index = np.searchsorted(labels, blocks)
+    members = [np.nonzero(index == k)[0] for k in range(len(labels))]
+    for chosen in resamples:
+        yield np.concatenate([members[k] for k in chosen])
+
+
 def block_bootstrap(values, blocks, n_boot=1000, seed=0, statistic=np.nanmean):
     """Percentile 95% interval of a statistic over items, resampling whole blocks (e.g. chromosomes) with replacement,
     so that items sharing a block, and their dependence, stay together."""
     values = np.asarray(values, dtype=float)
-    blocks = np.asarray(blocks)
-    labels, index = np.unique(blocks, return_inverse=True)
-    members = [np.nonzero(index == k)[0] for k in range(len(labels))]
-    rng = np.random.default_rng(seed)
-    estimates = np.empty(n_boot)
-    for b in range(n_boot):
-        chosen = rng.integers(0, len(labels), len(labels))
-        estimates[b] = statistic(values[np.concatenate([members[k] for k in chosen])])
+    estimates = np.array([statistic(values[items]) for items in block_resample_items(blocks, n_boot, seed)])
     return float(np.nanpercentile(estimates, 2.5)), float(np.nanpercentile(estimates, 97.5))
+
+
+def edge_assortativity(x_u, x_v):
+    """Newman's numeric assortativity of undirected edges with end values x_u, x_v: the Pearson correlation of the
+    values at the two ends with every edge counted in both directions (as ChAseR `chas`, Pancaldi et al. 2016)."""
+    stats_ = assortativity_moments(x_u, x_v)
+    return assortativity_from_moments(*stats_)
+
+
+def assortativity_moments(x_u, x_v):
+    """Additive sufficient statistics (number of edge ends, sum, sum of squares, sum of end products) of
+    `edge_assortativity`; moments of disjoint edge sets add up."""
+    x_u = np.asarray(x_u, dtype=float)
+    x_v = np.asarray(x_v, dtype=float)
+    return (2.0 * len(x_u), float(x_u.sum() + x_v.sum()), float((x_u ** 2).sum() + (x_v ** 2).sum()),
+            float(2.0 * (x_u * x_v).sum()))
+
+
+def assortativity_from_moments(n, s1, s2, sxy):
+    if n == 0:
+        return np.nan
+    mean = s1 / n
+    variance = s2 / n - mean ** 2
+    return float((sxy / n - mean ** 2) / variance) if variance > 0 else np.nan
 
 
 def distance_stratum(distance):
