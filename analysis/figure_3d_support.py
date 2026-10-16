@@ -51,7 +51,7 @@ def assembly(ax, cx, cy, scale=1.0, names=True, links=True):
     for name in ('E1', 'E2', 'E3'):
         other_end(ax, *points[name], name, size=38 * scale, label=False)
     if names:
-        for name, (dx, dy) in (('P', (-0.3, -0.2)), ('E1', (-0.26, 0.0)), ('E2', (0.1, 0.05)), ('E3', (0.12, -0.08))):
+        for name, (dx, dy) in (('P', (-0.3, -0.2)), ('E1', (-0.36, 0.02)), ('E2', (0.12, 0.06)), ('E3', (0.13, -0.08))):
             ax.text(points[name][0] + dx * scale, points[name][1] + dy * scale, name, fontsize=6, color=INK, zorder=5)
     return points
 
@@ -131,16 +131,17 @@ def panel_test(ax):
         else:
             other_end(ax, x, y, name, size=38, label=False,
                       color='#fde3d6' if name in ('E1', 'E2') else 'white')
-        dy = 0.11 if name in ('E2', 'P3') else -0.25
-        ax.text(x, y + dy, name, fontsize=6, color=INK, zorder=5, ha='center')
-    ax.text(ox + 1.1, oy + 1.62, 'graph: E1-E2 is an indirect contact', ha='center', fontsize=6.5, color=ORANGE)
-    ax.annotate('', xy=(4.65, 0.85), xytext=(4.05, 0.85), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
-    ax.text(4.35, 0.97, 'test', ha='center', fontsize=6.5, color=INK)
+        above = name in ('E2', 'P3')
+        ax.text(x, y + (0.1 if above else -0.1), name, fontsize=6, color=INK, zorder=5, ha='center',
+                va='bottom' if above else 'top')
+    ax.text(ox + 1.1, oy + 1.55, 'graph: E1-E2 is an indirect contact', ha='center', fontsize=6.5, color=ORANGE)
+    ax.annotate('', xy=(4.5, 0.85), xytext=(3.95, 0.85), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
+    ax.text(4.22, 0.97, 'test', ha='center', fontsize=6.5, color=INK)
     # right: multi-way groups (clusters or tubes) over loci in genomic order and a matched control pair
     loci = ['E1', 'P1', 'E2', 'E3', 'P2', 'E4', 'E5', 'P3', '', 'c1', 'c2']
     groups = [{'E1', 'P1', 'E2', 'P2'}, {'E1', 'E2', 'E3'}, {'P1', 'E3', 'P2', 'E4'},
               {'E1', 'P1', 'E2', 'E3', 'P2'}, {'E4', 'P3', 'E5', 'c1'}, {'E2', 'c2', 'E5'}]
-    x0, y0, w, h = 5.35, 0.05, 0.3, 0.24
+    x0, y0, w, h = 5.6, 0.05, 0.3, 0.24
     for j, name in enumerate(loci):
         if name:
             ax.text(x0 + j * w + w / 2, y0 + len(groups) * h + 0.05, name, ha='center', va='bottom', fontsize=6,
@@ -159,13 +160,13 @@ def panel_test(ax):
                 ax.add_patch(mpatches.FancyBboxPatch((x0 + j * w + 0.04, y + 0.03), w - 0.08, h - 0.06,
                                                      boxstyle='round,pad=0.0,rounding_size=0.04', color=color, lw=0,
                                                      zorder=3))
-    right = x0 + len(loci) * w + 0.12
-    ax.text(right, 1.5, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
-    ax.text(right, 1.16, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
+    right = x0 + len(loci) * w + 0.3
+    ax.text(right, 1.6, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
+    ax.text(right, 1.22, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
             va='center')
-    ax.text(right, 0.62, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
-    ax.text(right, 0.18, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
-    ax.set_xlim(-0.05, 11.6)
+    ax.text(right, 0.8, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
+    ax.text(right, 0.22, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
+    ax.set_xlim(-0.05, 12.3)
     ax.set_ylim(-0.1, 2.0)
     ax.set_aspect('equal')
     ax.axis('off')

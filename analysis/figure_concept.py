@@ -1,6 +1,6 @@
 """Figure 1: from proximity ligation to the interaction graph.
 
-(a) A promoter and three enhancers in one assembly; proximity ligation joins two fragments per molecule, and
+(a) A promoter and three enhancers assemble in one nucleus; proximity ligation joins two fragments per molecule, and
 the capture step keeps only molecules with the baited promoter, so the assembly is read out as three pairs with
 exactly two interacting sides each. (b) Transitivity: two measured contacts through a shared fragment imply
 proximity of the two unmeasured ends. (c) The pairwise interactions drawn as arcs along the genome become a graph of the measured
@@ -56,7 +56,14 @@ def molecule(ax, x, y, a, b, kept):
 
 
 def panel_ligation(ax):
-    # one promoter-enhancer assembly
+    # nucleus with one promoter-enhancer assembly and the DNA strand
+    nucleus = mpatches.Ellipse((1.05, 1.5), 2.0, 2.3, facecolor='#f4f3ef', edgecolor=MUTED, lw=0.8)
+    ax.add_patch(nucleus)
+    t = np.linspace(0, 1, 200)
+    fibre_x = 0.25 + 1.6 * t + 0.25 * np.sin(9 * t)
+    fibre_y = 0.65 + 1.6 * t ** 1.2 + 0.35 * np.sin(13 * t + 1)
+    fibre, = ax.plot(fibre_x, fibre_y, color=MUTED, lw=1.0, zorder=1)
+    fibre.set_clip_path(nucleus)
     centre = np.array([1.05, 1.5])
     points = {'P': centre + (0.0, 0.05), 'E1': centre + (-0.32, 0.25), 'E2': centre + (0.3, 0.28),
               'E3': centre + (0.05, -0.3)}
@@ -69,7 +76,7 @@ def panel_ligation(ax):
     ax.text(points['P'][0] - 0.22, points['P'][1] - 0.2, 'P', fontsize=6.5, color=INK)
     for name, (dx, dy) in (('E1', (-0.28, 0.0)), ('E2', (0.12, 0.0)), ('E3', (0.12, -0.05))):
         ax.text(points[name][0] + dx, points[name][1] + dy, name, fontsize=6.5, color=INK)
-    ax.text(1.05, 0.75, 'promoter with\nthree enhancers', ha='center', va='top', fontsize=6.5, color=INK)
+    ax.text(1.05, 0.25, 'promoter with\nthree enhancers', ha='center', va='top', fontsize=6.5, color=INK)
     # ligation: every molecule holds two fragments
     ax.annotate('', xy=(2.55, 1.5), xytext=(2.1, 1.5), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
     ax.text(2.32, 1.62, 'ligation', ha='center', fontsize=6.5, color=INK)
