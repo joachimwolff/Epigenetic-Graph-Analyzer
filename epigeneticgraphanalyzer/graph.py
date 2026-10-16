@@ -147,6 +147,43 @@ def detect_communities(graph, method='leiden', resolution=1.0, seed=42, weight='
     return communities
 
 
+def compare_partitions(reference, other, match_jaccard=0.5):
+    """Similarity of two partitions (lists of node sets) over the nodes present in both.
+
+    Returns (summary, table). The summary holds the adjusted Rand index and normalised mutual information (arithmetic
+    mean) over the shared nodes, and the fraction of reference communities whose best matching community in `other`
+    has a node Jaccard index >= `match_jaccard`; Jaccard indices are computed on the communities restricted to the
+    shared nodes, and a reference community without shared nodes counts as unmatched. The table has one row per
+    reference community: its best match in `other` (-1 if none) and the Jaccard index.
+    """
+    from sklearn.metrics import adjusted_rand_score, normalized_mutual_info_score
+    of_ref = {n: i for i, members in enumerate(reference) for n in members}
+    of_other = {n: i for i, members in enumerate(other) for n in members}
+    shared = [n for n in of_ref if n in of_other]
+    labels_ref = [of_ref[n] for n in shared]
+    labels_other = [of_other[n] for n in shared]
+    size_ref = np.bincount(labels_ref, minlength=len(reference))
+    size_other = np.bincount(labels_other, minlength=len(other))
+    overlap = defaultdict(lambda: defaultdict(int))
+    for a, b in zip(labels_ref, labels_other):
+        overlap[a][b] += 1
+    rows = []
+    for index in range(len(reference)):
+        best, best_jaccard = -1, 0.0
+        for index_other, count in overlap[index].items():
+            jaccard = count / (size_ref[index] + size_other[index_other] - count)
+            if jaccard > best_jaccard:
+                best, best_jaccard = index_other, jaccard
+        rows.append({'community': index, 'size': len(reference[index]), 'size_shared': int(size_ref[index]),
+                     'best_match': best, 'jaccard': best_jaccard})
+    table = pd.DataFrame(rows)
+    summary = {'n_shared_nodes': len(shared),
+               'ari': float(adjusted_rand_score(labels_ref, labels_other)) if shared else np.nan,
+               'nmi': float(normalized_mutual_info_score(labels_ref, labels_other)) if shared else np.nan,
+               'fraction_matched': float((table['jaccard'] >= match_jaccard).mean()) if len(table) else np.nan}
+    return summary, table
+
+
 def community_table(graph, communities):
     """One row per community: size, number of baits, genes, genomic span."""
     rows = []
