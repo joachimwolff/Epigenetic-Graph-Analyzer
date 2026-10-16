@@ -615,7 +615,8 @@ def community_transitions(communities_a, communities_b, nodes_a, nodes_b, stable
             if n in of_a:
                 counts[of_a[n]] += 1
         if counts:
-            best_a_for_b[index_b] = max(counts, key=lambda k: counts[k] / len(members | communities_a[k]))
+            # ties broken by the lower community index, so that the result does not depend on set order
+            best_a_for_b[index_b] = max(sorted(counts), key=lambda k: counts[k] / len(members | communities_a[k]))
     rows, main = [], {}
     for index_a, members in enumerate(communities_a):
         present = [n for n in members if n in nodes_b]
@@ -626,7 +627,7 @@ def community_transitions(communities_a, communities_b, nodes_a, nodes_b, stable
                'fraction_present_in_b': len(present) / len(members), 'community_b': -1, 'size_b': 0,
                'jaccard': 0.0, 'n_b_parts': 0}
         if counts:
-            best = max(counts, key=lambda k: counts[k] / len(members | communities_b[k]))
+            best = max(sorted(counts), key=lambda k: counts[k] / len(members | communities_b[k]))
             main[index_a] = best
             parts = [k for k, c in counts.items() if c >= part_fraction * len(present)]
             sources = defaultdict(int)
@@ -778,7 +779,8 @@ def community_expression_changes(communities_a, communities_b, main, transitions
         # A communities without a main B community (-1) stay separate units
         matched = table[table['community_b'] >= 0]
         sources = matched.groupby('community_b')['community_a'].apply(lambda v: ','.join(str(x) for x in sorted(v)))
-        matched = matched.sort_values('n_genes', ascending=False).drop_duplicates('community_b')
+        matched = matched.sort_values(['n_genes', 'community_a'], ascending=[False, True], kind='mergesort')
+        matched = matched.drop_duplicates('community_b')
         matched = matched.assign(communities_a=matched['community_b'].map(sources))
         unmatched = table[table['community_b'] < 0]
         unmatched = unmatched.assign(communities_a=unmatched['community_a'].astype(str))
