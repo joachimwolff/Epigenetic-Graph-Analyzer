@@ -28,6 +28,15 @@ MAX_DISTANCE = 2000000
 MAX_STEPS = 5
 
 
+def bin_positions(bins, ids):
+    """Midpoints of bins of a fragment index or of a fixed-size bin index."""
+    ids = np.asarray(ids, dtype=np.int64)
+    if hasattr(bins, 'bin_start'):
+        return (bins.bin_start(ids) + bins.bin_end(ids)) // 2
+    first = np.array([bins.offsets[c] for c in bins.chrom_names], dtype=np.int64)
+    return (ids - first[bins.chrom_index_of_bins(ids)]) * bins.bin_size + bins.bin_size // 2
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('graph')
@@ -69,6 +78,14 @@ def main():
     pairs['pair_class'] = [pair_class(bool(graph.nodes[a].get('bait')), bool(graph.nodes[b].get('bait')))
                            for a, b in zip(pairs['node_a'], pairs['node_b'])]
     pairs = pairs_to_bins(pairs, node_bins)
+    # after a liftover, a few pairs land on distant positions of the multi-way assembly; keep the distance limit there
+    lifted = bin_positions(data.bins, pairs['bin_a']), bin_positions(data.bins, pairs['bin_b'])
+    same_chrom = data.bins.chrom_index_of_bins(pairs['bin_a']) == data.bins.chrom_index_of_bins(pairs['bin_b'])
+    keep = same_chrom & (np.abs(lifted[1] - lifted[0]) <= MAX_DISTANCE)
+    if not keep.all():
+        print('{} pairs beyond {} bp after mapping to the multi-way assembly removed'.format(int((~keep).sum()),
+                                                                                          MAX_DISTANCE), flush=True)
+        pairs = pairs[keep].reset_index(drop=True)
     pools = LocusPools(graph, node_bins, data)
     # every graph-connected pair within MAX_STEPS is excluded from the controls
     excluded = set(zip(pairs['bin_a'], pairs['bin_b']))
