@@ -3,8 +3,9 @@
 (a) A promoter and three enhancers assemble in one nucleus; proximity ligation joins two fragments per molecule, and
 the capture step keeps only molecules with the baited promoter, so the assembly is read out as three pairs with
 exactly two interacting sides each. (b) Transitivity: two measured contacts through a shared fragment imply
-proximity of the two unmeasured ends. (c) The pairwise interactions drawn as arcs along the genome become a graph
-whose paths (indirect contacts) and densely connected groups (communities) describe proximity beyond the pairs.
+proximity of the two unmeasured ends. (c) The pairwise interactions drawn as arcs along the genome become a graph of the measured
+interactions; in the same graph with the measured interactions in grey, all pairs at two steps (indirect contacts)
+and the communities are shown.
 
 Usage: python figure_concept.py <output.pdf>
 """
