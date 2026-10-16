@@ -46,7 +46,9 @@ def parse_arguments(args=None):
     selection.add_argument('--gene', help='Gene name; draws its neighbourhood up to --steps')
     parser.add_argument('--steps', type=int, default=2, help='Neighbourhood size around --gene (graph steps)')
     parser.add_argument('--names', nargs=2, default=None, help='Condition names A B (default: from the graph)')
-    parser.add_argument('--mark', help='Chromatin mark whose log2 change colours the nodes (default: the first one)')
+    parser.add_argument('--mark', nargs='+', default=None,
+                        help='Chromatin marks whose log2 change colours the other ends, one panel each (default: all '
+                             'marks of the graph; the combined figure uses the first)')
     parser.add_argument('--candidates', help='<prefix>_indirect_only_genes.tsv of egaDifferential; outlines the '
                                              'candidates and the nodes that explain them')
     parser.add_argument('--sideBySide', action='store_true', help='Also draw condition A and condition B')
@@ -113,18 +115,20 @@ def gene_label(data):
 
 
 def candidate_nodes(path, nodes):
-    """Candidate promoters and the two-step nodes named as their drivers."""
+    """Candidate promoters and, per chromatin mark, the two-step nodes named as their drivers."""
     if not path:
-        return set(), set()
+        return set(), {}
     table = pd.read_csv(path, sep='\t')
     candidates = set(table['node']) & set(nodes)
-    drivers = set()
+    drivers = {}
     for text in table.loc[table['node'].isin(candidates), 'drivers'].dropna():
         for item in str(text).split('; '):
             parts = item.split(':')
             if len(parts) >= 3:
-                drivers.add('{}:{}'.format(parts[1], parts[2].split('[')[0]))
-    return candidates, drivers & set(nodes)
+                node = '{}:{}'.format(parts[1], parts[2].split('[')[0])
+                if node in nodes:
+                    drivers.setdefault(parts[0], set()).add(node)
+    return candidates, drivers
 
 
 def spread_layout(sub, aspect=1.6, seed=0, iterations=400):
@@ -429,8 +433,7 @@ def main(args=None):
     setup_logging(args.verbose)
     graph = read_graph(args.graph)
     names = args.names or condition_names(graph)[:2]
-    marks = marks_of(graph, names)
-    mark = args.mark or (marks[0] if marks else None)
+    marks = args.mark or marks_of(graph, names)
     graph = graph.copy()
     middle = {n: (int(d['start']) + int(d['end'])) // 2 for n, d in graph.nodes(data=True)}
     graph.remove_edges_from([(u, v) for u, v in graph.edges if abs(middle[u] - middle[v]) > args.maxDistance])
@@ -445,11 +448,24 @@ def main(args=None):
     log.info('%d nodes, %d edges: %s', sub.number_of_nodes(), sub.number_of_edges(), status)
     candidates, drivers = candidate_nodes(args.candidates, sub.nodes)
     positions = spread_layout(sub, aspect=1.6)
-    modes = ['A', 'B', 'edges', 'nodes'] if args.sideBySide else ['edges', 'nodes']
+    modes = (['A', 'B', 'edges'] if args.sideBySide else ['edges']) + [('nodes', m) for m in (marks or [None])]
     titles = {'A': names[0], 'B': names[1],
               'edges': 'interactions, {} vs {}: gained {}, lost {}, shared {}'.format(
-                  names[0], names[1], status.get('gained', 0), status.get('lost', 0), status.get('shared', 0)),
-              'nodes': 'expression{} {} vs {}'.format(' and {}'.format(mark) if mark else '', names[0], names[1])}
+                  names[0], names[1], status.get('gained', 0), status.get('lost', 0), status.get('shared', 0))}
+    for m in marks or [None]:
+        titles[('nodes', m)] = 'expression{}, {} vs {}'.format(' and {}'.format(m) if m else '', names[0], names[1])
+
+    def panel(ax, fig, mode):
+        mark = mode[1] if isinstance(mode, tuple) else None
+        kind = mode[0] if isinstance(mode, tuple) else mode
+        draw_graph(ax, sub, positions, names, mark, args.maxLog2, mode=kind, candidates=candidates,
+                   drivers=drivers.get(mark, set()), title=titles[mode])
+        panel_legend(fig, ax, kind, names, mark, args.maxLog2, candidates)
+
+    def suffix(mode):
+        return 'nodes_{}'.format(mode[1]) if isinstance(mode, tuple) and mode[1] else \
+            'nodes' if isinstance(mode, tuple) else mode
+
     stem, extension = os.path.splitext(args.outFileName)
     if args.separatePanels:
         # one file per panel, for figures assembled in the manuscript
@@ -460,12 +476,11 @@ def main(args=None):
         plt.close(fig)
         for mode in modes:
             fig, ax = plt.subplots(figsize=(3.5, 3.2))
-            draw_graph(ax, sub, positions, names, mark, args.maxLog2, mode=mode, candidates=candidates,
-                       drivers=drivers, title=titles[mode])
-            panel_legend(fig, ax, mode, names, mark, args.maxLog2, candidates)
-            fig.savefig(ensure_parent('{}_{}{}'.format(stem, mode, extension)), bbox_inches='tight', dpi=args.dpi)
+            panel(ax, fig, mode)
+            fig.savefig(ensure_parent('{}_{}{}'.format(stem, suffix(mode), extension)), bbox_inches='tight',
+                        dpi=args.dpi)
             plt.close(fig)
-        log.info('wrote %s_{arcs,%s}%s', stem, ','.join(modes), extension)
+        log.info('wrote %s_{arcs,%s}%s', stem, ','.join(suffix(m) for m in modes), extension)
         return
     fig = plt.figure(figsize=(3.6 * len(modes), 7.6))
     grid = fig.add_gridspec(2, len(modes), height_ratios=[1, 1.9], hspace=0.25)
@@ -473,10 +488,7 @@ def main(args=None):
     draw_arcs(ax_arcs, sub, names, priority=candidates)
     arc_legend(ax_arcs, names)
     for k, mode in enumerate(modes):
-        ax = fig.add_subplot(grid[1, k])
-        draw_graph(ax, sub, positions, names, mark, args.maxLog2, mode=mode, candidates=candidates, drivers=drivers,
-                   title=titles[mode])
-        panel_legend(fig, ax, mode, names, mark, args.maxLog2, candidates)
+        panel(fig.add_subplot(grid[1, k]), fig, mode)
     if args.title:
         fig.suptitle(args.title, x=0.02, ha='left', fontsize=9)
     fig.savefig(ensure_parent(args.outFileName), bbox_inches='tight', dpi=args.dpi)
