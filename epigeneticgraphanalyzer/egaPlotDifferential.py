@@ -10,6 +10,7 @@ condition B and their union on one layout.
 """
 
 import logging
+import os
 
 import matplotlib
 
@@ -28,7 +29,9 @@ from .egaPlotRegion import ordered_subgraph  # noqa: E402
 
 log = logging.getLogger(__name__)
 
-STATUS_COLORS = {'gained': '#d95f02', 'lost': '#1b9e77', 'shared': '#b9b8b2'}
+STATUS_COLORS = {'gained': '#b2182b', 'lost': '#2166ac', 'shared': '#9a9994'}
+EDGE_MAX_LOG2 = 1.0
+ONLY_DASH = (0, (3, 1.5))
 INK = '#1f1f1e'
 IGNORED_GENE_PREFIXES = ('Gm', 'LOC', 'RP1', 'RP3', 'RP4', 'RP5', 'RP6', 'AC0', 'AL0', 'CTD', 'CTC', 'CTA')
 
@@ -47,6 +50,9 @@ def parse_arguments(args=None):
     parser.add_argument('--candidates', help='<prefix>_indirect_only_genes.tsv of egaDifferential; outlines the '
                                              'candidates and the nodes that explain them')
     parser.add_argument('--sideBySide', action='store_true', help='Also draw condition A and condition B')
+    parser.add_argument('--separatePanels', action='store_true',
+                        help='Write every panel as its own file (<out>_arcs, _A, _B, _edges, _nodes with the extension of '
+                             '--outFileName), for figures assembled in a manuscript')
     parser.add_argument('--maxLog2', type=float, default=2.0, help='Colour scale limit of log2 changes')
     parser.add_argument('--maxDistance', type=int, default=2000000,
                         help='Interactions longer than this (bp) are not drawn (default: 2 Mb, as in the graphs)')
@@ -225,6 +231,29 @@ def place_labels(ax, labelled, positions, fontsize=6, obstacles=None, marker_poi
             ax.plot([x, cx], [y, cy], color='#8c8c88', lw=0.4, zorder=4)
 
 
+MAX_STRENGTH = 3.0
+
+
+def edge_width(strength, thin=0.3, thick=2.8):
+    """Line width of an interaction from its strength (score / calling threshold, 1 at the threshold), on a log scale
+    up to MAX_STRENGTH."""
+    if not strength or strength <= 0:
+        return thin
+    return thin + (thick - thin) * float(np.clip(np.log(strength) / np.log(MAX_STRENGTH), 0.0, 1.0))
+
+
+def edge_strength(data, edges_of='union'):
+    """Strength shown for an edge: condition A or B, or in the union the condition in which the edge is called
+    (gained: B, lost: A, shared: the stronger)."""
+    a, b = float(data.get('r_a', 0) or 0), float(data.get('r_b', 0) or 0)
+    if edges_of == 'A':
+        return a
+    if edges_of == 'B':
+        return b
+    status = data.get('status', 'shared')
+    return b if status == 'gained' else a if status == 'lost' else max(a, b)
+
+
 def draw_arcs(ax, sub, names):
     chrom = {d['chrom'] for _, d in sub.nodes(data=True)}
     middle = {n: (int(d['start']) + int(d['end'])) / 2 for n, d in sub.nodes(data=True)}
@@ -235,19 +264,20 @@ def draw_arcs(ax, sub, names):
             if data.get('status') != status:
                 continue
             x0, x1 = sorted((middle[u], middle[v]))
-            strength = max(float(data.get('r_a', 0)), float(data.get('r_b', 0)))
+            strength = edge_strength(data)
             height = 2 * np.sqrt((x1 - x0) / longest)
             ax.add_patch(Arc(((x0 + x1) / 2, 0), x1 - x0, height, theta1=0 if sign > 0 else 180,
                              theta2=180 if sign > 0 else 360, color=STATUS_COLORS[status],
-                             lw=0.4 + 0.5 * min(strength, 4), alpha=0.9, zorder=order))
-    last = -np.inf
+                             lw=edge_width(strength), alpha=0.9, zorder=order))
+    last, shown = -np.inf, set()
     for n in sorted(sub.nodes, key=lambda n: middle[n]):
         data = sub.nodes[n]
         if data.get('bait'):
             ax.plot([middle[n]], [0], marker='s', ms=3, color=INK, zorder=3)
             label = gene_label(data)
-            # labels closer than 1.5% of the window to the previous one are left out
-            if label and middle[n] - last > 0.015 * (span[1] - span[0] or 1.0):
+            # each gene once; labels closer than 1.5% of the window to the previous one are left out
+            if label and label not in shown and middle[n] - last > 0.015 * (span[1] - span[0] or 1.0):
+                shown.add(label)
                 ax.text(middle[n], -1.12, label, rotation=90, ha='center', va='top', fontsize=5.5, style='italic',
                         color=INK)
                 last = middle[n]
@@ -267,33 +297,57 @@ def draw_arcs(ax, sub, names):
             color=STATUS_COLORS['lost'], va='bottom')
 
 
-def draw_graph(ax, sub, positions, names, mark, max_log2, edges_of='union', candidates=(), drivers=(), title=''):
+edge_norm = mcolors.TwoSlopeNorm(vmin=-EDGE_MAX_LOG2, vcenter=0, vmax=EDGE_MAX_LOG2)
+
+
+NEUTRAL = '#d9d8d2'
+
+
+def node_change(data, mark, names):
+    bait = bool(data.get('bait'))
+    value = data.get('rna_log2FC') if bait else mark_change(data, mark, names) if mark else np.nan
+    return np.nan if value is None else float(value)
+
+
+def draw_graph(ax, sub, positions, names, mark, max_log2, mode='edges', candidates=(), drivers=(), title=''):
+    """One graph panel with at most one colour scale.
+
+    mode 'A' / 'B': the interactions of one condition, grey with widths by strength, neutral nodes; 'edges': the
+    change of the interactions (shared: log2 fold change B / A, gained / lost: dashed ends of the scale), neutral
+    nodes; 'nodes': the change of expression (squares) and of the chromatin mark (circles), thin grey interactions,
+    candidates and the nodes that explain them outlined."""
     norm = mcolors.TwoSlopeNorm(vmin=-max_log2, vcenter=0, vmax=max_log2)
     cmap = plt.get_cmap('RdBu_r')
     labelled, seen = [], set()
     for u, v, data in sub.edges(data=True):
         status = data.get('status', 'shared')
-        if edges_of == 'A' and status == 'gained' or edges_of == 'B' and status == 'lost':
+        if mode == 'A' and status == 'gained' or mode == 'B' and status == 'lost':
             continue
-        color = STATUS_COLORS[status] if edges_of == 'union' else '#7f7f7a'
-        strength = float(data.get('r_a' if edges_of == 'A' else 'r_b' if edges_of == 'B' else 'r_b', 0) or 0)
-        if edges_of == 'union':
-            strength = max(float(data.get('r_a', 0)), float(data.get('r_b', 0)))
-        ax.plot([positions[u][0], positions[v][0]], [positions[u][1], positions[v][1]], color=color,
-                lw=0.4 + 0.4 * min(strength, 4), alpha=0.85, zorder=1)
+        style, alpha = '-', 0.9
+        if mode in ('A', 'B'):
+            color, width = '#7f7f7a', edge_width(edge_strength(data, mode))
+        elif mode == 'nodes':
+            color, width, alpha = '#b9b8b2', 0.4, 0.8
+        elif status == 'shared':
+            change = float(data.get('log2FC', 0) or 0)
+            color = cmap(edge_norm(np.clip(change, -EDGE_MAX_LOG2, EDGE_MAX_LOG2)))
+            width = edge_width(edge_strength(data))
+        else:
+            color, style, width = STATUS_COLORS[status], ONLY_DASH, edge_width(edge_strength(data))
+        ax.plot([positions[u][0], positions[v][0]], [positions[u][1], positions[v][1]], color=color, ls=style,
+                lw=width, alpha=alpha, zorder=1)
     for n, data in sub.nodes(data=True):
         if n not in positions:
             continue
         bait = bool(data.get('bait'))
-        value = data.get('rna_log2FC') if bait else mark_change(data, mark, names) if mark else np.nan
-        value = np.nan if value is None else float(value)
-        face = '#ffffff' if np.isnan(value) else cmap(norm(np.clip(value, -max_log2, max_log2)))
-        outline = INK
-        width = 0.5
-        if n in candidates:
-            outline, width = '#000000', 1.8
-        elif n in drivers:
-            outline, width = '#6a3d9a', 1.6
+        face, outline, width = NEUTRAL, INK, 0.5
+        if mode == 'nodes':
+            value = node_change(data, mark, names)
+            face = '#ffffff' if np.isnan(value) else cmap(norm(np.clip(value, -max_log2, max_log2)))
+            if n in candidates:
+                outline, width = '#000000', 1.8
+            elif n in drivers:
+                outline, width = '#6a3d9a', 1.6
         ax.scatter(*positions[n], marker='s' if bait else 'o', s=70 if bait else 18, color=face, edgecolor=outline,
                    lw=width, zorder=3 if bait else 2)
         label = gene_label(data) if bait else ''
@@ -306,6 +360,61 @@ def draw_graph(ax, sub, positions, names, mark, max_log2, edges_of='union', cand
     ax.set_ylim(xy[:, 1].min() - 0.08, xy[:, 1].max() + 0.15)
     place_labels(ax, labelled, positions)
     ax.set_title(title, loc='left', fontsize=7.5)
+
+
+def shape_handles():
+    return [plt.Line2D([0], [0], marker='s', ls='', color=NEUTRAL, markeredgecolor=INK, ms=6, label='baited promoter'),
+            plt.Line2D([0], [0], marker='o', ls='', color=NEUTRAL, markeredgecolor=INK, ms=4, label='other end (OE)')]
+
+
+def width_handles():
+    return [plt.Line2D([0], [0], color='#7f7f7a', lw=edge_width(r), label='score {} x threshold'.format(t))
+            for r, t in ((1.0, '1'), (1.7, '1.7'), (MAX_STRENGTH, '\u2265 3'))]
+
+
+def arc_legend(ax, names):
+    """Legend of the arc panel, below the axis: arcs are solid, width by strength."""
+    handles = [plt.Line2D([0], [0], color=STATUS_COLORS['gained'], lw=2, label='gained (only in {})'.format(names[1])),
+               plt.Line2D([0], [0], color=STATUS_COLORS['lost'], lw=2, label='lost (only in {})'.format(names[0])),
+               plt.Line2D([0], [0], color=STATUS_COLORS['shared'], lw=2, label='shared')] + width_handles()
+    ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.36), fontsize=6, frameon=False, ncol=6)
+
+
+def status_handles(names):
+    return [plt.Line2D([0], [0], color=STATUS_COLORS['gained'], lw=2, ls=ONLY_DASH,
+                       label='gained (only in {})'.format(names[1])),
+            plt.Line2D([0], [0], color=STATUS_COLORS['lost'], lw=2, ls=ONLY_DASH,
+                       label='lost (only in {})'.format(names[0]))]
+
+
+def candidate_handles():
+    return [plt.Line2D([0], [0], marker='s', color='white', markeredgecolor='#000000', markeredgewidth=1.8, ms=7,
+                       lw=0, label='candidate (indirect only)'),
+            plt.Line2D([0], [0], marker='o', color='white', markeredgecolor='#6a3d9a', markeredgewidth=1.6, ms=6,
+                       lw=0, label='explaining node')]
+
+
+def panel_legend(fig, ax, mode, names, mark, max_log2, candidates):
+    """Legend and colour bar of one graph panel, below it."""
+    if mode in ('A', 'B'):
+        handles = width_handles() + shape_handles()
+    elif mode == 'edges':
+        handles = status_handles(names) + width_handles()[::2] + shape_handles()
+        cax = ax.inset_axes([0.05, -0.1, 0.9, 0.03])
+        bar = fig.colorbar(plt.cm.ScalarMappable(norm=edge_norm, cmap='RdBu_r'), cax=cax, orientation='horizontal')
+        bar.set_label('log2 change {} / {} of shared interactions'.format(names[1], names[0]), fontsize=6.5)
+        bar.ax.tick_params(labelsize=6)
+    else:
+        handles = shape_handles() + (candidate_handles() if candidates else [])
+        norm = mcolors.TwoSlopeNorm(vmin=-max_log2, vcenter=0, vmax=max_log2)
+        cax = ax.inset_axes([0.05, -0.1, 0.9, 0.03])
+        bar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap='RdBu_r'), cax=cax, orientation='horizontal')
+        bar.set_label('log2 change {} / {}: expression (squares){}'.format(
+            names[1], names[0], ', {} (circles)'.format(mark) if mark else ''), fontsize=6.5)
+        bar.ax.tick_params(labelsize=6)
+    offset = -0.32 if mode in ('edges', 'nodes') else -0.04
+    ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, offset), fontsize=6, frameon=False, ncol=2,
+              handlelength=2.2)
 
 
 def main(args=None):
@@ -329,34 +438,38 @@ def main(args=None):
     log.info('%d nodes, %d edges: %s', sub.number_of_nodes(), sub.number_of_edges(), status)
     candidates, drivers = candidate_nodes(args.candidates, sub.nodes)
     positions = spread_layout(sub, aspect=1.6)
-
-    panels = ['A', 'B', 'union'] if args.sideBySide else ['union']
-    fig = plt.figure(figsize=(7.2 if not args.sideBySide else 10.5, 7.2))
-    grid = fig.add_gridspec(2, len(panels), height_ratios=[1, 1.9], hspace=0.25)
-    draw_arcs(fig.add_subplot(grid[0, :]), sub, names)
+    modes = ['A', 'B', 'edges', 'nodes'] if args.sideBySide else ['edges', 'nodes']
     titles = {'A': names[0], 'B': names[1],
-              'union': '{} vs {}: gained {}, lost {}, shared {}'.format(
-                  names[0], names[1], status.get('gained', 0), status.get('lost', 0), status.get('shared', 0))}
-    for k, panel in enumerate(panels):
-        draw_graph(fig.add_subplot(grid[1, k]), sub, positions, names, mark, args.maxLog2, edges_of=panel,
-                   candidates=candidates, drivers=drivers, title=titles[panel])
-    norm = mcolors.TwoSlopeNorm(vmin=-args.maxLog2, vcenter=0, vmax=args.maxLog2)
-    bar = fig.colorbar(plt.cm.ScalarMappable(norm=norm, cmap='RdBu_r'), ax=fig.axes, orientation='horizontal',
-                       fraction=0.025, pad=0.02, aspect=50)
-    bar.set_label('log2 change {} / {}: expression (squares){}'.format(
-        names[1], names[0], ', {} (circles)'.format(mark) if mark else ''), fontsize=7)
-    bar.ax.tick_params(labelsize=6)
-    handles = [plt.Line2D([0], [0], color=c, lw=2, label=s) for s, c in STATUS_COLORS.items()]
-    handles += [plt.Line2D([0], [0], marker='s', ls='', color='#9a9994', markeredgecolor=INK, ms=6,
-                           label='baited promoter'),
-                plt.Line2D([0], [0], marker='o', ls='', color='#9a9994', markeredgecolor=INK, ms=4,
-                           label='other end (OE)')]
-    if candidates:
-        handles.append(plt.Line2D([0], [0], marker='s', color='white', markeredgecolor='#000000', markeredgewidth=1.8,
-                                  ms=7, lw=0, label='candidate (indirect only)'))
-        handles.append(plt.Line2D([0], [0], marker='o', color='white', markeredgecolor='#6a3d9a', markeredgewidth=1.6,
-                                  ms=6, lw=0, label='explaining node'))
-    fig.legend(handles=handles, loc='upper right', fontsize=6.5, frameon=False, ncol=len(handles))
+              'edges': 'interactions, {} vs {}: gained {}, lost {}, shared {}'.format(
+                  names[0], names[1], status.get('gained', 0), status.get('lost', 0), status.get('shared', 0)),
+              'nodes': 'expression{} {} vs {}'.format(' and {}'.format(mark) if mark else '', names[0], names[1])}
+    stem, extension = os.path.splitext(args.outFileName)
+    if args.separatePanels:
+        # one file per panel, for figures assembled in the manuscript
+        fig, ax = plt.subplots(figsize=(7.2, 2.0))
+        draw_arcs(ax, sub, names)
+        arc_legend(ax, names)
+        fig.savefig(ensure_parent('{}_arcs{}'.format(stem, extension)), bbox_inches='tight', dpi=args.dpi)
+        plt.close(fig)
+        for mode in modes:
+            fig, ax = plt.subplots(figsize=(3.5, 3.2))
+            draw_graph(ax, sub, positions, names, mark, args.maxLog2, mode=mode, candidates=candidates,
+                       drivers=drivers, title=titles[mode])
+            panel_legend(fig, ax, mode, names, mark, args.maxLog2, candidates)
+            fig.savefig(ensure_parent('{}_{}{}'.format(stem, mode, extension)), bbox_inches='tight', dpi=args.dpi)
+            plt.close(fig)
+        log.info('wrote %s_{arcs,%s}%s', stem, ','.join(modes), extension)
+        return
+    fig = plt.figure(figsize=(3.6 * len(modes), 7.6))
+    grid = fig.add_gridspec(2, len(modes), height_ratios=[1, 1.9], hspace=0.25)
+    ax_arcs = fig.add_subplot(grid[0, :])
+    draw_arcs(ax_arcs, sub, names)
+    arc_legend(ax_arcs, names)
+    for k, mode in enumerate(modes):
+        ax = fig.add_subplot(grid[1, k])
+        draw_graph(ax, sub, positions, names, mark, args.maxLog2, mode=mode, candidates=candidates, drivers=drivers,
+                   title=titles[mode])
+        panel_legend(fig, ax, mode, names, mark, args.maxLog2, candidates)
     if args.title:
         fig.suptitle(args.title, x=0.02, ha='left', fontsize=9)
     fig.savefig(ensure_parent(args.outFileName), bbox_inches='tight', dpi=args.dpi)
