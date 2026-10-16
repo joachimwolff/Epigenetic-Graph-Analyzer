@@ -30,7 +30,7 @@ for f in "$kasumi"/dnase/*.wig.gz; do
     rm "$output.bedGraph"
 done
 calls="$kasumi/chicago"
-egaDifferential --verbose \
+egaDifferential --verbose --genePermutations 200000 \
     --interactionsA "$calls/siMM_rep1_score1.ibed.gz" "$calls/siMM_rep2_score1.ibed.gz" \
     --interactionsB "$calls/siRE_rep1_score1.ibed.gz" "$calls/siRE_rep2_score1.ibed.gz" \
     --format ibed --replicates all --scoreThreshold 5 --names siMM siRE --tss "$gtf" \

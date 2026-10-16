@@ -20,7 +20,7 @@ tracks() {
 }
 [[ -s "$out/deseq2_hNEC_vs_hESC.tsv" ]] || python "$(dirname "$0")/hesc_deseq2.py" \
     "$study/GSE86821_RNA-seq_rawcounts_hESChNPC.txt.gz" "$out/deseq2_hNEC_vs_hESC.tsv"
-egaDifferential --verbose \
+egaDifferential --verbose --genePermutations 200000 \
     --interactionsA "$study/GSE86821_hESC12_merged_washU.txt.gz" \
     --interactionsB "$study/GSE86821_hNPC12_merged_washU.txt.gz" \
     --format washu --baits "$baits" --scoreThreshold 12 --referenceScore 12 --names hESC hNEC \

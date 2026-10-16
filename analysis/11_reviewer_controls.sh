@@ -4,6 +4,7 @@
 #   * the same with controls also matched for A/B compartments of both ends and for domain membership
 #     (GM12878: Rao et al. 2014 subcompartments and Arrowhead domains, hg19; H1-hESC: 4DN Micro-C compartment
 #     eigenvector and domains between insulation boundaries, GRCh38; analysis/prepare_domains.py)
+#   * the same for the graphs of virtual capture (Fig. 5b)
 #   * cell-type specificity: GM12878-only, hESC-only and shared interactions in GM12878 SPRITE and H1-hESC GAM
 # Runs one after another (each run holds a multi-way matrix in memory).
 set -euo pipefail
@@ -27,15 +28,19 @@ hops() {   # <graph> <multiway> <name> [chain] ; coverage-matched and domain-mat
     local graph=$1 multiway=$2 name=$3 chain_option=() comp dom
     [[ $# -gt 3 ]] && chain_option=(--chain "$4")
     if [[ "$multiway" == "$sprite" ]]; then comp=$gm_comp; dom=$gm_dom; else comp=$h1_comp; dom=$h1_dom; fi
-    [[ -s "$out/${name}_hops_coverage.tsv" ]] || python "$here/hop_distance.py" "$results/graphs/$graph.graphml" \
+    [[ "$graph" == */* ]] || graph="$results/graphs/$graph.graphml"
+    [[ -s "$out/${name}_hops_coverage.tsv" ]] || python "$here/hop_distance.py" "$graph" \
         "$multiway" "$out/${name}_hops_coverage.tsv" "${chain_option[@]}" > "$out/${name}_hops_coverage.log" 2>&1
-    [[ -s "$out/${name}_hops_domains.tsv" ]] || python "$here/hop_distance.py" "$results/graphs/$graph.graphml" \
+    [[ -s "$out/${name}_hops_domains.tsv" ]] || python "$here/hop_distance.py" "$graph" \
         "$multiway" "$out/${name}_hops_domains.tsv" "${chain_option[@]}" --compartments "$comp" --domains "$dom" \
         > "$out/${name}_hops_domains.log" 2>&1
 }
 hops GM_chicago "$sprite" GM_chicago_sprite
 hops hESC "$gam" hESC_gam "$chain"
 hops H1 "$gam" H1_gam "$chain"
+# graphs of virtual capture (hg38) on the same multi-way data
+hops "$results/virtual_capture/graphs/VC_GM12878.graphml" "$sprite" VC_GM12878_sprite "$data/annotation/hg38ToHg19.over.chain.gz"
+hops "$results/virtual_capture/graphs/VC_H1_microc.graphml" "$gam" VC_H1_microc_gam
 [[ -s "$out/GM_vs_hESC_domains.tsv" ]] || python "$here/celltype_specific_edges.py" \
     "$results/graphs/GM_chicago.graphml" "$results/graphs/hESC.graphml" GM12878 hESC "$out/GM_vs_hESC_domains.tsv" \
     --multiway SPRITE_GM12878 "$sprite" --multiway GAM_H1 "$gam" "$chain" \

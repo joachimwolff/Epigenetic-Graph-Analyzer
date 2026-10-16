@@ -24,7 +24,7 @@ python "$here/kessler_deseq2.py" "$counts" "$results/kessler/deseq2_PA2_vs_Md.ts
 tracks() {
     for mark in H3K27ac H3K4me2 H3K27me3; do printf '%s=%s ' "$mark" "$k/E10.5_$1_${mark}_R1.bigwig"; done
 }
-egaDifferential --verbose \
+egaDifferential --verbose --genePermutations 200000 \
     --interactionsA "$k"/GSM6505208_*.txt.gz "$k"/GSM6505209_*.txt.gz \
     --interactionsB "$k"/GSM6505210_*.txt.gz "$k"/GSM6505211_*.txt.gz \
     --format washu --replicates intersect --names Md PA2 \

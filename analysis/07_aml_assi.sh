@@ -55,7 +55,7 @@ t821_rna=$(join $(stranded "$bw"/GSM289406[78]_t821*.plus.bw "$bw"/GSM2894070_t8
 itd_rna=$(join $(stranded "$bw"/GSM289404[125]_ITD-*.plus.bw))
 [[ -s "$out/expression_FLT3ITD_vs_t821.tsv" ]] || python "$here/assi_expression.py" "$gtf" \
     "$out/expression_FLT3ITD_vs_t821.tsv" "A=$t821_rna" "B=$itd_rna"
-egaDifferential --verbose \
+egaDifferential --verbose --genePermutations 200000 \
     --interactionsA "$assi/GSM2895201_t821-1_CHiC_interactions.txt.gz" \
     --interactionsB "$assi/GSM2895200_FLT3-ITD_CHiC_interactions.txt.gz" \
     --format homer --baits "$baits" --maxFdr 0.01 --referenceScore 2 --names t821 FLT3ITD \

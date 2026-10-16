@@ -14,7 +14,7 @@
 #                            at score >= 5 (Jung et al. 2019, analysis/01_h1_chicago.sh, same HindIII fragments) as a
 #                            proxy for both conditions, no hNEC counterpart exists
 set -euo pipefail
-results=${1:?usage: 11_candidate_robustness.sh <results_dir> <data_dir> <kasumi1 dir> [gene_test|subthreshold|all]}
+results=${1:?usage: 13_candidate_robustness.sh <results_dir> <data_dir> <kasumi1 dir> [gene_test|subthreshold|all]}
 data=${2:?}
 kasumi=${3:?}
 step=${4:-all}
@@ -33,11 +33,13 @@ if [[ $step == gene_test || $step == all ]]; then
     done
 fi
 [[ $step == subthreshold || $step == all ]] || exit 0
+# candidates from the largest gene test; the reclassified candidates are tested again with 20,000 permutations
+c=${permutations##* }
 n=20000
 k="$data/kessler"
 kessler_tracks() { for mark in H3K27ac H3K4me2 H3K27me3; do printf '%s=%s ' "$mark" "$k/E10.5_$1_${mark}_R1.bigwig"; done; }
 python "$here/subthreshold_contacts.py" --prefix "$results/kessler/Md_vs_PA2" \
-    --candidates "$out/Md_vs_PA2_perm${n}_indirect_only_genes.tsv" --names Md PA2 --markSign H3K27me3=-1 \
+    --candidates "$out/Md_vs_PA2_perm${c}_indirect_only_genes.tsv" --names Md PA2 --markSign H3K27me3=-1 \
     --interactionsA "$k"/GSM6505208_*.txt.gz "$k"/GSM6505209_*.txt.gz \
     --interactionsB "$k"/GSM6505210_*.txt.gz "$k"/GSM6505211_*.txt.gz \
     --format washu --replicates union --referenceScore 5 --bins 5 12 \
@@ -46,7 +48,7 @@ python "$here/subthreshold_contacts.py" --prefix "$results/kessler/Md_vs_PA2" \
 roadmap_tracks() { for mark in H3K4me1 H3K4me3 H3K27me3; do printf '%s=%s ' "$mark" "$data/roadmap/$1-$mark.fc.signal.bigwig"; done; }
 h1="$data/chicago_calls/H1_jung2019_reprocessed/H1.ibed.gz"
 python "$here/subthreshold_contacts.py" --prefix "$results/differential/hESC_vs_hNEC" \
-    --candidates "$out/hESC_vs_hNEC_perm${n}_indirect_only_genes.tsv" --names hESC hNEC --markSign H3K27me3=-1 \
+    --candidates "$out/hESC_vs_hNEC_perm${c}_indirect_only_genes.tsv" --names hESC hNEC --markSign H3K27me3=-1 \
     --interactionsA "$h1" --interactionsB "$h1" --format ibed \
     --baits "$data/chicago_calls/design_hg19_HindIII/Digest_Human_HindIII_baits_e75_ID.baitmap" \
     --scoreThreshold 5 --referenceScore 12 --bins 5 12 \
@@ -55,7 +57,7 @@ python "$here/subthreshold_contacts.py" --prefix "$results/differential/hESC_vs_
 calls="$kasumi/chicago"
 bw="$kasumi/dnase/bigwig"
 python "$here/subthreshold_contacts.py" --prefix "$results/aml_kasumi1/siMM_vs_siRE" \
-    --candidates "$out/siMM_vs_siRE_perm${n}_indirect_only_genes.tsv" --names siMM siRE \
+    --candidates "$out/siMM_vs_siRE_perm${c}_indirect_only_genes.tsv" --names siMM siRE \
     --interactionsA "$calls/siMM_rep1_score1.ibed.gz" "$calls/siMM_rep2_score1.ibed.gz" \
     --interactionsB "$calls/siRE_rep1_score1.ibed.gz" "$calls/siRE_rep2_score1.ibed.gz" \
     --format ibed --replicates all --scoreThreshold 2 --referenceScore 5 --bins 1 2 5 \
