@@ -135,7 +135,7 @@ def panel_test(ax):
             other_end(ax, x, y, name, size=38, label=False,
                       color='#fde3d6' if name in ('E1', 'E2') else 'white')
         above = name in ('E2', 'P3')
-        ax.text(x, y + (0.1 if above else -0.1), name, fontsize=6, color=INK, zorder=5, ha='center',
+        ax.text(x, y + (0.15 if above else -0.15), name, fontsize=6, color=INK, zorder=5, ha='center',
                 va='bottom' if above else 'top')
     ax.text(ox + 1.1, oy + 1.55, 'graph: E1-E2 is an indirect contact', ha='center', fontsize=6.5, color=ORANGE)
     ax.annotate('', xy=(4.5, 0.85), xytext=(3.95, 0.85), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
