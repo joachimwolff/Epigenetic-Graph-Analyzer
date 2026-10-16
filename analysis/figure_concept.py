@@ -7,7 +7,7 @@ proximity of the two unmeasured ends. (c) The pairwise interactions drawn as arc
 interactions; in the same graph with the measured interactions in grey, all pairs at two steps (indirect contacts)
 and the communities are shown.
 
-Usage: python figure_concept.py <output.pdf>
+Usage: python figure_concept.py <output prefix>   (writes <prefix>a.pdf, <prefix>b.pdf, <prefix>c.pdf)
 """
 
 import sys
@@ -25,9 +25,8 @@ DASH = (0, (3, 2))
 
 
 def panel_label(ax, label, title):
-    ax.annotate(label, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(0, 4), textcoords='offset points',
-                fontweight='bold', fontsize=10, color=INK, va='bottom')
-    ax.annotate(title, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(13, 4), textcoords='offset points',
+    """Panel title; the panel letter is set by LaTeX when the panels are assembled."""
+    ax.annotate(title, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(0, 4), textcoords='offset points',
                 fontsize=8, color=INK, va='bottom')
 
 
@@ -208,22 +207,27 @@ def panel_graph(ax):
     panel_label(ax, 'c', 'From arcs to a graph')
 
 
+def save(fig, path):
+    fig.savefig(path, bbox_inches='tight', pad_inches=0.02)
+    plt.close(fig)
+    print(path)
+
+
 def main():
-    output = sys.argv[1]
+    prefix = sys.argv[1]
     plt.rcParams.update({'font.size': 8})
-    fig = plt.figure(figsize=(7.2, 3.95))
-    grid = fig.add_gridspec(2, 2, height_ratios=[2.75, 1.55], width_ratios=[5.25, 2.2], hspace=0.12, wspace=0.12)
-    panel_ligation(fig.add_subplot(grid[0, 0]))
-    panel_transitivity(fig.add_subplot(grid[0, 1]))
-    panel_graph(fig.add_subplot(grid[1, :]))
+    for letter, panel, size in (('a', panel_ligation, (4.6, 2.75)), ('b', panel_transitivity, (1.95, 2.75))):
+        fig, ax = plt.subplots(figsize=size)
+        panel(ax)
+        save(fig, '{}{}.pdf'.format(prefix, letter))
+    fig, ax = plt.subplots(figsize=(7.2, 1.75))
+    panel_graph(ax)
     handles = [plt.Line2D([], [], marker='s', color=INK, ls='', label='baited promoter'),
                plt.Line2D([], [], marker='o', mfc='white', mec=INK, ls='', label='other end'),
                plt.Line2D([], [], color=BLUE, lw=1.4, label='measured interaction (edge)'),
                plt.Line2D([], [], color=ORANGE, lw=1.2, ls=DASH, label='indirect contact (two steps)')]
-    fig.legend(handles=handles, loc='lower center', ncol=4, frameon=False, fontsize=6.5, bbox_to_anchor=(0.5, 0.0))
-    fig.subplots_adjust(left=0.01, right=0.99, top=0.95, bottom=0.07)
-    fig.savefig(output, bbox_inches='tight', pad_inches=0.02)
-    print(output)
+    ax.legend(handles=handles, loc='upper center', ncol=4, frameon=False, fontsize=6.5, bbox_to_anchor=(0.5, -0.02))
+    save(fig, prefix + 'c.pdf')
 
 
 if __name__ == '__main__':

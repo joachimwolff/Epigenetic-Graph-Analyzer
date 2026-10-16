@@ -10,7 +10,7 @@ connection (analysis/hop_distance.py) for three graph / assay combinations. (e) 
 least one SPRITE cluster holding the promoter and two of its partners, for the hubs and for the same hubs shifted
 along the chromosome (analysis/hub_multiway.py).
 
-Usage: python figure_3d_support.py <results dir> <output.pdf>
+Usage: python figure_3d_support.py <results dir> <output prefix>   (writes <prefix>a.pdf to <prefix>e.pdf)
 """
 
 import os
@@ -35,8 +35,7 @@ ASSEMBLY = {'P': (0.0, 0.0), 'E1': (-0.32, 0.22), 'E2': (0.3, 0.26), 'E3': (0.05
 
 
 def label(ax, letter, title=None):
-    ax.annotate(letter, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(-12, 4), textcoords='offset points',
-                fontweight='bold', fontsize=10, color=INK, va='bottom')
+    """Panel title; the panel letter is set by LaTeX when the panels are assembled."""
     if title:
         ax.annotate(title, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(2, 4), textcoords='offset points',
                     fontsize=8, color=INK, va='bottom')
@@ -51,8 +50,11 @@ def assembly(ax, cx, cy, scale=1.0, names=True, links=True):
     for name in ('E1', 'E2', 'E3'):
         other_end(ax, *points[name], name, size=38 * scale, label=False)
     if names:
-        for name, (dx, dy) in (('P', (-0.3, -0.2)), ('E1', (-0.36, 0.02)), ('E2', (0.12, 0.06)), ('E3', (0.13, -0.08))):
-            ax.text(points[name][0] + dx * scale, points[name][1] + dy * scale, name, fontsize=6, color=INK, zorder=5)
+        placement = {'P': (-0.1, 0.0, 'right', 'center'), 'E1': (0.0, 0.1, 'center', 'bottom'),
+                     'E2': (0.0, 0.1, 'center', 'bottom'), 'E3': (0.1, 0.0, 'left', 'center')}
+        for name, (dx, dy, ha, va) in placement.items():
+            ax.text(points[name][0] + dx * scale, points[name][1] + dy * scale, name, fontsize=6, color=INK,
+                    zorder=5, ha=ha, va=va, bbox=dict(facecolor='white', edgecolor='none', pad=0.3, alpha=0.8))
     return points
 
 
@@ -81,7 +83,7 @@ def panel_sprite(ax):
             ax.add_patch(mpatches.Rectangle((2.05, y - 0.07), 0.32, 0.14, facecolor='white', edgecolor=INK, lw=1.0))
         barcode(ax, 2.4, y)
         ax.text(2.82, y, name, va='center', fontsize=6.5, color=INK)
-    ax.text(2.05, 0.38, 'one barcode = one cluster', ha='left', fontsize=6.5, color=INK)
+    ax.text(2.05, 0.38, 'one barcode =\none cluster', ha='left', va='center', fontsize=6.5, color=INK)
     ax.text(0.0, -0.25, 'E1 and E2 are read out together, without ligation', fontsize=6.5, color=ORANGE)
     ax.set_xlim(0.0, 3.4)
     ax.set_ylim(-0.35, 1.75)
@@ -92,16 +94,17 @@ def panel_sprite(ax):
 
 def panel_gam(ax):
     # three nuclei, sliced; the slice of the first one cuts through the assembly
-    for k, (cx, inside) in enumerate(((0.65, True), (1.75, False), (2.85, False))):
-        nucleus = mpatches.Ellipse((cx, 0.95), 0.95, 1.3, facecolor='#f4f3ef', edgecolor=MUTED, lw=0.8)
+    slices = ((0.6, 0.67, 1.22, 'slice: P, E1, E2, E3'), (1.72, 0.65, 0.8, 'slice: E3'),
+              (2.84, 1.06, 1.22, 'slice: E1, E2'))
+    for k, (cx, low, high, text) in enumerate(slices):
+        inside = k == 0
+        nucleus = mpatches.Ellipse((cx, 0.95), 1.05, 1.35, facecolor='#f4f3ef', edgecolor=MUTED, lw=0.8)
         ax.add_patch(nucleus)
-        slice_y = 0.95 if inside else (0.55 if k == 1 else 1.35)
-        band = mpatches.Rectangle((cx - 0.5, slice_y - 0.13), 1.0, 0.26, facecolor=YELLOW, alpha=0.3, lw=0)
+        band = mpatches.Rectangle((cx - 0.55, low), 1.1, high - low, facecolor=YELLOW, alpha=0.3, lw=0)
         ax.add_patch(band)
         band.set_clip_path(nucleus)
         assembly(ax, cx, 0.95, scale=0.75, names=(k == 0))
-        ax.text(cx, 0.08, 'slice: P, E1, E2, E3' if inside else ('slice: E3' if k == 1 else 'slice: E1, E2'),
-                ha='center', fontsize=6, color=INK if inside else MUTED)
+        ax.text(cx, 0.08, text, ha='center', fontsize=6, color=INK if inside else MUTED)
     ax.text(0.0, -0.25, 'close loci share a slice more often than distant loci', fontsize=6.5, color=ORANGE)
     ax.set_xlim(0.0, 3.4)
     ax.set_ylim(-0.35, 1.75)
@@ -161,13 +164,13 @@ def panel_test(ax):
                                                      boxstyle='round,pad=0.0,rounding_size=0.04', color=color, lw=0,
                                                      zorder=3))
     right = x0 + len(loci) * w + 0.3
-    ax.text(right, 1.6, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
-    ax.text(right, 1.22, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
+    ax.text(right, 1.78, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
+    ax.text(right, 1.33, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
             va='center')
-    ax.text(right, 0.8, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
+    ax.text(right, 0.78, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
     ax.text(right, 0.22, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
     ax.set_xlim(-0.05, 12.3)
-    ax.set_ylim(-0.1, 2.0)
+    ax.set_ylim(-0.1, 2.05)
     ax.set_aspect('equal')
     ax.axis('off')
     label(ax, 'c', 'Multi-way groups observe indirect contacts and communities directly')
@@ -205,21 +208,26 @@ def panel_hubs(ax, results):
     label(ax, 'e')
 
 
+def save(fig, path):
+    fig.savefig(path, bbox_inches='tight', pad_inches=0.03)
+    plt.close(fig)
+    print(path)
+
+
 def main():
-    results, output = sys.argv[1:3]
+    results, prefix = sys.argv[1:3]
     plt.rcParams.update({'font.size': 8})
-    fig = plt.figure(figsize=(7.2, 7.0))
-    grid = fig.add_gridspec(3, 2, height_ratios=[1.0, 1.05, 1.35], width_ratios=[1, 1.1], hspace=0.32, wspace=0.3)
-    panel_sprite(fig.add_subplot(grid[0, 0]))
-    panel_gam(fig.add_subplot(grid[0, 1]))
-    panel_test(fig.add_subplot(grid[1, :]))
-    for column, panel in ((0, panel_steps), (1, panel_hubs)):
-        ax = fig.add_subplot(grid[2, column])
+    for letter, panel, size in (('a', panel_sprite, (3.5, 2.3)), ('b', panel_gam, (3.5, 2.3)),
+                                ('c', panel_test, (7.2, 1.6))):
+        fig, ax = plt.subplots(figsize=size)
+        panel(ax)
+        save(fig, '{}{}.pdf'.format(prefix, letter))
+    for letter, panel in (('d', panel_steps), ('e', panel_hubs)):
+        fig, ax = plt.subplots(figsize=(3.4, 2.6))
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
         panel(ax, results)
-    fig.savefig(output, bbox_inches='tight', pad_inches=0.03)
-    print(output)
+        save(fig, '{}{}.pdf'.format(prefix, letter))
 
 
 if __name__ == '__main__':
