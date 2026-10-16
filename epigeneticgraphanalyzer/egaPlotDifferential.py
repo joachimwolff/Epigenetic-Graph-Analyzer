@@ -254,7 +254,7 @@ def edge_strength(data, edges_of='union'):
     return b if status == 'gained' else a if status == 'lost' else max(a, b)
 
 
-def draw_arcs(ax, sub, names):
+def draw_arcs(ax, sub, names, priority=()):
     chrom = {d['chrom'] for _, d in sub.nodes(data=True)}
     middle = {n: (int(d['start']) + int(d['end'])) / 2 for n, d in sub.nodes(data=True)}
     span = (min(middle.values()), max(middle.values()))
@@ -269,18 +269,23 @@ def draw_arcs(ax, sub, names):
             ax.add_patch(Arc(((x0 + x1) / 2, 0), x1 - x0, height, theta1=0 if sign > 0 else 180,
                              theta2=180 if sign > 0 else 360, color=STATUS_COLORS[status],
                              lw=edge_width(strength), alpha=0.9, zorder=order))
-    last, shown = -np.inf, set()
-    for n in sorted(sub.nodes, key=lambda n: middle[n]):
-        data = sub.nodes[n]
-        if data.get('bait'):
-            ax.plot([middle[n]], [0], marker='s', ms=3, color=INK, zorder=3)
-            label = gene_label(data)
-            # each gene once; labels closer than 1.5% of the window to the previous one are left out
-            if label and label not in shown and middle[n] - last > 0.015 * (span[1] - span[0] or 1.0):
-                shown.add(label)
-                ax.text(middle[n], -1.12, label, rotation=90, ha='center', va='top', fontsize=5.5, style='italic',
-                        color=INK)
-                last = middle[n]
+    # gene labels: each gene once, candidates first, then the others where they keep 2.5% of the window from every
+    # label already placed
+    gap = 0.025 * (span[1] - span[0] or 1.0)
+    baits = sorted((n for n in sub.nodes if sub.nodes[n].get('bait')), key=lambda n: middle[n])
+    for n in baits:
+        ax.plot([middle[n]], [0], marker='s', ms=3, color=INK, zorder=3)
+    placed, shown = [], set()
+    for n in sorted(baits, key=lambda n: (n not in priority, middle[n])):
+        label = gene_label(sub.nodes[n])
+        if not label or label in shown:
+            continue
+        if n not in priority and any(abs(middle[n] - x) < gap for x in placed):
+            continue
+        shown.add(label)
+        placed.append(middle[n])
+        ax.text(middle[n], -1.12, label, rotation=90, ha='center', va='top', fontsize=5.5, style='italic',
+                color=INK, fontweight='bold' if n in priority else 'normal')
     ax.axhline(0, color=INK, lw=0.6)
     pad = 0.03 * (span[1] - span[0] or 1.0)
     ax.set_xlim(span[0] - pad, span[1] + pad)
@@ -449,7 +454,7 @@ def main(args=None):
     if args.separatePanels:
         # one file per panel, for figures assembled in the manuscript
         fig, ax = plt.subplots(figsize=(7.2, 2.0))
-        draw_arcs(ax, sub, names)
+        draw_arcs(ax, sub, names, priority=candidates)
         arc_legend(ax, names)
         fig.savefig(ensure_parent('{}_arcs{}'.format(stem, extension)), bbox_inches='tight', dpi=args.dpi)
         plt.close(fig)
@@ -465,7 +470,7 @@ def main(args=None):
     fig = plt.figure(figsize=(3.6 * len(modes), 7.6))
     grid = fig.add_gridspec(2, len(modes), height_ratios=[1, 1.9], hspace=0.25)
     ax_arcs = fig.add_subplot(grid[0, :])
-    draw_arcs(ax_arcs, sub, names)
+    draw_arcs(ax_arcs, sub, names, priority=candidates)
     arc_legend(ax_arcs, names)
     for k, mode in enumerate(modes):
         ax = fig.add_subplot(grid[1, k])
