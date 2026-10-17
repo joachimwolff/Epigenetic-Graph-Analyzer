@@ -3,10 +3,13 @@
 The re-ChIP (H3K27me3 then H3K4me2, GEO GSE89435) measures the co-occupancy of the two marks on the same nucleosomes;
 its fold enrichment over the pooled input (analysis/17_minoux_fold.sh) is the reference. EGA calls a promoter
 fragment (bait node of the Md / PA2 union graph) bivalent when an active mark (H3K27ac or H3K4me2) and the repressive
-mark H3K27me3 are both present (mean fold enrichment over the fragment >= threshold, 1.5 / 2 / 3), active-only,
-repressive-only or none (states.fragment_states with the declared roles), separately in Md and PA2.
+mark H3K27me3 are both present (fold enrichment >= threshold, 1.5 / 2 / 3), active-only, repressive-only or none
+(states.fragment_states with the declared roles), separately in Md and PA2. Presence is evaluated under both
+statistics of egaDifferential (column `presence`): the mean fold enrichment over the fragment ('mean') and the
+maximum of the mean over windows of at most 1 kb within the fragment ('max1kb'); the re-ChIP reference is read with
+the same statistic (column `reference`), and in section `call` also with the other one.
 
-Output (<out>/rechip_validation.tsv, one table with a `section` column):
+Output (<out>/rechip_validation.tsv, one table with the columns section, presence, reference):
   class           per condition and threshold: re-ChIP fold enrichment of the fragments of every call (n, median,
                   quartiles, fraction >= 2 and >= 3)
   call            per condition, threshold and re-ChIP cutoff (2, 3): precision and recall of the bivalent call;
@@ -20,11 +23,12 @@ Output (<out>/rechip_validation.tsv, one table with a `section` column):
                   median change of all promoter fragments bivalent in both (change_minus_stable, Mann-Whitney
                   p_vs_stable) and as the change of the percentile rank among all promoter fragments of each
                   condition (median_rank_change, fraction_rank_down, Wilcoxon rank_wilcoxon_p)
-  poised_in_both  differentially expressed genes explained as poised in both conditions by the cascade, at the
-                  promoter (bivalent in both) and at step 1 (a contacting fragment poised in both): how many are
-                  confirmed by re-ChIP >= 2 (>= 3) in both conditions; also all DE genes with a promoter bivalent in both
-Figure <out>/rechip_validation.pdf: re-ChIP fold enrichment of the promoter fragments per EGA call (threshold 2) in
-Md and PA2.
+  poised_in_both  differentially expressed genes with a promoter (promoter state level) or a contacting fragment
+                  (step 1 state level) poised in both conditions under the declared roles, at any level of
+                  <prefix>_explanations_all_levels.tsv: how many are confirmed by re-ChIP >= 2 (>= 3) in both
+                  conditions
+Figures <out>/rechip_validation.pdf (mean) and rechip_validation_max1kb.pdf: re-ChIP fold enrichment of the promoter
+fragments per EGA call (threshold 2) in Md and PA2. <out>/rechip_baits.tsv.gz: every bait under both statistics.
 
 Usage: python rechip_validation.py <results dir> <out dir> [prefix (default hops_n/Md_vs_PA2)]
 """
@@ -40,7 +44,7 @@ import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 from scipy import stats  # noqa: E402
 
-from epigeneticgraphanalyzer.annotation import bigwig_interval_signal  # noqa: E402
+from epigeneticgraphanalyzer.annotation import bigwig_interval_max_window, bigwig_interval_signal  # noqa: E402
 from epigeneticgraphanalyzer.graph import read_graph  # noqa: E402
 from epigeneticgraphanalyzer.states import fragment_states  # noqa: E402
 
@@ -49,19 +53,27 @@ MARKS = ('H3K27ac', 'H3K4me2', 'H3K27me3')
 ROLES = {'H3K27ac': 'active', 'H3K4me2': 'active', 'H3K27me3': 'repressive'}
 THRESHOLDS = (1.5, 2.0, 3.0)
 CUTOFFS = (2.0, 3.0)
+PRESENCE = ('mean', 'max1kb')
 CALLS = {'bivalent': 'bivalent', 'active': 'active only', 'repressed': 'repressive only', 'unmarked': 'none'}
 ORDER = ('bivalent', 'active only', 'repressive only', 'none')
 COLOURS = {'Md': '#2a78d6', 'PA2': '#eb6834'}
 INK, MUTED, GRID = '#1f1f1e', '#6b6a66', '#d9d8d2'
 
 
-def signals(fold_dir, nodes):
-    """{(condition, track): fold enrichment of every node} for the three marks and the re-ChIP."""
+def signals(fold_dir, nodes, presence='mean'):
+    """{(condition, track): fold enrichment of every node} for the three marks and the re-ChIP: the mean over the
+    fragment ('mean') or the maximum of the means of windows of at most 1 kb within it ('max1kb')."""
     parts = [n.replace(':', '-').split('-') for n in nodes]
     chroms = [p[0] for p in parts]
     starts = np.array([int(p[1]) for p in parts])
     ends = np.array([int(p[2]) for p in parts])
-    return {(c, t): bigwig_interval_signal(os.path.join(fold_dir, '{}_{}.fold.bw'.format(c, t)), chroms, starts, ends)
+
+    def read(path):
+        if presence == 'max1kb':
+            return bigwig_interval_max_window(path, chroms, starts, ends, 1000)
+        return bigwig_interval_signal(path, chroms, starts, ends)
+
+    return {(c, t): read(os.path.join(fold_dir, '{}_{}.fold.bw'.format(c, t)))
             for c in CONDITIONS for t in MARKS + ('reChIP',)}
 
 
@@ -124,7 +136,7 @@ def transition_rows(values, index, scope, threshold, stable):
     return rows
 
 
-def figure(values, path):
+def figure(values, path, presence='mean'):
     fig, ax = plt.subplots(figsize=(3.6, 2.4))
     width = 0.36
     counts = {c: [] for c in ORDER}
@@ -145,8 +157,10 @@ def figure(values, path):
     ax.set_xticks(range(len(ORDER)))
     ax.set_xticklabels(['{}\n{}'.format(c.replace(' only', '\nonly') if ' ' in c else c + '\n', ' / '.join(counts[c]))
                         for c in ORDER], fontsize=6)
-    ax.set_ylabel('re-ChIP fold enrichment', fontsize=7)
-    ax.set_xlabel('EGA call of the promoter fragment (FE $\\geq$ 2; fragments Md / PA2)', fontsize=7)
+    statistic = 'fragment mean' if presence == 'mean' else 'max. 1 kb window'
+    ax.set_ylabel('re-ChIP fold enrichment ({})'.format(statistic), fontsize=7)
+    ax.set_xlabel('EGA call of the promoter fragment (FE $\\geq$ 2, {}; fragments Md / PA2)'.format(statistic),
+                  fontsize=7)
     ax.tick_params(axis='y', labelsize=6)
     ax.grid(axis='y', color=GRID, lw=0.4)
     ax.set_axisbelow(True)
@@ -158,59 +172,18 @@ def figure(values, path):
     plt.close(fig)
 
 
-def main():
-    results, out = sys.argv[1:3]
-    prefix = os.path.join(results, sys.argv[3] if len(sys.argv) > 3 else 'hops_n/Md_vs_PA2')
-    fold_dir = os.path.join(results, 'minoux_fold')
-    os.makedirs(out, exist_ok=True)
-    graph = read_graph(prefix + '_union.graphml')
-    classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t', low_memory=False)
-    baits = sorted(n for n, b in graph.nodes(data='bait') if b)
-    extra = sorted(set(classes.get('step1_state_fragment', pd.Series(dtype=str)).dropna().astype(str)) - {''}
-                   - set(baits))
-    nodes = baits + extra
-    position = {n: i for i, n in enumerate(nodes)}
-    values = signals(fold_dir, nodes)
-    bait_index = np.arange(len(baits))
-    rows = []
-    for condition in CONDITIONS:
-        rechip = values[(condition, 'reChIP')][bait_index]
-        active = np.maximum(values[(condition, 'H3K27ac')], values[(condition, 'H3K4me2')])[bait_index]
-        score = np.minimum(active, values[(condition, 'H3K27me3')][bait_index])
-        for cutoff in CUTOFFS:
-            rows.append(dict(section='call', condition=condition, threshold='score', cutoff=cutoff,
-                             n=len(baits), n_positive=int((rechip >= cutoff).sum()),
-                             auc=auc(score, rechip >= cutoff)))
-        for threshold in THRESHOLDS:
-            call = calls(values, condition, threshold)[bait_index]
-            for group in ORDER:
-                rows.append(dict(section='class', condition=condition, threshold=threshold, group=group,
-                                 **describe(rechip[call == group])))
-            bivalent = call == 'bivalent'
-            for cutoff in CUTOFFS:
-                positive = rechip >= cutoff
-                tp = int((bivalent & positive).sum())
-                rows.append(dict(section='call', condition=condition, threshold=threshold, cutoff=cutoff,
-                                 n=len(baits), n_called=int(bivalent.sum()), n_positive=int(positive.sum()),
-                                 true_positives=tp, precision=tp / bivalent.sum() if bivalent.any() else np.nan,
-                                 recall=tp / positive.sum() if positive.any() else np.nan,
-                                 auc_binary=auc(bivalent.astype(float), positive)))
-    de_index = np.array([position[n] for n in classes['node'] if n in position], dtype=np.int64)
-    for condition in CONDITIONS:
-        # percentile rank of the re-ChIP signal among the promoter fragments (bait ranks; other fragments 0)
-        rank = np.zeros(len(nodes))
-        rank[bait_index] = 100 * (stats.rankdata(values[(condition, 'reChIP')][bait_index]) - 0.5) / len(baits)
-        values[(condition, 'rank')] = rank
-    for threshold in THRESHOLDS:
-        both = (calls(values, 'Md', threshold) == 'bivalent') & (calls(values, 'PA2', threshold) == 'bivalent')
-        stable = rechip_change(values, bait_index[both[bait_index]])[2]
-        rows += transition_rows(values, de_index, 'DE genes', threshold, stable)
-        rows += transition_rows(values, bait_index, 'all baits', threshold, stable)
-
-    def confirmed(fragments, cutoff):
-        index = np.array([position[f] for f in fragments], dtype=np.int64)
-        return int(((values[('Md', 'reChIP')][index] >= cutoff) & (values[('PA2', 'reChIP')][index] >= cutoff)).sum())
-
+def poised_groups(classes, levels, presence):
+    """Fragments of the differentially expressed genes poised in both conditions under the declared roles and
+    `presence`: from <prefix>_explanations_all_levels.tsv (every level, also when an earlier level explains the
+    gene), else (mean only) from the first-level cascade of <prefix>_gene_classes.tsv."""
+    key = 'declared_' + presence
+    if levels is not None and 'result_' + key in levels:
+        poised = levels[levels['result_' + key] == 'poised in both']
+        promoter = poised.loc[poised['level'] == 'promoter_state', 'node']
+        step1 = poised.loc[poised['level'] == 'step1_state', 'state_fragment_' + key].dropna().astype(str)
+        return [('promoter poised in both', promoter), ('step 1 fragment poised in both', step1)]
+    if presence != 'mean':
+        return []
     poised = classes[classes.get('explained_type', pd.Series(dtype=str)) == 'poised unresolved']
     groups = [('promoter, explained as poised in both', poised.loc[poised['explained_at'] == 'gene', 'node']),
               ('step 1 fragment, explained as poised in both',
@@ -218,24 +191,105 @@ def main():
     if 'promoter_unresolved' in classes:
         flag = classes['promoter_unresolved'].astype(str).str.lower() == 'true'
         groups.append(('promoter bivalent in both, all DE genes', classes.loc[flag, 'node']))
-    for name, fragments in groups:
-        fragments = [f for f in fragments if f in position]
-        rows.append(dict(section='poised_in_both', threshold=2.0, group=name, n=len(fragments),
-                         confirmed_ge_2=confirmed(fragments, 2.0) if fragments else 0,
-                         confirmed_ge_3=confirmed(fragments, 3.0) if fragments else 0))
+    return groups
+
+
+def main():
+    results, out = sys.argv[1:3]
+    prefix = os.path.join(results, sys.argv[3] if len(sys.argv) > 3 else 'hops_n/Md_vs_PA2')
+    fold_dir = os.path.join(results, 'minoux_fold')
+    os.makedirs(out, exist_ok=True)
+    graph = read_graph(prefix + '_union.graphml')
+    classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t', low_memory=False)
+    try:
+        levels = pd.read_csv(prefix + '_explanations_all_levels.tsv', sep='\t', low_memory=False,
+                             keep_default_na=False, na_values=[''])
+    except FileNotFoundError:
+        levels = None
+    baits = sorted(n for n, b in graph.nodes(data='bait') if b)
+    fragments = set(classes.get('step1_state_fragment', pd.Series(dtype=str)).dropna().astype(str))
+    if levels is not None:
+        for column in [c for c in levels if c.startswith('state_fragment_')]:
+            fragments |= set(levels[column].dropna().astype(str))
+    extra = sorted(fragments - {''} - set(baits))
+    nodes = baits + extra
+    position = {n: i for i, n in enumerate(nodes)}
+    by = {presence: signals(fold_dir, nodes, presence) for presence in PRESENCE}
+    bait_index = np.arange(len(baits))
+    de_index = np.array([position[n] for n in classes['node'] if n in position], dtype=np.int64)
+    rows = []
+    for presence in PRESENCE:
+        values = by[presence]
+        for condition in CONDITIONS:
+            active = np.maximum(values[(condition, 'H3K27ac')], values[(condition, 'H3K4me2')])[bait_index]
+            score = np.minimum(active, values[(condition, 'H3K27me3')][bait_index])
+            # the re-ChIP reference under both statistics
+            for reference in PRESENCE:
+                rechip = by[reference][(condition, 'reChIP')][bait_index]
+                for cutoff in CUTOFFS:
+                    rows.append(dict(section='call', presence=presence, reference=reference, condition=condition,
+                                     threshold='score', cutoff=cutoff, n=len(baits),
+                                     n_positive=int((rechip >= cutoff).sum()), auc=auc(score, rechip >= cutoff)))
+                for threshold in THRESHOLDS:
+                    bivalent = calls(values, condition, threshold)[bait_index] == 'bivalent'
+                    for cutoff in CUTOFFS:
+                        positive = rechip >= cutoff
+                        tp = int((bivalent & positive).sum())
+                        rows.append(dict(section='call', presence=presence, reference=reference,
+                                         condition=condition, threshold=threshold, cutoff=cutoff, n=len(baits),
+                                         n_called=int(bivalent.sum()), n_positive=int(positive.sum()),
+                                         true_positives=tp,
+                                         precision=tp / bivalent.sum() if bivalent.any() else np.nan,
+                                         recall=tp / positive.sum() if positive.any() else np.nan,
+                                         auc_binary=auc(bivalent.astype(float), positive)))
+            rechip = values[(condition, 'reChIP')][bait_index]
+            for threshold in THRESHOLDS:
+                call = calls(values, condition, threshold)[bait_index]
+                for group in ORDER:
+                    rows.append(dict(section='class', presence=presence, reference=presence, condition=condition,
+                                     threshold=threshold, group=group, **describe(rechip[call == group])))
+        for condition in CONDITIONS:
+            # percentile rank of the re-ChIP signal among the promoter fragments (bait ranks; other fragments 0)
+            rank = np.zeros(len(nodes))
+            rank[bait_index] = 100 * (stats.rankdata(values[(condition, 'reChIP')][bait_index]) - 0.5) / len(baits)
+            values[(condition, 'rank')] = rank
+        for threshold in THRESHOLDS:
+            both = (calls(values, 'Md', threshold) == 'bivalent') & (calls(values, 'PA2', threshold) == 'bivalent')
+            stable = rechip_change(values, bait_index[both[bait_index]])[2]
+            for row in transition_rows(values, de_index, 'DE genes', threshold, stable) + \
+                    transition_rows(values, bait_index, 'all baits', threshold, stable):
+                rows.append(dict(row, presence=presence, reference=presence))
+
+        def confirmed(fragments, cutoff):
+            index = np.array([position[f] for f in fragments], dtype=np.int64)
+            return int(((values[('Md', 'reChIP')][index] >= cutoff) &
+                        (values[('PA2', 'reChIP')][index] >= cutoff)).sum())
+
+        for name, fragments in poised_groups(classes, levels, presence):
+            fragments = [f for f in fragments if f in position]
+            rows.append(dict(section='poised_in_both', presence=presence, reference=presence, threshold=2.0,
+                             group=name, n=len(fragments),
+                             confirmed_ge_2=confirmed(fragments, 2.0) if fragments else 0,
+                             confirmed_ge_3=confirmed(fragments, 3.0) if fragments else 0))
     table = pd.DataFrame(rows)
+    front = ['section', 'presence', 'reference']
+    table = table[front + [c for c in table if c not in front]]
     table.to_csv(os.path.join(out, 'rechip_validation.tsv'), sep='\t', index=False)
-    # re-ChIP of every bait in both conditions with the calls at threshold 2 (for gene look-ups)
+    # re-ChIP of every bait in both conditions under both statistics with the calls at threshold 2 (gene look-ups)
     per_bait = pd.DataFrame({'node': baits, 'genes': [graph.nodes[n].get('genes', '') for n in baits]})
-    for condition in CONDITIONS:
-        for track in MARKS + ('reChIP',):
-            per_bait['{}_{}'.format(track, condition)] = values[(condition, track)][bait_index]
-        per_bait['call_' + condition] = calls(values, condition, 2.0)[bait_index]
+    for presence in PRESENCE:
+        for condition in CONDITIONS:
+            for track in MARKS + ('reChIP',):
+                per_bait['{}_{}_{}'.format(track, condition, presence)] = by[presence][(condition, track)][bait_index]
+            per_bait['call_{}_{}'.format(condition, presence)] = calls(by[presence], condition, 2.0)[bait_index]
     per_bait.to_csv(os.path.join(out, 'rechip_baits.tsv.gz'), sep='\t', index=False)
-    figure({k: v[bait_index] for k, v in values.items()}, os.path.join(out, 'rechip_validation.pdf'))
-    for section, part in table.groupby('section', sort=False):
-        print(section)
-        print(part.dropna(axis=1, how='all').drop(columns='section').to_string(index=False))
+    for presence in PRESENCE:
+        figure({k: v[bait_index] for k, v in by[presence].items()},
+               os.path.join(out, 'rechip_validation{}.pdf'.format('' if presence == 'mean' else '_' + presence)),
+               presence)
+    for (section, presence), part in table.groupby(['section', 'presence'], sort=False):
+        print(section, presence)
+        print(part.dropna(axis=1, how='all').drop(columns=['section', 'presence']).to_string(index=False))
 
 
 if __name__ == '__main__':

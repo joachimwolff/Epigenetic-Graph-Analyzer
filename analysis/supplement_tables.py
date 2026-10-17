@@ -5,9 +5,11 @@ S4 promoter hubs; S5 communities with a coordinated expression change; S6 nested
 S7 classification of differentially expressed genes; S8 candidates for regulation through indirect contacts;
 S9 virtual capture benchmark; S10 CRISPRi benchmark; S11 inter-chromosomal rearrangements and copy number of
 Kasumi-1; S12 chromatin assortativity (ChAseR) by graph distance; S13 promoter hubs against a polymer model.
-S24 explanation cascade of the differentially expressed genes (analysis/16_hops_n.sh); S25 chromatin state
-transitions of the differentially expressed genes at three presence thresholds; S26 validation of the Md / PA2
-bivalency calls against the sequential ChIP (analysis/rechip_validation.py).
+S24 explanation levels of the differentially expressed genes, first level and any level side by side, states under
+the fragment mean and the maximum 1 kb window (analysis/16_hops_n.sh); S25 chromatin state transitions of the
+differentially expressed genes at three presence thresholds; S26 validation of the Md / PA2 bivalency calls against
+the sequential ChIP under both presence statistics (analysis/rechip_validation.py); S27 the most frequent
+combinations of explaining levels per comparison.
 
 Usage: python supplement_tables.py <results dir> <output dir>
 """
@@ -859,66 +861,103 @@ CASCADE_COMPARISONS = (('hESC / hNEC', 'hops_n/hESC_vs_hNEC'), ('Md / PA2', 'hop
 
 
 def s24():
-    """Explanation cascade (analysis/16_hops_n.sh, egaDifferential --maxHops 3), one block per comparison."""
-    names = {'gene': 'Gene', 'gene_marks_only': '\\quad marks only', 'gene_interactions_only':
-             '\\quad interactions only', 'gene_both': '\\quad both', 'gene_state': '\\quad bivalent resolved',
-             'gene_poised_unresolved': '\\quad bivalent in both', 'step1_marks': '\\quad marks',
-             'step1_state': '\\quad poised resolved', 'step1_poised_unresolved': '\\quad poised in both',
-             'unexplained': 'Unexplained'}
+    """Explanation levels (analysis/16_hops_n.sh, egaDifferential --maxHops 3), declared roles, one block per
+    comparison: genes explained at each level regardless of earlier levels (any) and genes first explained there
+    (first), with the chromatin states under the fragment mean and under the maximum 1 kb window
+    (<prefix>_explanation_levels.tsv; genes at q < 0.05 of the first-level cascade from
+    <prefix>_explanation_cascade.tsv)."""
+    labels = [('promoter_marks', 'Promoter marks'), ('promoter_contacts', 'Own contacts'),
+              ('promoter_state', 'Promoter state'), ('step1_marks', 'Step 1 marks'), ('step1_state', 'Step 1 states')]
     rows = []
     for label, prefix in CASCADE_COMPARISONS:
-        source = path(prefix + '_explanation_cascade.tsv')
+        source = path(prefix + '_explanation_levels.tsv')
         if not os.path.exists(source):
             continue
         t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+        t = t[t['roles'] == 'declared'].set_index(['presence', 'level'])
+        cascade = path(prefix + '_explanation_cascade.tsv')
+        listed = pd.read_csv(cascade, sep='\t', keep_default_na=False, na_values=['']).set_index('level') \
+            if os.path.exists(cascade) else pd.DataFrame()
+        callable_ = {}
+        if os.path.exists(cascade):
+            for level, row in (('promoter_state', 'gene_state'), ('step1_state', 'step1_state')):
+                callable_[level] = not (row in listed.index and 'note' in listed and
+                                        str(listed.loc[row, 'note']) == 'states not callable')
+        steps = sorted({lv for _, lv in t.index if re.fullmatch(r'step\d+', lv) and lv != 'step1'},
+                       key=lambda x: int(x[4:]))
+        total = int(t['differential_genes'].iloc[0])
         first = True
-        for _, r in t.iterrows():
-            level = r['level']
-            name = names.get(level) or '{} step{}'.format(int(level[4:]), '' if level == 'step1' else 's')
-            if str(r.get('note', '')) == 'states not callable':
-                name += ' (not callable)'
-            step = re.fullmatch(r'step\d+', level) is not None
 
-            def count(column):
-                return integer(r[column]) if step and column in r and not pd.isna(r[column]) else ''
+        def cell(presence, level, column, missing=''):
+            if (presence, level) not in t.index or column not in t or pd.isna(t.loc[(presence, level), column]):
+                return missing
+            return integer(t.loc[(presence, level), column])
 
-            support = ''
-            if step and 'proximity_support' in r and not pd.isna(r['proximity_support']):
-                support = '{:.2f} ({})'.format(r['proximity_support'], str(r['proximity_ci']).replace('-', '--'))
-            genes = tex(str(r.get('genes_q_lt_0.05', '')).replace(';', '; ')) if step and not pd.isna(
-                r.get('genes_q_lt_0.05', float('nan'))) else ''
-            rows.append(' & '.join([
-                label if first else '', name, integer(r['genes']), integer(r['genes_reaching']),
-                '{:.1f}'.format(100 * r['fraction_of_differential']),
-                '{:.1f}'.format(100 * r['fraction_of_remaining']) if not pd.isna(r['fraction_of_remaining']) else '--',
-                count('beyond_mirror'), count('p_lt_0.05'), count('beyond_mirror_p_lt_0.05'), count('q_lt_0.1'),
-                count('q_lt_0.05'), support,
-                '{:.0f}'.format(r['median_nodes_tested']) if step and not pd.isna(r['median_nodes_tested']) else '',
-                '\\textit{' + genes + '}' if genes else '']) + r' \\')
+        def line(name, level, any_column='genes_any', first_column='genes_first', step=False, sub=False):
+            nonlocal first
+            cells = [tex(label) + ' ({})'.format(integer(total)) if first else '', name,
+                     cell('mean', level, any_column), cell('mean', level, first_column),
+                     cell('max1kb', level, any_column), cell('max1kb', level, first_column)]
+            if step:
+                cells += [cell('mean', level, 'any_beyond_mirror_p_lt_0.05'),
+                          cell('mean', level, 'first_beyond_mirror_p_lt_0.05'), cell('mean', level, 'any_q_lt_0.05'),
+                          cell('mean', level, 'first_bh_q_lt_0.05')]
+                r = t.loc[('mean', level)]
+                support = '{:.2f} ({})'.format(r['proximity_support'], str(r['proximity_ci']).replace('-', '--')) \
+                    if not pd.isna(r.get('proximity_support', float('nan'))) else ''
+                nodes = '{:.0f}'.format(r['median_nodes_tested']) if not pd.isna(r['median_nodes_tested']) else ''
+                key = 'step1' if level == 'step1_marks' else level
+                genes = str(listed.loc[key, 'genes_q_lt_0.05']) if key in listed.index and \
+                    'genes_q_lt_0.05' in listed and not pd.isna(listed.loc[key, 'genes_q_lt_0.05']) else ''
+                cells += [support, nodes, '\\textit{' + tex(genes.replace(';', '; ')) + '}' if genes else '']
+            else:
+                cells += [''] * 7
+            rows.append(' & '.join(cells) + r' \\')
             first = False
+
+        for level, name in labels:
+            if level in ('promoter_state', 'step1_state'):
+                if not callable_.get(level, True):
+                    line(name + ' (not callable)', level)
+                    continue
+                line(name, level)
+                line('\\quad resolved', level, 'any_transition', 'first_transition')
+                line('\\quad poised in both', level, 'any_poised_in_both', 'first_poised_in_both')
+            else:
+                line(name, level, step=level == 'step1_marks')
+        for level in steps:
+            line('{} steps'.format(level[4:]), level, step=True)
+        line('No level', 'none')
         rows.append(r'\midrule')
     if not rows:
         return
-    table('table_s24.tex', 'p{1.6cm}lrrrrrrrrrlr>{\\raggedright\\arraybackslash}p{3.0cm}',
-          'Comparison & Level & Genes & Reaching & \\% DE & \\% reaching & Beyond mirror & $P<0.05$ & '
-          'Beyond mirror, $P<0.05$ & $q<0.1$ & $q<0.05$ & 3D support & Nodes & Genes at $q<0.05$', rows[:-1],
-          'Explanation cascade of the baited promoter fragments of differentially expressed genes. Gene: a '
-          'concordant change of a chromatin mark at the promoter fragment and/or of the summed strength of its own '
-          'interactions ($|\\log_2|$ change $\\geq 1$ in the direction of the expression change), then a '
-          'transition of the promoter from or to the bivalent state (an active and a repressive mark present, mean '
-          'fold enrichment $\\geq 2$) concordant with the expression change (bivalent resolved), then a promoter '
-          'bivalent in both conditions (bivalent in both). Step 1: a concordant mark change summed over the '
-          'contacting fragments, then a concordant transition of a contacting fragment from or to the poised state '
-          '(poised resolved), then a contacting fragment poised in both conditions. The remaining genes are '
-          'assigned to the first graph step (2 or 3) at which a mark changes concordantly at the nodes at exactly '
-          'that distance, or remain unexplained. Not callable: the data set has no repressive mark. Reaching: genes not explained at an earlier level. '
-          'Beyond mirror: the explaining marks do not change concordantly at the mirrored loci of the same step; '
-          '$P$: per-gene permutation test of the step (200,000 permutations of the node signals), $q$: '
-          'Benjamini-Hochberg across the genes first explained at that step by marks. 3D support: probability (95\\% '
-          'interval) that graph neighbours at that step are closer in the nucleus than distance-matched pairs '
-          '(GAM of H1 hESC for hESC / hNEC, HiPore-C of K562 for the two AML comparisons, none for the mouse '
-          'comparison). Nodes: median number of nodes at that step. An explanation is the first concordant change '
-          'given the measured layers.', 'tab:s24', size=r'\scriptsize', long=True, colsep='3pt')
+    table('table_s24.tex', 'p{1.3cm}lrrrrrrrrlr>{\\raggedright\\arraybackslash}p{2.4cm}',
+          'Comparison (DE) & Level & \\multicolumn{2}{c}{Mean} & \\multicolumn{2}{c}{Max. 1 kb} & '
+          '\\multicolumn{2}{c}{BM, $P<0.05$} & \\multicolumn{2}{c}{$q<0.05$} & 3D support & Nodes & '
+          'Genes first explained, $q<0.05$ \\\\ & & Any & First & Any & First & Any & First & Any & First & & &',
+          rows[:-1],
+          'Explanation levels of the baited promoter fragments of differentially expressed (DE) genes under the '
+          'declared mark roles. Every level is evaluated for every gene in a fixed rank order: the marks at the '
+          'promoter fragment, the summed strength of its own interactions, the chromatin state of the promoter, the '
+          'marks summed over the contacting fragments (step 1), the states of the contacting fragments, and the '
+          'marks summed over the nodes at exactly 2 and 3 steps. A mark level explains a gene when a mark changes by '
+          '$|\\log_2| \\geq 1$ in the direction expected from its role and the expression change; a contact level '
+          'when the summed interaction strength changes by $|\\log_2| \\geq 1$ with the expression change; a state '
+          'level when the promoter (a contacting fragment) changes from or to the bivalent (poised) state in the '
+          'direction of the expression change, supported by the mark changes (resolved), or is bivalent (poised) '
+          'in both conditions (poised in both). Any: genes explained at that level regardless of earlier levels; '
+          'first: genes first explained there (the explanation cascade). Mean / max.\\ 1 kb: presence of a mark '
+          'on a fragment from the mean fold enrichment over the fragment or from the largest mean over windows of '
+          'at most 1 kb within it (threshold 2); the mark and contact levels do not depend on it, but the first '
+          'level of a gene does. Not callable: the data set has no repressive mark. BM, $P<0.05$ (beyond mirror): the '
+          'explaining marks do not change concordantly at the mirrored loci of the same step and the per-gene '
+          'permutation test of the step (200,000 permutations of the node signals) gives $P<0.05$ (mean '
+          'statistic for first). $q$, any: Benjamini-Hochberg within the level over the DE genes with nodes at that '
+          'step; first: across the genes first explained at that step. 3D support: probability (95\\% interval) '
+          'that graph neighbours at that step are closer in the nucleus than distance-matched pairs (GAM of H1 hESC '
+          'for hESC / hNEC, HiPore-C of K562 for the two AML comparisons, none for the mouse comparison). Nodes: '
+          'median number of nodes at that step of the genes explained there.', 'tab:s24', size=r'\scriptsize',
+          long=True, colsep='2.5pt')
 
 
 def s25():
@@ -986,12 +1025,16 @@ def s25():
 
 def s26():
     """Validation of the bivalency calls of Md / PA2 against the sequential ChIP (analysis/rechip_validation.py,
-    <results>/hops_n/rechip/rechip_validation.tsv)."""
+    <results>/hops_n/rechip/rechip_validation.tsv), under both presence statistics (fragment mean, maximum 1 kb
+    window; the re-ChIP read with the same statistic)."""
     source = path('hops_n', 'rechip', 'rechip_validation.tsv')
     if not os.path.exists(source):
         return
     t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
     t['threshold'] = t['threshold'].astype(str)
+    if 'presence' not in t:
+        t['presence'] = t['reference'] = 'mean'
+    statistics = {'mean': 'fragment mean', 'max1kb': 'max.\\ 1 kb window'}
 
     def pct(x):
         return '--' if pd.isna(x) else '{:.0f}'.format(100 * x)
@@ -1000,85 +1043,143 @@ def s26():
         return r'\midrule' + '\n' + ' & '.join('\\textit{' + c + '}' if c else '' for c in cells) + r' \\'
 
     rows = []
-    calls = t[t['section'] == 'class']
-    for condition in ('Md', 'PA2'):
-        first = True
-        for threshold in ('1.5', '2.0', '3.0'):
-            for _, r in calls[(calls['condition'] == condition) & (calls['threshold'] == threshold)].iterrows():
-                rows.append(' & '.join([condition if first else '', threshold if r['group'] == 'bivalent' else '',
-                                        tex(r['group']), integer(r['n']), num(r['median_rechip'], 2),
-                                        '{}--{}'.format(num(r['q25_rechip'], 2), num(r['q75_rechip'], 2)),
-                                        pct(r['fraction_ge_2']), pct(r['fraction_ge_3']), '']) + r' \\')
-                first = False
-    rows.append(head(['Condition', 'FE', 'Bivalent calls', 'Re-ChIP $\\geq 2$', 'Precision (\\%)', 'Recall (\\%)',
-                      'Re-ChIP $\\geq 3$', 'Precision (\\%)', 'Recall (\\%)']))
-    scores = t[(t['section'] == 'call')]
     auc = {}
-    for condition in ('Md', 'PA2'):
-        for cutoff in (2.0, 3.0):
-            r = scores[(scores['condition'] == condition) & (scores['threshold'] == 'score') &
-                       (scores['cutoff'] == cutoff)]
-            auc[(condition, cutoff)] = float(r['auc'].iloc[0]) if len(r) else float('nan')
-        for threshold in ('1.5', '2.0', '3.0'):
-            part = scores[(scores['condition'] == condition) & (scores['threshold'] == threshold)]
-            two, three = (part[part['cutoff'] == c].iloc[0] for c in (2.0, 3.0))
-            rows.append(' & '.join([condition if threshold == '1.5' else '', threshold, integer(two['n_called']),
-                                    integer(two['n_positive']), pct(two['precision']), pct(two['recall']),
-                                    integer(three['n_positive']), pct(three['precision']), pct(three['recall'])])
-                        + r' \\')
-    rows.append(head(['Scope', 'Transition Md $\\to$ PA2', '', 'Fragments', 'Median re-ChIP Md / PA2',
-                      '$\\geq 2$ Md / PA2 (\\%)', 'Median $\\log_2$ change', 'Median rank change', '$P$ (rank)']))
-    moves = t[(t['section'] == 'transition') & (t['threshold'] == '2.0')]
-    keep = ('bivalent -> active only', 'bivalent -> bivalent', 'bivalent -> repressive only', 'bivalent -> none',
-            'active only -> bivalent', 'repressive only -> bivalent', 'none -> bivalent')
-    for scope in ('DE genes', 'all baits'):
-        first = True
-        part = moves[moves['scope'] == scope].set_index('group')
-        for label in keep:
-            if label not in part.index:
-                continue
-            r = part.loc[label]
-            rows.append(' & '.join([scope if first else '',
-                                    r'\multicolumn{2}{l}{' + tex(label).replace('->', '$\\to$') + '}', integer(r['n']),
-                                    '{} / {}'.format(num(r['median_rechip_Md'], 1), num(r['median_rechip_PA2'], 1)),
-                                    '{} / {}'.format(pct(r['fraction_ge_2_Md']), pct(r['fraction_ge_2_PA2'])),
-                                    num(r['median_log2_change'], 2), num(r['median_rank_change'], 1),
-                                    pval(r.get('rank_wilcoxon_p', float('nan')))]) + r' \\')
-            first = False
-    rows.append(head(['Poised in both (DE genes)', '', '', 'Fragments', 'Re-ChIP $\\geq 2$ in both',
-                      'Re-ChIP $\\geq 3$ in both', '', '', '']))
-    for _, r in t[t['section'] == 'poised_in_both'].iterrows():
-        rows.append(' & '.join([r'\multicolumn{3}{l}{' + tex(r['group']) + '}', integer(r['n']),
-                                integer(r['confirmed_ge_2']), integer(r['confirmed_ge_3']), '', '', '']) + r' \\')
+    for presence in ('mean', 'max1kb'):
+        part_t = t[(t['presence'] == presence) & (t['reference'] == presence)]
+        if not len(part_t):
+            continue
+        if rows:
+            rows.append(r'\midrule')
+        rows.append(r'\multicolumn{9}{l}{\textbf{Presence and re-ChIP: ' + statistics[presence] + r'}} \\')
+        calls = part_t[part_t['section'] == 'class']
+        for condition in ('Md', 'PA2'):
+            first = True
+            for threshold in ('1.5', '2.0', '3.0'):
+                for _, r in calls[(calls['condition'] == condition) & (calls['threshold'] == threshold)].iterrows():
+                    rows.append(' & '.join([condition if first else '', threshold if r['group'] == 'bivalent' else '',
+                                            tex(r['group']), integer(r['n']), num(r['median_rechip'], 2),
+                                            '{}--{}'.format(num(r['q25_rechip'], 2), num(r['q75_rechip'], 2)),
+                                            pct(r['fraction_ge_2']), pct(r['fraction_ge_3']), '']) + r' \\')
+                    first = False
+        rows.append(head(['Condition', 'FE', 'Bivalent calls', 'Re-ChIP $\\geq 2$', 'Precision (\\%)',
+                          'Recall (\\%)', 'Re-ChIP $\\geq 3$', 'Precision (\\%)', 'Recall (\\%)']))
+        scores = part_t[part_t['section'] == 'call']
+        for condition in ('Md', 'PA2'):
+            for cutoff in (2.0, 3.0):
+                r = scores[(scores['condition'] == condition) & (scores['threshold'] == 'score') &
+                           (scores['cutoff'] == cutoff)]
+                auc[(presence, condition, cutoff)] = float(r['auc'].iloc[0]) if len(r) else float('nan')
+            for threshold in ('1.5', '2.0', '3.0'):
+                part = scores[(scores['condition'] == condition) & (scores['threshold'] == threshold)]
+                two, three = (part[part['cutoff'] == c].iloc[0] for c in (2.0, 3.0))
+                rows.append(' & '.join([condition if threshold == '1.5' else '', threshold, integer(two['n_called']),
+                                        integer(two['n_positive']), pct(two['precision']), pct(two['recall']),
+                                        integer(three['n_positive']), pct(three['precision']),
+                                        pct(three['recall'])]) + r' \\')
+        rows.append(head(['Scope', 'Transition Md $\\to$ PA2', '', 'Fragments', 'Median re-ChIP Md / PA2',
+                          '$\\geq 2$ Md / PA2 (\\%)', 'Median $\\log_2$ change', 'Median rank change',
+                          '$P$ (rank)']))
+        moves = part_t[(part_t['section'] == 'transition') & (part_t['threshold'] == '2.0')]
+        keep = ('bivalent -> active only', 'bivalent -> bivalent', 'bivalent -> repressive only', 'bivalent -> none',
+                'active only -> bivalent', 'repressive only -> bivalent', 'none -> bivalent')
+        for scope in ('DE genes', 'all baits'):
+            first = True
+            part = moves[moves['scope'] == scope].set_index('group')
+            for label in keep:
+                if label not in part.index:
+                    continue
+                r = part.loc[label]
+                rows.append(' & '.join([scope if first else '',
+                                        r'\multicolumn{2}{l}{' + tex(label).replace('->', '$\\to$') + '}',
+                                        integer(r['n']),
+                                        '{} / {}'.format(num(r['median_rechip_Md'], 1), num(r['median_rechip_PA2'], 1)),
+                                        '{} / {}'.format(pct(r['fraction_ge_2_Md']), pct(r['fraction_ge_2_PA2'])),
+                                        num(r['median_log2_change'], 2), num(r['median_rank_change'], 1),
+                                        pval(r.get('rank_wilcoxon_p', float('nan')))]) + r' \\')
+                first = False
+        rows.append(head(['Poised in both (DE genes)', '', '', 'Fragments', 'Re-ChIP $\\geq 2$ in both',
+                          'Re-ChIP $\\geq 3$ in both', '', '', '']))
+        for _, r in part_t[part_t['section'] == 'poised_in_both'].iterrows():
+            rows.append(' & '.join([r'\multicolumn{3}{l}{' + tex(r['group']) + '}', integer(r['n']),
+                                    integer(r['confirmed_ge_2']), integer(r['confirmed_ge_3']), '', '', '']) + r' \\')
+    auc_text = '; '.join('{}: {:.2f} (re-ChIP $\\geq 2$) and {:.2f} ($\\geq 3$) in Md, {:.2f} and {:.2f} in PA2'.format(
+        statistics[p], auc.get((p, 'Md', 2.0), float('nan')), auc.get((p, 'Md', 3.0), float('nan')),
+        auc.get((p, 'PA2', 2.0), float('nan')), auc.get((p, 'PA2', 3.0), float('nan')))
+        for p in ('mean', 'max1kb') if (p, 'Md', 2.0) in auc)
     table('table_s26.tex', 'llp{2.6cm}rrrrrr',
           'Condition & FE & EGA call & Fragments & Median re-ChIP & IQR & Re-ChIP $\\geq 2$ (\\%) & '
           'Re-ChIP $\\geq 3$ (\\%) &', rows,
           'Bivalency calls of the Md / PA2 comparison against the sequential ChIP (re-ChIP: H3K27me3 then H3K4me2, '
-          'Minoux et al.; fold enrichment over the pooled input). Promoter fragments (bait nodes of the union graph) '
-          'are called bivalent when an active mark (H3K27ac or H3K4me2) and H3K27me3 are present at a mean fold '
-          'enrichment (FE) of at least 1.5, 2 or 3 over the fragment, active only, repressive only or none. First '
-          'block: re-ChIP FE of the fragments of every call. Second block: precision and recall of the bivalent '
-          'call for re-ChIP FE $\\geq 2$ and $\\geq 3$. The AUC of the two-mark score min(max active FE, '
-          'H3K27me3 FE) is {:.2f} (re-ChIP $\\geq 2$) and {:.2f} ($\\geq 3$) in Md and {:.2f} and {:.2f} in PA2. '
+          'Minoux et al.; fold enrichment over the pooled input), under two presence statistics of a mark on a '
+          'fragment: the mean fold enrichment (FE) over the fragment and the largest mean over windows of at most '
+          '1 kb within it; the re-ChIP is read with the same statistic. Promoter fragments (bait nodes of the union '
+          'graph) are called bivalent when an active mark (H3K27ac or H3K4me2) and H3K27me3 are present at FE of at '
+          'least 1.5, 2 or 3, active only, repressive only or none. First block: re-ChIP FE of the fragments of '
+          'every call. Second block: precision and recall of the bivalent call for re-ChIP FE $\\geq 2$ and '
+          '$\\geq 3$. AUC of the two-mark score min(max active FE, H3K27me3 FE), ' + auc_text + '. '
           'Third block: re-ChIP FE of promoter fragments by state in Md and in PA2 at FE $\\geq 2$, for the '
           'promoters of differentially expressed genes and for all promoter fragments; $\\geq 2$: fraction of '
           'fragments with re-ChIP FE $\\geq 2$; change: median $\\log_2$ (PA2 + 1) / (Md + 1); the re-ChIP signal '
           'of the two libraries differs as a whole (PA2: lower at bivalent, higher at unmarked fragments), so the '
           'change is also given as the change of the percentile rank of the fragment among all promoter fragments '
           'of its condition (percentage points, PA2 minus Md), $P$: Wilcoxon signed-rank test of the rank change. '
-          'Fourth block: differentially '
-          'expressed genes explained as poised in both conditions at the promoter or at a contacting fragment '
-          '(step 1), and all differentially expressed genes with a promoter bivalent in both, with the number of '
-          'fragments with re-ChIP FE $\\geq 2$ ($\\geq 3$) in both conditions.'.format(
-              auc[('Md', 2.0)], auc[('Md', 3.0)], auc[('PA2', 2.0)], auc[('PA2', 3.0)]),
-          'tab:s26', size=r'\scriptsize', long=True, colsep='3pt')
+          'Fourth block: differentially expressed genes whose promoter, or a contacting fragment (step 1), is '
+          'bivalent (poised) in both conditions at any level of the explanation, with the number of fragments with '
+          're-ChIP FE $\\geq 2$ ($\\geq 3$) in both conditions.', 'tab:s26', size=r'\scriptsize', long=True,
+          colsep='3pt')
+
+
+def s27():
+    """Combinations of explaining levels (upset-style counts, <prefix>_explanation_combinations.tsv), declared roles:
+    the ten most frequent combinations under each presence statistic of the states, per comparison."""
+    names = {'promoter_marks': 'promoter marks', 'promoter_contacts': 'contacts', 'promoter_state': 'promoter state',
+             'step1_marks': 'step 1 marks', 'step1_state': 'step 1 states', 'none': 'no level'}
+    rows = []
+    for label, prefix in CASCADE_COMPARISONS:
+        source = path(prefix + '_explanation_combinations.tsv')
+        levels = path(prefix + '_explanation_levels.tsv')
+        if not os.path.exists(source):
+            continue
+        t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+        t = t[t['roles'] == 'declared']
+        total = int(pd.read_csv(levels, sep='\t')['differential_genes'].iloc[0]) if os.path.exists(levels) else None
+        counts = {p: dict(zip(part['combination'], part['genes'])) for p, part in t.groupby('presence')}
+        top = {p: list(part.sort_values('rank')['combination'][:10]) for p, part in t.groupby('presence')}
+        shown = list(dict.fromkeys(top.get('mean', []) + top.get('max1kb', [])))
+        shown.sort(key=lambda c: (-counts.get('mean', {}).get(c, 0), -counts.get('max1kb', {}).get(c, 0), c))
+        first = True
+        for combination in shown:
+            text = ' + '.join(names.get(x, x.replace('step', 'step ')) for x in combination.split(';'))
+            cells = [tex(label) + (' ({})'.format(integer(total)) if total else '') if first else '', tex(text),
+                     str(len(combination.split(';'))) if combination != 'none' else '0']
+            for presence in ('mean', 'max1kb'):
+                n = counts.get(presence, {}).get(combination)
+                cells += ['$\\leq${}'.format(integer(min(counts[presence].values()))) if n is None and
+                          counts.get(presence) else integer(n) if n is not None else '--',
+                          '{:.1f}'.format(100 * n / total) if n is not None and total else '']
+            rows.append(' & '.join(cells) + r' \\')
+            first = False
+        rows.append(r'\midrule')
+    if not rows:
+        return
+    table('table_s27.tex', 'p{2.0cm}>{\\raggedright\\arraybackslash}p{6.2cm}rrrrr',
+          'Comparison (DE) & Explaining levels & Levels & \\multicolumn{2}{c}{Mean} & \\multicolumn{2}{c}{Max.\\ 1 kb} '
+          '\\\\ & & & Genes & \\% DE & Genes & \\% DE', rows[:-1],
+          'Combinations of the levels that explain a differentially expressed (DE) gene, every level evaluated for '
+          'every gene (Supplementary Table S24) under the declared mark roles: the ten most frequent combinations '
+          'under each presence statistic of the chromatin states (mean fold enrichment over the fragment, maximum '
+          'over windows of at most 1 kb), with the number of genes whose explaining levels are exactly that '
+          'combination. $\\leq$: not among the 20 most frequent combinations under that statistic (at most the '
+          'count shown). The combinations under the roles learned at each level are in '
+          '\\texttt{<prefix>\\_explanation\\_combinations.tsv}.', 'tab:s27', size=r'\scriptsize', long=True,
+          colsep='3pt')
 
 
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
     for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
-                  s25, s26):
+                  s25, s26, s27):
         build()
         print(build.__name__, flush=True)
 

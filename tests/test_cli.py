@@ -165,6 +165,18 @@ def test_differential_cli(tmp_path):
     egaExplain.main(['-p', learned, '-o', os.path.join(d, 'out', 'explain')])
     report = pd.read_csv(os.path.join(d, 'out', 'explain_genes.tsv'), sep='\t')
     assert len(report) == len(learned_classes)
+    # every level for every differential gene, both role sets and both presence statistics
+    levels = pd.read_csv(learned + '_explanations_all_levels.tsv', sep='\t')
+    assert len(levels) == 7 * len(learned_classes)   # --maxHops 3
+    for column in ('explains_declared_mean', 'explains_declared_max1kb', 'explains_learned_mean',
+                   'explains_learned_max1kb', 'p_declared', 'q_learned', 'detail_learned_max1kb'):
+        assert column in levels
+    assert {'first_level_declared_mean', 'explaining_levels_learned_max1kb'} <= set(learned_classes.columns)
+    for name in ('_explanation_levels.tsv', '_explanation_combinations.tsv', '_explanation_cascade_max1kb.tsv',
+                 '_explanation_cascade_learned_max1kb.tsv'):
+        assert os.path.exists(learned + name)
+    assert report['all_levels'].str.contains('promoter marks: .*step 3: ', regex=True).all()
+    assert 'all_levels_learned' in report
     from epigeneticgraphanalyzer import egaPlotDifferential
     figure = os.path.join(d, 'out', 'differential.png')
     gene = 'GENE{}'.format(baits.index(next(b for b in baits if b[0] == sorted(gained)[0][0] and b[1] == sorted(gained)[0][1])))

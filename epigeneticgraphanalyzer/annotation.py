@@ -53,6 +53,31 @@ def bigwig_interval_signal(bigwig_path, chroms, starts, ends):
     return values
 
 
+def bigwig_interval_max_window(bigwig_path, chroms, starts, ends, window=1000):
+    """Maximum over windows of the mean bigWig signal within every interval: the interval is divided into
+    ceil(length / `window`) windows of equal width (at most `window` bp each) and the largest window mean is
+    returned (the interval mean for intervals up to `window` bp; 0 outside the chromosome or without data)."""
+    import pyBigWig
+    values = np.zeros(len(starts))
+    handle = pyBigWig.open(bigwig_path)
+    try:
+        sizes = handle.chroms()
+        for i, (chrom, start, end) in enumerate(zip(chroms, starts, ends)):
+            if chrom not in sizes:
+                continue
+            start = max(0, int(start))
+            end = min(sizes[chrom], int(end))
+            if end <= start:
+                continue
+            bins = max(1, min(end - start, int(np.ceil((end - start) / float(window)))))
+            stat = handle.stats(chrom, start, end, type='mean', nBins=bins, exact=True)
+            found = [float(s) for s in stat if s is not None]
+            values[i] = max(found) if found else 0.0
+    finally:
+        handle.close()
+    return values
+
+
 def annotate_signals(graph, tracks, flank=0):
     """Attach one attribute per track. `tracks` maps attribute name -> list of bigWig replicates."""
     for name, paths in tracks.items():

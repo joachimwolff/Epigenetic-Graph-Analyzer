@@ -23,6 +23,16 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             nodes carrying the change; a chromatin state transition of the promoter
                             (e.g. 'promoter bivalent in hESC (H3K4me3 4.1, H3K27me3 3.2), resolved to active in hNEC
                             by loss of H3K27me3') or of a contacting fragment explaining the gene is added.
+                            With <prefix>_explanations_all_levels.tsv (egaDifferential), all_levels lists every
+                            level in rank order with its result under the declared roles (all_levels_learned: the
+                            roles learned at each level), also when an earlier level explains the gene: promoter
+                            marks, contacts, promoter state, step 1 marks, step 1 states, step 2 .. step n; the
+                            state levels under both presence statistics (mean | max1kb), followed by the explaining
+                            levels, e.g. 'Hoxa3 (up, log2 10.6): promoter marks: no concordant change (...);
+                            contacts: ...; promoter state: bivalent in Md and PA2 (H3K4me2 5.1/5.2, H3K27me3 67/80;
+                            mean) - poised, trigger not among the measured layers | ...; step 2: H3K27ac +3.4 at 12
+                            nodes (5 concordant), strongest Hoxa2 promoter H3K27ac log2 +3.1, P 8.5e-05, q 0.004,
+                            beyond mirror, 3D support n/a; explaining levels (mean): promoter_state;step2'.
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -34,7 +44,7 @@ import pandas as pd
 from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging
-from .differential import level_hops
+from .differential import STATE_LEVELS, explanation_level_label, level_hops
 from .graph import read_graph
 
 log = logging.getLogger(__name__)
@@ -166,8 +176,33 @@ def proximity_sentence(hops, support, interval):
     return text + ' against 0.5 for matched pairs'
 
 
+def all_level_text(gene, rna, levels, roles):
+    """Every level of one gene in rank order with its result under the role set `roles` (rows of
+    <prefix>_explanations_all_levels.tsv); state levels under both presence statistics."""
+    parts = []
+    levels = levels.sort_values('rank')
+    presences = [p for p in ('mean', 'max1kb') if 'detail_{}_{}'.format(roles, p) in levels]
+    for _, r in levels.iterrows():
+        texts = [str(r['detail_{}_{}'.format(roles, p)]) for p in presences]
+        if r['level'] not in STATE_LEVELS:
+            texts = texts[:1]
+        parts.append('{}: {}'.format(explanation_level_label(r['level']), ' | '.join(texts)))
+    explaining = []
+    for p in presences:
+        hit = levels.loc[levels['explains_{}_{}'.format(roles, p)].astype(str).str.lower() == 'true', 'level']
+        explaining.append('{} ({})'.format(';'.join(hit) or 'none', p))
+    return '{} ({}, log2 {:.1f}): {}; explaining levels: {}'.format(
+        gene, 'up' if rna > 0 else 'down', rna, '; '.join(parts), ', '.join(explaining))
+
+
 def gene_report(graph, prefix, names, marks, edges):
     classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t')
+    try:
+        all_levels = pd.read_csv(prefix + '_explanations_all_levels.tsv', sep='\t', keep_default_na=False,
+                                 na_values=[''])
+        all_levels = dict(tuple(all_levels.groupby('node', sort=False)))
+    except FileNotFoundError:
+        all_levels = {}
     try:
         switches = pd.read_csv(prefix + '_gene_community_changes.tsv', sep='\t').set_index('node')
     except FileNotFoundError:
@@ -247,6 +282,10 @@ def gene_report(graph, prefix, names, marks, edges):
         if 'proximity_support' in r:
             row['proximity_support'] = r['proximity_support']
             row['proximity_support_ci'] = r.get('proximity_support_ci', '')
+        if node in all_levels:
+            for roles, column in (('declared', 'all_levels'), ('learned', 'all_levels_learned')):
+                if 'detail_{}_mean'.format(roles) in all_levels[node]:
+                    row[column] = all_level_text(gene, r['rna_log2FC'], all_levels[node], roles)
         rows.append(row)
     return pd.DataFrame(rows).sort_values('rna_log2FC', key=np.abs, ascending=False)
 
