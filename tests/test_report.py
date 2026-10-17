@@ -125,20 +125,27 @@ def test_all_level_table_is_read(run, tmp_path):
                         str(tmp_path / path.replace('cond1_vs_cond2', 'copy')))
     classes = run['classes']
     node, genes = classes['node'].iloc[0], classes['genes'].iloc[0]
+    common = dict(node=node, genes=genes, rna_log2FC=2.0)
     table = pd.DataFrame([
-        dict(node=node, genes=genes, rank=1, level='promoter', explains=True, marks='H3K27ac:+:2.10', nodes=1,
-             p=np.nan, q=np.nan, beyond_mirror=np.nan, proximity_support=1.0, declared_roles='H3K27ac active',
-             learned_roles='H3K27ac active'),
-        dict(node=node, genes=genes, rank=2, level='step 2', explains=True, marks='H3K27ac:+:1.40', nodes=12,
-             p=0.004, q=0.03, beyond_mirror=True, proximity_support=0.58, declared_roles='H3K27ac active',
-             learned_roles='H3K27ac active'),
-        dict(node=node, genes=genes, rank=np.nan, level='step 1', explains=False, marks='', nodes=3, p=0.5,
-             q=0.9, beyond_mirror=False, proximity_support=0.66, declared_roles='', learned_roles='')])
+        dict(common, rank=1, level='promoter_marks', hops=0, nodes_tested=1, mark_changes='H3K27ac:+2.10',
+             proximity_support=1.0, proximity_support_ci='NA', concordant_marks_declared='H3K27ac',
+             explains_declared_mean=True, result_declared_mean='concordant', detail_declared_mean='H3K27ac +2.1',
+             explains_learned_mean=True, result_learned_mean='concordant'),
+        dict(common, rank=4, level='step1_marks', hops=1, nodes_tested=3, mark_changes='H3K27ac:+0.20',
+             mirror_changes='H3K27ac:+0.10', proximity_support=0.66, proximity_support_ci='0.64-0.68',
+             p_declared=0.5, q_declared=0.9, explains_declared_mean=False, result_declared_mean='below threshold',
+             explains_learned_mean=False, result_learned_mean='below threshold'),
+        dict(common, rank=6, level='step2', hops=2, nodes_tested=12, mark_changes='H3K27ac:+1.40',
+             mirror_changes='H3K27ac:+0.20', proximity_support=0.58, proximity_support_ci='0.56-0.60',
+             concordant_marks_declared='H3K27ac', n_concordant_nodes_declared=4, p_declared=0.004, q_declared=0.03,
+             beyond_mirror_declared=True, explains_declared_mean=True, result_declared_mean='concordant',
+             explains_learned_mean=False, result_learned_mean='no consistent role')])
     table.to_csv(prefix + '_explanations_all_levels.tsv', sep='\t', index=False)
     data = egaReport.Run(prefix, explain_prefix='')
     assert data.levels_source == 'copy_explanations_all_levels.tsv'
     rows = data.levels[data.levels['node'] == node].set_index('level')
     assert rows.loc['step2', 'rank'] == 2 and rows.loc['step2', 'q'] == 0.03
+    assert rows.loc['step2', 'learned'].startswith('does not explain')
     assert bool(rows.loc['step2', 'beyond_mirror'])
     assert not rows.loc['step1', 'explains']
     gene = str(genes).split(',')[0]

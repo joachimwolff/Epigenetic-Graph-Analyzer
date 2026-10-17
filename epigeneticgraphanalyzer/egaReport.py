@@ -231,7 +231,8 @@ def normalise_level(value):
     text = re.sub(r'[\s_-]+', '', str(value).lower())
     aliases = {'promoter': 'promoter_marks', 'promotermarks': 'promoter_marks', 'genemarks': 'promoter_marks',
                'marks': 'promoter_marks', 'step0': 'promoter_marks', 'contacts': 'contacts', 'contact': 'contacts',
-               'interactions': 'contacts', 'owninteractions': 'contacts', 'promoterstate': 'promoter_state',
+               'interactions': 'contacts', 'owninteractions': 'contacts', 'promotercontacts': 'contacts',
+               'promoterstate': 'promoter_state', 'step1states': 'step1_state',
                'state': 'promoter_state', 'genestate': 'promoter_state', 'step1': 'step1', 'direct': 'step1',
                'step1marks': 'step1', 'step1state': 'step1_state', 'indirect': 'step2'}
     if text in aliases:
@@ -328,6 +329,8 @@ class Run:
         self.support = self.step_support()
         self._graph = None
         self._edge_counts = None
+        self.levels_variant = None
+        self.level_counts = self.table('_explanation_levels.tsv')
         self.levels, self.levels_source = self.build_levels()
 
     # files ----------------------------------------------------------------------------------------------------------
@@ -466,23 +469,60 @@ class Run:
         return self.derive_levels(), os.path.basename(self.prefix) + '_gene_classes.tsv (derived)'
 
     def levels_from_file(self, raw):
-        columns = raw.columns
+        """Rows of <prefix>_explanations_all_levels.tsv (egaDifferential): one per gene and level, with the result of
+        every level under a role set (declared, learned) and presence statistic (mean, max1kb) of the states. The
+        report shows the declared roles with the mean statistic and adds the learned roles and max1kb results."""
+        columns = list(raw.columns)
         c_node, c_gene, c_level = pick(columns, 'node'), pick(columns, 'gene', 'genes'), pick(columns, 'level')
         if c_level is None or (c_node is None and c_gene is None):
             raise KeyError('level and node / gene columns')
-        get = {key: pick(columns, *names) for key, names in {
-            'rank': ('rank',), 'explains': ('explains', 'explaining', 'explained'),
-            'changes': ('marks', 'mark_changes', 'changes', 'evidence'),
-            'nodes': ('nodes', 'n_nodes', 'nodes_tested', 'n_hop_nodes_tested'),
-            'p': ('p', 'pvalue', 'p_value', 'hops_p'), 'q': ('q', 'qvalue', 'q_value', 'fdr', 'hops_q'),
-            'beyond_mirror': ('beyond_mirror',), 'mirror': ('mirror', 'mirror_marks', 'mirror_changes'),
-            'support': ('support_3d', 'proximity_support', '3d_support'),
-            'support_ci': ('support_3d_ci', 'proximity_support_ci', 'proximity_ci'),
-            'declared': ('declared_roles', 'declared_role', 'roles_declared'),
-            'learned': ('learned_roles', 'learned_role', 'roles_learned'),
-            'detail': ('detail', 'explanation', 'text', 'summary'), 'rna_log2FC': ('rna_log2FC',)}.items()}
-        rows = []
+        variants = [(m.group(1), m.group(2)) for c in columns
+                    for m in [re.fullmatch(r'explains_(\w+?)_(mean|max1kb)', c)] if m]
+        roles = 'declared' if any(r == 'declared' for r, _ in variants) else (variants[0][0] if variants else None)
+        presence = 'mean' if (roles, 'mean') in variants else \
+            next((p for r, p in variants if r == roles), None)
+        key = '{}_{}'.format(roles, presence) if roles else None
+        self.levels_variant = key
+        learned_key = 'learned_{}'.format(presence) if ('learned', presence) in variants and roles != 'learned' \
+            else None
+        max_key = '{}_max1kb'.format(roles) if (roles, 'max1kb') in variants and presence != 'max1kb' else None
+
+        def col(generic, specific=None):
+            return pick(columns, *(([specific] if specific else []) + list(generic)))
+
+        c = dict(explains=col(('explains', 'explaining', 'explained'), 'explains_' + key if key else None),
+                 detail=col(('detail', 'explanation', 'text'), 'detail_' + key if key else None),
+                 result=col(('result',), 'result_' + key if key else None),
+                 transition=col(('transition',), 'transition_' + key if key else None),
+                 p=col(('p', 'pvalue', 'p_value'), 'p_' + roles if roles else None),
+                 q=col(('q', 'qvalue', 'q_value', 'fdr'), 'q_' + roles if roles else None),
+                 beyond=col(('beyond_mirror',), 'beyond_mirror_' + roles if roles else None),
+                 concordant=col(('concordant_marks', 'marks'), 'concordant_marks_' + roles if roles else None),
+                 strongest=col(('strongest',), 'strongest_' + roles if roles else None),
+                 n_concordant=col(('n_concordant_nodes',), 'n_concordant_nodes_' + roles if roles else None),
+                 changes=col(('mark_changes', 'changes')), mirror=col(('mirror_changes',)),
+                 nodes=col(('nodes_tested', 'nodes', 'n_nodes')), support=col(('proximity_support', 'support_3d')),
+                 support_ci=col(('proximity_support_ci', 'support_3d_ci', 'proximity_ci')),
+                 rna=col(('rna_log2FC',)), gained=col(('contacts_gained',)), lost=col(('contacts_lost',)),
+                 shared=col(('contacts_shared',)), contact=col(('contact_log2',)))
+
+        def value(r, name):
+            return r[c[name]] if c[name] else np.nan
+
+        def parsed(text):
+            out = {}
+            for item in str(text).split(';'):
+                if ':' in item:
+                    mark, number = item.rsplit(':', 1)
+                    try:
+                        out[mark] = float(number)
+                    except ValueError:
+                        continue
+            return out
+
+        used = {v for v in c.values() if v} | {c_node, c_gene, c_level}
         classes = self.classes.set_index('node')
+        rows = []
         for _, r in raw.iterrows():
             node = r[c_node] if c_node else None
             genes = r[c_gene] if c_gene else (classes.loc[node, 'genes'] if node in classes.index else '')
@@ -490,26 +530,75 @@ class Run:
                 match = self.classes[self.classes['genes'].astype(str) == str(genes)]
                 node = match['node'].iloc[0] if len(match) else str(genes)
             level = normalise_level(r[c_level])
+            state = level in ('promoter_state', 'step1_state')
             row = dict(node=node, genes=genes, gene=first_gene(genes), level=level, level_label=level_label(level),
-                       cascade_level=cascade_level(level), order=level_order(level))
-            for key, column in get.items():
-                row[key] = r[column] if column else np.nan
-            if isnan(row['rna_log2FC']) and node in classes.index:
-                row['rna_log2FC'] = classes.loc[node, 'rna_log2FC']
-            row['explains'] = truthy(row['explains']) if get['explains'] else not isnan(row['rank'])
-            if get['beyond_mirror'] is None and isinstance(row['mirror'], str):
-                row['beyond_mirror'] = True if 'beyond' in row['mirror'] and 'not beyond' not in row['mirror'] \
-                    else (False if 'not beyond' in row['mirror'] else np.nan)
-            elif not isnan(row['beyond_mirror']):
-                row['beyond_mirror'] = truthy(row['beyond_mirror'])
-            row['all_changes'] = row['changes']
-            row['extra'] = {c: r[c] for c in columns if c not in set(get.values()) | {c_node, c_gene, c_level}
-                            and not isnan(r[c])}
+                       cascade_level=cascade_level(level), order=level_order(level), declared='', extra={})
+            row['rna_log2FC'] = value(r, 'rna') if not isnan(value(r, 'rna')) else \
+                (classes.loc[node, 'rna_log2FC'] if node in classes.index else np.nan)
+            row['explains'] = truthy(value(r, 'explains'))
+            row['nodes'] = value(r, 'nodes')
+            row['p'], row['q'] = value(r, 'p'), value(r, 'q')
+            row['beyond_mirror'] = truthy(value(r, 'beyond')) if not isnan(value(r, 'beyond')) else np.nan
+            row['mirror'] = '' if isnan(row['beyond_mirror']) else \
+                ('beyond the mirror' if row['beyond_mirror'] else 'not beyond the mirror (mirrored loci change the '
+                                                                  'same way)')
+            row['support'] = np.nan if state else value(r, 'support')
+            row['support_ci'] = '' if state or isnan(value(r, 'support_ci')) else str(value(r, 'support_ci'))
+            result = value(r, 'result')
+            result = '' if isnan(result) else str(result)
+            marks = parsed(value(r, 'changes')) if not isnan(value(r, 'changes')) else {}
+            mirror = parsed(value(r, 'mirror')) if not isnan(value(r, 'mirror')) else {}
+            if level == 'contacts':
+                text = '{} gained, {} lost, {} shared; summed strength log2 {}'.format(
+                    fmt_int(value(r, 'gained')), fmt_int(value(r, 'lost')), fmt_int(value(r, 'shared')),
+                    fmt_num(value(r, 'contact'), signed=True)) if c['gained'] else str(value(r, 'detail'))
+                row['changes'] = row['all_changes'] = text
+                row['detail'] = '' if row['explains'] else result
+            elif state:
+                detail = value(r, 'detail')
+                row['changes'] = row['all_changes'] = '' if isnan(detail) else str(detail)
+                row['detail'] = ''
+            else:
+                concordant = [m for m in str(value(r, 'concordant') if not isnan(value(r, 'concordant')) else '')
+                              .split(',') if m]
+                row['changes'] = ', '.join('{} {}'.format(m, fmt_num(marks.get(m), signed=True)) for m in concordant)
+                row['all_changes'] = ', '.join('{} {}{}'.format(m, fmt_num(v, signed=True),
+                                                                 ' (mirror {})'.format(fmt_num(mirror[m], signed=True))
+                                                                 if m in mirror else '') for m, v in marks.items())
+                parts = []
+                if not isnan(value(r, 'n_concordant')) and level != 'promoter_marks':
+                    parts.append('{} concordant node{}'.format(fmt_int(value(r, 'n_concordant')),
+                                                               '' if fmt_int(value(r, 'n_concordant')) == '1' else 's'))
+                strongest = value(r, 'strongest')
+                if row['explains'] and isinstance(strongest, str) and strongest:
+                    parts.append('strongest {}'.format(strongest))
+                if not row['explains'] and result:
+                    parts.append(result)
+                row['detail'] = '; '.join(parts)
+            # the learned roles and the max1kb presence statistic
+            notes = []
+            if learned_key and 'explains_' + learned_key in raw:
+                learned = truthy(r['explains_' + learned_key])
+                learned_result = r.get('result_' + learned_key, '')
+                notes.append('{}{}'.format('explains' if learned else 'does not explain',
+                                           ' ({})'.format(learned_result) if isinstance(learned_result, str) and
+                                           learned_result else ''))
+            row['learned'] = '; '.join(notes)
+            if max_key and state and 'explains_' + max_key in raw:
+                other = r.get('result_' + max_key, '')
+                row['extra']['max 1 kb statistic'] = '{}{}'.format(
+                    'explains' if truthy(r['explains_' + max_key]) else 'does not explain',
+                    ' ({})'.format(other) if isinstance(other, str) and other else '')
+            for column in columns:
+                if column not in used and not column.endswith(('_learned_mean', '_learned_max1kb', '_learned')) \
+                        and not isnan(r[column]) and column not in ('rank', 'hops'):
+                    if roles and (column.endswith('_' + roles) or column.endswith('_' + key) or
+                                  (max_key and column.endswith('_' + max_key))):
+                        continue
+                    row['extra'][column] = r[column]
             rows.append(row)
         table = pd.DataFrame(rows)
-        if table['rank'].isna().all():
-            table = self.assign_ranks(table)
-        return table.sort_values(['node', 'order']).reset_index(drop=True)
+        return self.assign_ranks(table).reset_index(drop=True)
 
     @staticmethod
     def assign_ranks(table):
@@ -661,9 +750,17 @@ class Run:
         order = sorted(counts.index, key=lambda c: (c != 'gene', level_hops(c)))
         return counts.reindex(order)
 
+    def variant_rows(self, table):
+        """Rows of the role set and presence statistic shown in the report (declared, mean), without those columns."""
+        if {'roles', 'presence'} <= set(table.columns):
+            roles, presence = (self.levels_variant or 'declared_mean').split('_', 1)
+            part = table[(table['roles'] == roles) & (table['presence'] == presence)]
+            table = (part if len(part) else table).drop(columns=['roles', 'presence'])
+        return table.reset_index(drop=True)
+
     def level_combinations(self):
         if self.combinations is not None and len(self.combinations):
-            return self.combinations, True
+            return self.variant_rows(self.combinations), True
         explains = self.levels[self.levels['explains']]
         combos = explains.groupby('node')['cascade_level'].agg(
             lambda c: ' + '.join(sorted(set(c), key=lambda x: (x != 'gene', level_hops(x)))))
@@ -1234,8 +1331,9 @@ def evidence_table(doc, rows, gene, names, declared=''):
                      'mirrored loci in brackets); P and q of the per-gene permutation test of the step; mirror: '
                      'whether the explaining marks change differently at the mirrored loci; 3D support: probability '
                      'that graph neighbours at this step are closer in the nucleus than distance-matched pairs (0.5 '
-                     'without relation), with its interval; learned roles: marks whose role learned at this level differs from '
-                     'the declared role{}.'.format(
+                     'without relation), with its interval; learned roles: the result of the level under the roles '
+                     'learned from the data (all-level table), or the marks whose learned role differs from the '
+                     'declared one (derived levels){}.'.format(
                          gene_span(gene), names[1], names[0],
                          ' (declared roles: {})'.format(esc(declared)) if declared else ''),
               formats={'rank': fmt_int, 'nodes': fmt_int, 'P': fmt_p, 'q': fmt_p},
@@ -1677,11 +1775,29 @@ class Report:
                                    'fraction_of_differential': fmt_pct, 'beyond_mirror': fmt_int},
                           numeric=('genes (declared roles)', 'genes (learned roles)', 'fraction_of_differential',
                                    'beyond_mirror'))
+        if run.level_counts is not None and len(run.level_counts):
+            counts = run.variant_rows(run.level_counts)
+            columns = [c for c in ('rank', 'level', 'genes_any', 'genes_first', 'fraction_any', 'fraction_first',
+                                   'any_transition', 'any_poised_in_both', 'any_beyond_mirror', 'any_p_lt_0.05',
+                                   'any_q_lt_0.05', 'first_bh_q_lt_0.05', 'proximity_support', 'median_nodes_tested')
+                       if c in counts]
+            ints = [c for c in columns if c.startswith(('genes_', 'any_', 'first_'))]
+            doc.table(counts[columns], 'Genes explained at every level whatever the earlier levels (any) and genes '
+                                       'first explained there (first), with the state transitions and poised states, '
+                                       'the genes beyond the mirror and with P &lt; 0.05 and q &lt; 0.05 at any rank, '
+                                       'the 3D support and the median nodes tested (<code>{}_explanation_levels.tsv'
+                                       '</code>, declared roles, mean presence statistic).'.format(esc(run.name)),
+                      formats=dict({c: fmt_int for c in ints}, fraction_any=fmt_pct, fraction_first=fmt_pct,
+                                   proximity_support=fmt_num, median_nodes_tested=fmt_num),
+                      numeric=tuple(c for c in columns if c not in ('level',)))
         doc.section('combinations', 'Level combinations', level=3)
         combos, from_file = run.level_combinations()
         if from_file:
-            doc.table(combos, 'Combinations of explaining levels per gene (<code>{}_explanation_combinations.tsv'
-                              '</code>), first 15 rows.'.format(esc(run.name)), max_rows=15)
+            doc.table(combos, 'The most frequent combinations of explaining levels per gene '
+                              '(<code>{}_explanation_combinations.tsv</code>, declared roles, mean presence statistic), '
+                              'first 15 rows.'.format(esc(run.name)), max_rows=15,
+                      formats={'genes': fmt_int, 'fraction_of_differential': fmt_pct},
+                      numeric=('rank', 'n_levels', 'genes', 'fraction_of_differential'))
         else:
             doc.table(combos, 'Combinations of explaining levels per differential gene (any rank), counted from the '
                               'per-gene levels; genes up and down in {}. First 15 rows.'.format(esc(b)),
