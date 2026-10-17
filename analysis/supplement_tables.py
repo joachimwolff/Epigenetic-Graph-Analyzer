@@ -931,9 +931,9 @@ def s24():
         rows.append(r'\midrule')
     if not rows:
         return
-    table('table_s24.tex', 'p{1.5cm}lrrrrrrrrlr>{\\raggedright\\arraybackslash}p{2.6cm}',
+    table('table_s24.tex', 'p{1.3cm}lrrrrrrrrlr>{\\raggedright\\arraybackslash}p{2.4cm}',
           'Comparison (DE) & Level & \\multicolumn{2}{c}{Mean} & \\multicolumn{2}{c}{Max. 1 kb} & '
-          '\\multicolumn{2}{c}{Beyond mirror, $P<0.05$} & \\multicolumn{2}{c}{$q<0.05$} & 3D support & Nodes & '
+          '\\multicolumn{2}{c}{BM, $P<0.05$} & \\multicolumn{2}{c}{$q<0.05$} & 3D support & Nodes & '
           'Genes first explained, $q<0.05$ \\\\ & & Any & First & Any & First & Any & First & Any & First & & &',
           rows[:-1],
           'Explanation levels of the baited promoter fragments of differentially expressed (DE) genes under the '
@@ -949,7 +949,7 @@ def s24():
           'first: genes first explained there (the explanation cascade). Mean / max.\\ 1 kb: presence of a mark '
           'on a fragment from the mean fold enrichment over the fragment or from the largest mean over windows of '
           'at most 1 kb within it (threshold 2); the mark and contact levels do not depend on it, but the first '
-          'level of a gene does. Not callable: the data set has no repressive mark. Beyond mirror, $P<0.05$: the '
+          'level of a gene does. Not callable: the data set has no repressive mark. BM, $P<0.05$ (beyond mirror): the '
           'explaining marks do not change concordantly at the mirrored loci of the same step and the per-gene '
           'permutation test of the step (200,000 permutations of the node signals) gives $P<0.05$ (mean '
           'statistic for first). $q$, any: Benjamini-Hochberg within the level over the DE genes with nodes at that '
