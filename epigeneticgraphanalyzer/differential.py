@@ -1320,8 +1320,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
              'contacts_gained', 'contacts_lost', 'contacts_shared', 'contact_log2', 'proximity_support',
              'proximity_support_ci']
     per_roles = ['signs', 'concordant_marks', 'n_concordant_nodes', 'strongest_node', 'strongest',
-                 'strongest_type', 'n_concordant_promoters', 'n_concordant_elements', 'strongest_promoter_node', 'strongest_promoter',
-                 'strongest_element_node', 'strongest_element', 'p', 'q', 'beyond_mirror']
+                 'strongest_type', 'n_concordant_promoters', 'n_concordant_elements', 'strongest_promoter_node',
+                 'strongest_promoter', 'strongest_element_node', 'strongest_element', 'p', 'q', 'beyond_mirror']
     per_variant = ['explains', 'result', 'transition', 'state_fragment', 'detail']
     order = [c for c in front if c in table]
     for roles in roles_sets:
@@ -1372,7 +1372,8 @@ def explanation_level_counts(levels):
     no level). Columns: differential_genes, genes_any, genes_first, fraction_any, fraction_first; state levels:
     any_transition / any_poised_in_both and first_transition / first_poised_in_both (concordant transition, poised
     in both conditions); step levels: <any|first>_strongest_promoter / _strongest_element (the strongest concordant
-    node of the explained gene is a promoter / a non-promoter element, with node types), <any|first>_p_lt_0.05, _beyond_mirror, _beyond_mirror_p_lt_0.05, _q_lt_0.05
+    node of the explained gene is a promoter / a non-promoter element, with node types), <any|first>_p_lt_0.05,
+    _beyond_mirror, _beyond_mirror_p_lt_0.05, _q_lt_0.05
     (q of explanation_levels: BH within the level over the genes with nodes at that step) and first_bh_q_lt_0.05
     (BH across the genes first explained at that step, as cascade_table); proximity_support, proximity_ci and
     median_nodes_tested of the genes explained there."""
