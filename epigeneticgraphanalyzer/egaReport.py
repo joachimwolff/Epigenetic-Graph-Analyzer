@@ -407,6 +407,15 @@ class Run:
         self.cascade_learned = self.table('_explanation_cascade_learned.tsv')
         self.types = self.table('_explanation_types.tsv')
         self.roles = self.table('_mark_roles.tsv')
+        # roles over all nodes; the roles learned per element type of the nodes are kept apart
+        self.roles_by_type = None
+        if self.roles is not None and 'element_type' in self.roles:
+            kind = self.roles['element_type'].fillna('all')
+            self.roles_by_type = self.roles[kind != 'all'].reset_index(drop=True)
+            self.roles = self.roles[kind == 'all'].reset_index(drop=True)
+        self.elements = self.table('_elements.tsv')
+        self.element_classes = self.table('_element_classes.tsv')
+        self.element_transitions = self.table('_element_transitions.tsv')
         self.state_transitions = self.table('_state_transitions.tsv')
         self.bivalent = self.table('_bivalent_transitions.tsv')
         self.state_marks = self.table('_state_marks.tsv')

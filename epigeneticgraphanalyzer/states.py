@@ -463,7 +463,9 @@ def learn_mark_roles(features, marks, declared=None, chromatin_threshold=1.0, rn
             column = '{}_{}'.format(mark, level)
             if column not in data:
                 continue
-            mask = every if level == 'promoter' or 'n_' + level not in data else data['n_' + level].to_numpy() > 0
+            # genes with nodes at that step; at the promoter all genes (or those flagged by n_promoter, e.g. the
+            # genes whose own fragment belongs to a stratum of roles_per_element_type)
+            mask = every if 'n_' + level not in data else data['n_' + level].to_numpy() > 0
             tests.append(dict(mark=mark, level=step_label(level), feature=level, versus='expression',
                               declared_role=declared.get(mark, ''),
                               x=np.nan_to_num(data[column].to_numpy(dtype=float)), y=rna, mask=mask,
@@ -509,11 +511,20 @@ def learn_mark_roles(features, marks, declared=None, chromatin_threshold=1.0, rn
     return pd.DataFrame(rows)
 
 
+def overall_roles(table):
+    """Rows of a mark roles table over all nodes (element_type 'all', or a table without that column); the rows per
+    element type (elements.roles_per_element_type) are reported, the cascade and the states use these."""
+    if 'element_type' in table:
+        return table[table['element_type'].fillna('all') == 'all']
+    return table
+
+
 def learned_roles(table, declared):
     """Roles per level for the cascade and the states from learn_mark_roles: {feature level ('promoter', 'direct',
     'indirect', 'hop<k>'): {mark: role}}. At every level a learned active mark keeps a declared enhancer role (else
     'active'), a learned repressive mark is 'repressive', a mark without a consistent effect 'neutral'."""
     roles = {}
+    table = overall_roles(table)
     for row in table[(table['versus'] == 'expression') & (table['mark'] != 'contact')].itertuples():
         if row.learned_sign > 0:
             role = 'enhancer' if declared.get(row.mark) == 'enhancer' else 'active'
@@ -529,6 +540,7 @@ def learned_level_signs(table):
     """LevelSigns from learn_mark_roles: the learned sign of every mark at every level, and of the promoter's own
     interactions (mark 'contact' at the promoter level)."""
     signs = LevelSigns()
+    table = overall_roles(table)
     for row in table[table['versus'] == 'expression'].itertuples():
         level = 'promoter' if row.feature == 'contact_direct' else row.feature
         signs.setdefault(level, {})[row.mark] = int(row.learned_sign)

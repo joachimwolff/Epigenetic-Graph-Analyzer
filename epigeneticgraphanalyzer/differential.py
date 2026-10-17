@@ -1007,7 +1007,8 @@ def _values_text(values, digits=1):
 
 
 def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, states=None, tests=None, proximity=None,
-                       chromatin_threshold=1.0, contact_threshold=None, pseudo_count=1.0, names=('A', 'B')):
+                       chromatin_threshold=1.0, contact_threshold=None, pseudo_count=1.0, names=('A', 'B'),
+                       node_types=None):
     """Every level of the explanation cascade evaluated for every differential gene (long format, one row per gene
     and level), also when an earlier level already explains the gene.
 
@@ -1032,7 +1033,10 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     threshold), strongest_node_R / strongest_R (node with the largest concordant contribution, path weight times
     signal change, with its own log2 change), p_R / q_R (per-gene permutation P of the step; BH within the level over
     the genes with nodes at that step), beyond_mirror_R (not every explaining mark changes concordantly at the
-    mirrored loci); per role set R and presence statistic S: explains_R_S, result_R_S (concordant, discordant,
+    mirrored loci); with `node_types` (node -> 'promoter' / 'non-promoter element', elements.node_types) the
+    concordant nodes of a step split by element type: n_concordant_promoters_R, n_concordant_elements_R and
+    strongest_promoter_node_R / strongest_promoter_R, strongest_element_node_R / strongest_element_R (as strongest_R
+    within the type); per role set R and presence statistic S: explains_R_S, result_R_S (concordant, discordant,
     below threshold, no nodes, no contacts, no consistent role; for states: concordant transition, poised in both,
     poised transition not concordant, poised transition not supported, transition without a poised state,
     unchanged, no poised fragment, not callable), transition_R_S and state_fragment_R_S (state levels), and
@@ -1061,6 +1065,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     # own change of every node and mark, and the operator rows of the genes
     own = {m: np.log2((vb + pseudo_count) / (va + pseudo_count)) for m, (va, vb) in mark_vectors.items()}
     row_of = {n: i for i, n in enumerate(operators.sources)}
+    is_promoter = np.array([(node_types or {}).get(n) == 'promoter' for n in operators.nodes], dtype=bool) \
+        if node_types is not None else None
     # nodes at every step with a path weight in either condition
     level_nodes = {fl: dict(zip(operators.sources, operators.nodes_either(fl))) for fl in feature_levels}
     # per-gene tests: P and BH q within the level over the genes with nodes at that step
@@ -1138,6 +1144,9 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         w_b = np.asarray(row_b[:, columns].todense()).ravel()
                         hit = np.zeros(len(columns), dtype=bool)
                         best = (0.0, None, None)
+                        kinds = {'promoter': is_promoter[columns], 'element': ~is_promoter[columns]} \
+                            if is_promoter is not None else {}
+                        best_kind = {kind: (0.0, None, None) for kind in kinds}
                         for m in used:
                             va, vb = mark_vectors[m]
                             contribution = (w_b * vb[columns] - w_a * va[columns]) * sign[m] * d
@@ -1147,11 +1156,27 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                                 j = int(np.argmax(contribution))
                                 if contribution[j] > best[0]:
                                     best = (float(contribution[j]), m, j)
+                                for kind, in_kind in kinds.items():
+                                    if in_kind.any():
+                                        masked = np.where(in_kind, contribution, -np.inf)
+                                        j = int(np.argmax(masked))
+                                        if masked[j] > best_kind[kind][0]:
+                                            best_kind[kind] = (float(masked[j]), m, j)
                         n_concordant = int(hit.sum())
                         if best[1] is not None:
                             strongest_node = operators.nodes[columns[best[2]]]
                             strongest = '{} {} log2 {:+.1f}'.format(_node_label(graph, strongest_node), best[1],
                                                                     own[best[1]][columns[best[2]]])
+                        if kinds:
+                            row['strongest_type_' + roles] = '' if best[1] is None else \
+                                'promoter' if is_promoter[columns[best[2]]] else 'non-promoter element'
+                        for kind, in_kind in kinds.items():
+                            row['n_concordant_{}s_{}'.format(kind, roles)] = int((hit & in_kind).sum())
+                            value, mark, j = best_kind[kind]
+                            node_k = operators.nodes[columns[j]] if mark is not None else ''
+                            row['strongest_{}_node_{}'.format(kind, roles)] = node_k
+                            row['strongest_{}_{}'.format(kind, roles)] = '{} {} log2 {:+.1f}'.format(
+                                _node_label(graph, node_k), mark, own[mark][columns[j]]) if mark is not None else ''
                     row['n_concordant_nodes_' + roles] = n_concordant
                     row['strongest_node_' + roles] = strongest_node
                     row['strongest_' + roles] = strongest
@@ -1294,8 +1319,9 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     front = ['node', 'genes', 'rna_log2FC', 'rank', 'level', 'hops', 'nodes_tested', 'mark_changes', 'mirror_changes',
              'contacts_gained', 'contacts_lost', 'contacts_shared', 'contact_log2', 'proximity_support',
              'proximity_support_ci']
-    per_roles = ['signs', 'concordant_marks', 'n_concordant_nodes', 'strongest_node', 'strongest', 'p', 'q',
-                 'beyond_mirror']
+    per_roles = ['signs', 'concordant_marks', 'n_concordant_nodes', 'strongest_node', 'strongest',
+                 'strongest_type', 'n_concordant_promoters', 'n_concordant_elements', 'strongest_promoter_node', 'strongest_promoter',
+                 'strongest_element_node', 'strongest_element', 'p', 'q', 'beyond_mirror']
     per_variant = ['explains', 'result', 'transition', 'state_fragment', 'detail']
     order = [c for c in front if c in table]
     for roles in roles_sets:
@@ -1305,7 +1331,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                       if '{}_{}_{}'.format(c, roles, presence) in table]
     for column in [c for c in table if c.startswith('beyond_mirror_')]:
         table[column] = pd.array([None if pd.isna(v) else bool(v) for v in table[column]], dtype='boolean')
-    for column in [c for c in table if c.startswith('n_concordant_nodes_')] + ['nodes_tested', 'contacts_gained',
+    for column in [c for c in table if c.startswith(('n_concordant_nodes_', 'n_concordant_promoters_',
+                                                      'n_concordant_elements_'))] + ['nodes_tested', 'contacts_gained',
                                                                                 'contacts_lost', 'contacts_shared']:
         if column in table:
             table[column] = pd.array([None if pd.isna(v) else int(v) for v in table[column]], dtype='Int64')
@@ -1344,7 +1371,8 @@ def explanation_level_counts(levels):
     per role set and presence statistic (long: roles, presence, rank, level; a last row 'none': genes explained at
     no level). Columns: differential_genes, genes_any, genes_first, fraction_any, fraction_first; state levels:
     any_transition / any_poised_in_both and first_transition / first_poised_in_both (concordant transition, poised
-    in both conditions); step levels: <any|first>_p_lt_0.05, _beyond_mirror, _beyond_mirror_p_lt_0.05, _q_lt_0.05
+    in both conditions); step levels: <any|first>_strongest_promoter / _strongest_element (the strongest concordant
+    node of the explained gene is a promoter / a non-promoter element, with node types), <any|first>_p_lt_0.05, _beyond_mirror, _beyond_mirror_p_lt_0.05, _q_lt_0.05
     (q of explanation_levels: BH within the level over the genes with nodes at that step) and first_bh_q_lt_0.05
     (BH across the genes first explained at that step, as cascade_table); proximity_support, proximity_ci and
     median_nodes_tested of the genes explained there."""
@@ -1372,7 +1400,12 @@ def explanation_level_counts(levels):
                 q = part['q_' + roles].astype(float) if 'q_' + roles in part else pd.Series(np.nan, index=part.index)
                 beyond = part['beyond_mirror_' + roles].fillna(False).astype(bool) \
                     if 'beyond_mirror_' + roles in part else pd.Series(False, index=part.index)
+                kind = part['strongest_type_' + roles] if 'strongest_type_' + roles in part else None
                 for name, mask in (('any', explains), ('first', is_first)):
+                    if kind is not None:
+                        # the strongest concordant node of the explained genes: a promoter or a non-promoter element
+                        row[name + '_strongest_promoter'] = int((mask & (kind == 'promoter')).sum())
+                        row[name + '_strongest_element'] = int((mask & (kind == 'non-promoter element')).sum())
                     row[name + '_p_lt_0.05'] = int((mask & (p < 0.05)).sum())
                     row[name + '_beyond_mirror'] = int((mask & beyond).sum())
                     row[name + '_beyond_mirror_p_lt_0.05'] = int((mask & beyond & (p < 0.05)).sum())
