@@ -117,7 +117,8 @@ def events_table(src, out, top=3):
                 '{:.0f}'.format(e['distance_lost'] / 1000), num(e['log2FC_lost']),
                 r'\textit{' + tex(short_genes(e['genes_gained'])) + '}', num(e['rna_log2FC_gained']),
                 '{:.0f}'.format(e['distance_gained'] / 1000), num(e['log2FC_gained']),
-                tex(e['element_chromatin_changes']) if isinstance(e['element_chromatin_changes'], str) else '--',
+                tex(e['element_chromatin_changes']).replace(' -', ' $-$')
+                if isinstance(e['element_chromatin_changes'], str) else '--',
                 '{:.2f}'.format(e['evidence'])]) + r' \\')
             first = False
     header = (r'Comparison & Element E & A & RNA & kb & Contact & B & RNA & kb & Contact & Chromatin at E & Evidence')
