@@ -191,6 +191,16 @@ def _signal_text(values):
     return ', '.join('{} {:.1f}'.format(m, v) for m, v in values.items())
 
 
+def _number(value):
+    """Signal value with two significant digits below 10 ('5.1', '1.3') and none above ('67')."""
+    return '{:.1f}'.format(value) if abs(value) < 10 else '{:.0f}'.format(value)
+
+
+def paired_values(values_a, values_b):
+    """'H3K4me2 5.1/5.2, H3K27me3 67/80': the signal of every mark in A / in B."""
+    return ', '.join('{} {}/{}'.format(m, _number(values_a[m]), _number(values_b[m])) for m in values_a)
+
+
 def state_sentence(where, state_a, state_b, values_a, values_b, gained, lost, names=('A', 'B')):
     """One-line description of a state transition naming the marks, e.g. 'promoter bivalent in hESC (H3K4me3 4.1,
     H3K27me3 3.2), resolved to active in hNEC by loss of H3K27me3'."""
@@ -235,7 +245,10 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
     step1_transition_fragments, the one with the largest change in step1_state_fragment). step1_unresolved:
     otherwise a contacting fragment poised in both conditions. step1_transitions lists all labels of changed or
     poised fragments with their counts. Levels without the roles of their states get 'states not callable'.
-    promoter_state_summary and step1_state_summary describe the transition in words, naming the marks.
+    promoter_state_summary and step1_state_summary describe the transition in words, naming the marks;
+    promoter_state_values and step1_fragment_values give the signal of every state mark in A / B ('H3K4me2 5.1/5.2,
+    H3K27me3 67/80') at the promoter and at the chosen contacting fragment (step1_fragment_state_A / _B, of
+    step1_contacting_fragments).
     `step1_roles` (default `roles`) are the roles at step 1, e.g. those learned there (learned_roles).
     """
     step1_roles = roles if step1_roles is None else step1_roles
@@ -262,9 +275,10 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
         for m in promoter_marks:
             out['promoter_{}_A'.format(m)] = [state_signals[m][0].get(n, 0.0) for n in nodes]
             out['promoter_{}_B'.format(m)] = [state_signals[m][1].get(n, 0.0) for n in nodes]
-        labels, directions, supported, summaries = [], [], [], []
+        labels, directions, supported, summaries, paired = [], [], [], [], []
         for i, node in enumerate(nodes):
             va, vb = values(node, promoter_marks, 0), values(node, promoter_marks, 1)
+            paired.append(paired_values(va, vb))
             gained, lost, ok = _transition(va, vb, state_a[i], state_b[i], roles, True, threshold, min_change,
                                            pseudo_count)
             labels.append(transition_label(state_a[i], state_b[i]))
@@ -284,6 +298,7 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
         out['promoter_explains'] = poised & (state_a != state_b) & supported & (directions * direction > 0)
         out['promoter_unresolved'] = (state_a == 'bivalent') & (state_b == 'bivalent')
         out['promoter_state_summary'] = summaries
+        out['promoter_state_values'] = paired
     else:
         out['promoter_transition'] = NOT_CALLABLE
         out['promoter_explains'] = False
@@ -298,7 +313,9 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
                                                                                            np.zeros(0, object))
         columns = {key: [] for key in ('step1_poised_A', 'step1_poised_B', 'step1_transitions', 'step1_transition',
                                        'step1_transition_fragments', 'step1_explains', 'step1_unresolved',
-                                       'step1_state_fragment', 'step1_state_summary')}
+                                       'step1_state_fragment', 'step1_state_summary', 'step1_fragment_state_A',
+                                       'step1_fragment_state_B', 'step1_fragment_values',
+                                       'step1_contacting_fragments')}
         for i, node in enumerate(nodes):
             entries = []
             for fragment in neighbours[node]:
@@ -337,6 +354,10 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
             columns['step1_transition'].append(chosen[0]['label'] if chosen else 'no poised fragment')
             columns['step1_transition_fragments'].append(len(chosen))
             columns['step1_state_fragment'].append(chosen[0]['fragment'] if chosen else '')
+            columns['step1_contacting_fragments'].append(len(neighbours[node]))
+            columns['step1_fragment_state_A'].append(chosen[0]['a'] if chosen else '')
+            columns['step1_fragment_state_B'].append(chosen[0]['b'] if chosen else '')
+            columns['step1_fragment_values'].append(paired_values(chosen[0]['va'], chosen[0]['vb']) if chosen else '')
             if chosen:
                 e = chosen[0]
                 where = 'contacting fragment {}{}'.format(

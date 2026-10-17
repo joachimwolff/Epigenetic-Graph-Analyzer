@@ -287,6 +287,14 @@ class ActivityOperators:
     def vector(self, signal):
         return np.array([signal.get(n, 0.0) for n in self.nodes], dtype=float)
 
+    def nodes_either(self, level):
+        """Number of nodes of every source at a level with a path weight in either condition (n_direct counts the
+        partners of condition A only; partners gained in B are counted here)."""
+        H_a, H_b, _ = self.level(level)
+        pattern = ((abs(H_a) > 0).astype(np.int8) + (abs(H_b) > 0).astype(np.int8)).tocsr()
+        pattern.eliminate_zeros()
+        return np.diff(pattern.indptr)
+
 
 def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=None, mark_vectors=None, max_hops=2):
     """Per bait node: expression change and promoter and k-hop log2 activity changes per mark, k = 1 .. max_hops.
@@ -354,17 +362,21 @@ def _pool_map(func, items, threads, shared):
 
 
 def _bigwig_chunk(task):
-    from .annotation import bigwig_interval_signal
+    from .annotation import bigwig_interval_max_window, bigwig_interval_signal
     path, start, end = task
     s = _SHARED
+    if s.get('window'):
+        return bigwig_interval_max_window(path, s['chroms'][start:end], s['starts'][start:end], s['ends'][start:end],
+                                          s['window'])
     return bigwig_interval_signal(path, s['chroms'][start:end], s['starts'][start:end], s['ends'][start:end])
 
 
-def _interval_signals(paths, chroms, starts, ends, threads, chunk=20000):
+def _interval_signals(paths, chroms, starts, ends, threads, chunk=20000, window=None):
     """{bigWig path: mean signal of every interval}, read in parallel over files and chunks of intervals (the values
-    are those of annotation.bigwig_interval_signal on all intervals at once)."""
+    are those of annotation.bigwig_interval_signal on all intervals at once). With `window` (bp): the maximum of the
+    window means within every interval (annotation.bigwig_interval_max_window)."""
     tasks = [(p, i, min(i + chunk, len(starts))) for p in paths for i in range(0, len(starts), chunk)]
-    parts = _pool_map(_bigwig_chunk, tasks, threads, dict(chroms=chroms, starts=starts, ends=ends))
+    parts = _pool_map(_bigwig_chunk, tasks, threads, dict(chroms=chroms, starts=starts, ends=ends, window=window))
     signals = {p: [] for p in paths}
     for (p, _, _), values in zip(tasks, parts):
         signals[p].append(values)
@@ -927,6 +939,481 @@ def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chrom
     return pd.DataFrame(rows).set_index('node')
 
 
+ROLE_SETS = ('declared', 'learned')
+PRESENCE_STATISTICS = ('mean', 'max1kb')
+STATE_LEVELS = ('promoter_state', 'step1_state')
+POISED = ('bivalent', 'poised enhancer')
+
+
+def explanation_level_names(max_hops):
+    """Levels of the all-level report in their fixed rank order: promoter marks, the promoter's own contacts, the
+    promoter chromatin state, step 1 marks, step 1 states of the contacting fragments, step 2 .. step max_hops."""
+    return ['promoter_marks', 'promoter_contacts', 'promoter_state', 'step1_marks', 'step1_state'] + \
+        ['step{}'.format(k) for k in range(2, max_hops + 1)]
+
+
+def explanation_level_label(level):
+    """'promoter marks', 'contacts', 'promoter state', 'step 1 marks', 'step 1 states', 'step 2', ..."""
+    labels = {'promoter_marks': 'promoter marks', 'promoter_contacts': 'contacts', 'promoter_state': 'promoter state',
+              'step1_marks': 'step 1 marks', 'step1_state': 'step 1 states'}
+    return labels.get(level, 'step {}'.format(level[4:]))
+
+
+def cascade_first_level(cascade):
+    """Level of explanation_level_names at which explanation_cascade first explains every gene ('none' when
+    unexplained)."""
+    out = []
+    for at, kind in zip(cascade['explained_at'], cascade['explained_type']):
+        if at == 'gene':
+            out.append({'marks': 'promoter_marks', 'both': 'promoter_marks',
+                        'interactions': 'promoter_contacts'}.get(kind, 'promoter_state'))
+        elif at == 'step1':
+            out.append('step1_marks' if kind == 'marks' else 'step1_state')
+        elif at == 'unexplained':
+            out.append('none')
+        else:
+            out.append(at)
+    return pd.Series(out, index=cascade.index)
+
+
+def _p_text(p):
+    return 'n/a' if pd.isna(p) else '{:.2g}'.format(p)
+
+
+def _support(hops, proximity):
+    """(proximity_support, interval) of a hop: 1.0 / 'NA' at the promoter, NaN / '' without a value."""
+    values, intervals = proximity_columns([hops], proximity) if proximity is not None else ([np.nan], [''])
+    return values[0], intervals[0]
+
+
+def _support_short(hops, proximity):
+    value, interval = _support(hops, proximity)
+    if pd.isna(value):
+        return '3D support n/a'
+    return '3D support {:.2f}{}'.format(value, ' ({})'.format(interval) if interval and interval != 'NA' else '')
+
+
+def _node_label(graph, node):
+    """'Hoxa2 promoter' for an annotated bait, 'chr1:100-200 (Foo)' for an annotated other end, else the node."""
+    data = graph.nodes[node] if node in graph else {}
+    genes = str(data.get('genes', '') or '')
+    if data.get('bait') and genes:
+        return '{} promoter'.format(genes)
+    return '{} ({})'.format(node, genes) if genes else node
+
+
+def _values_text(values, digits=1):
+    return ', '.join('{} {:+.{}f}'.format(m, v, digits) for m, v in values.items())
+
+
+def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, states=None, tests=None, proximity=None,
+                       chromatin_threshold=1.0, contact_threshold=None, pseudo_count=1.0, names=('A', 'B')):
+    """Every level of the explanation cascade evaluated for every differential gene (long format, one row per gene
+    and level), also when an earlier level already explains the gene.
+
+    Levels in rank order (explanation_level_names): promoter_marks (the marks at the promoter fragment),
+    promoter_contacts (the promoter's own interactions: contact_direct, the log2 B/A of their summed strength, and
+    the numbers gained, lost and shared), promoter_state (the chromatin state of the promoter), step1_marks (marks
+    summed over the contacting fragments), step1_state (the states of the contacting fragments), step2 .. step n
+    (marks summed over the nodes at exactly k steps). The rules of a level are those of explanation_cascade: a mark
+    level explains a gene when a mark changes by at least `chromatin_threshold` (log2) in the direction expected
+    from its sign at that level and the expression change; the contact level when |contact_direct| >=
+    `contact_threshold` (default `chromatin_threshold`) with the sign of the contacts; a state level when gene_states
+    gives a concordant supported transition from or to a poised state or a state poised in both conditions.
+
+    `signs` maps a role set ('declared', 'learned') to its mark signs (plain dict or LevelSigns); `states` maps
+    (role set, presence statistic) to gene_states tables; `tests` maps a role set to gene_level_hop_test results of
+    all differential genes ({feature level: DataFrame}). Columns: node, genes, rna_log2FC, rank, level, hops,
+    nodes_tested (1 at the promoter; at a step the nodes with a path weight in either condition; contacts: the own
+    interactions), mark_changes ('mark:+log2' of every mark; step levels: summed over the nodes), mirror_changes,
+    contacts_gained / _lost / _shared, contact_log2, proximity_support (_ci) of the hop; per role set R:
+    signs_R (sign of every mark at that level), concordant_marks_R, n_concordant_nodes_R (nodes at that step whose
+    own change of an explaining mark (of any mark with a sign when none explains) is concordant and >= the
+    threshold), strongest_node_R / strongest_R (node with the largest concordant contribution, path weight times
+    signal change, with its own log2 change), p_R / q_R (per-gene permutation P of the step; BH within the level over
+    the genes with nodes at that step), beyond_mirror_R (not every explaining mark changes concordantly at the
+    mirrored loci); per role set R and presence statistic S: explains_R_S, result_R_S (concordant, discordant,
+    below threshold, no nodes, no contacts, no consistent role; for states: concordant transition, poised in both,
+    poised transition not concordant, poised transition not supported, transition without a poised state,
+    unchanged, no poised fragment, not callable), transition_R_S and state_fragment_R_S (state levels), and
+    detail_R_S, the text of that level. Mark and contact levels do not depend on the presence statistic.
+    """
+    if contact_threshold is None:
+        contact_threshold = chromatin_threshold
+    marks = list(marks)
+    states = states or {}
+    presences = sorted({p for _, p in states}, key=lambda p: PRESENCE_STATISTICS.index(p)
+                       if p in PRESENCE_STATISTICS else 99) or ['mean']
+    roles_sets = list(signs)
+    feature_levels = operators.levels
+    max_hops = len(feature_levels)
+    level_order = explanation_level_names(max_hops)
+    rank = {lv: i + 1 for i, lv in enumerate(level_order)}
+    nodes = classes['node'].to_numpy()
+    direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
+    status = {}
+    for node in nodes:
+        counts = {'gained': 0, 'lost': 0, 'shared': 0}
+        if node in graph:
+            for partner in graph.neighbors(node):
+                counts[graph.edges[node, partner].get('status', 'shared')] += 1
+        status[node] = counts
+    # own change of every node and mark, and the operator rows of the genes
+    own = {m: np.log2((vb + pseudo_count) / (va + pseudo_count)) for m, (va, vb) in mark_vectors.items()}
+    row_of = {n: i for i, n in enumerate(operators.sources)}
+    # nodes at every step with a path weight in either condition
+    level_nodes = {fl: dict(zip(operators.sources, operators.nodes_either(fl))) for fl in feature_levels}
+    # per-gene tests: P and BH q within the level over the genes with nodes at that step
+    pq = {}
+    for roles in roles_sets:
+        for fl in feature_levels:
+            table = (tests or {}).get(roles, {}).get(fl)
+            if table is None:
+                continue
+            table = table.set_index('node')
+            n_level = np.array([level_nodes[fl].get(n, 0) for n in table.index])
+            p = table[fl + '_p'].to_numpy(dtype=float)
+            q = np.full(len(p), np.nan)
+            has = n_level > 0
+            if has.any():
+                q[has] = _benjamini_hochberg(p[has])
+            pq[(roles, fl)] = (dict(zip(table.index, np.where(has, p, np.nan))), dict(zip(table.index, q)))
+    rows = []
+    for i, (_, r) in enumerate(classes.iterrows()):
+        node, d = r['node'], direction[i]
+        counts = status[node]
+        base = dict(node=node, genes=r.get('genes', ''), rna_log2FC=float(r['rna_log2FC']))
+        for level in level_order:
+            row = dict(base, rank=rank[level], level=level)
+            hops = 0 if level.startswith('promoter') else int(re.match(r'step(\d+)', level).group(1))
+            row['hops'] = hops
+            row['proximity_support'], row['proximity_support_ci'] = _support(hops, proximity)
+            if level in ('promoter_marks', 'step1_marks') or re.fullmatch(r'step\d+', level):
+                fl = 'promoter' if level == 'promoter_marks' else level_name(hops)
+                values = {m: float(np.nan_to_num(r.get('{}_{}'.format(m, fl), np.nan))) for m in marks}
+                n_nodes = 1 if fl == 'promoter' else int(level_nodes[fl].get(node, 0))
+                row['nodes_tested'] = n_nodes
+                row['mark_changes'] = ';'.join('{}:{:+.2f}'.format(m, v) for m, v in values.items())
+                mirror = {m: r.get('{}_{}_mirror'.format(m, fl), np.nan) for m in marks} if fl != 'promoter' else {}
+                have_mirror = bool(mirror) and all(not pd.isna(v) for v in mirror.values())
+                if have_mirror:
+                    row['mirror_changes'] = ';'.join('{}:{:+.2f}'.format(m, float(v)) for m, v in mirror.items())
+                for roles in roles_sets:
+                    sign = {m: sign_of(signs[roles], m, fl) for m in marks}
+                    row['signs_' + roles] = ';'.join('{}:{:+d}'.format(m, int(s)) for m, s in sign.items())
+                    concordant = [m for m in marks if sign[m] and
+                                  _concordant([values[m]], sign[m], d, chromatin_threshold)[0]]
+                    row['concordant_marks_' + roles] = ','.join(concordant)
+                    explains = bool(concordant)
+                    if fl != 'promoter' and n_nodes == 0:
+                        result = 'no nodes'
+                    elif not any(sign.values()):
+                        result = 'no consistent role'
+                    elif explains:
+                        result = 'concordant'
+                    elif any(sign[m] and abs(values[m]) >= chromatin_threshold for m in marks):
+                        result = 'discordant'
+                    else:
+                        result = 'below threshold'
+                    beyond = np.nan
+                    if explains and have_mirror:
+                        mirrored = sum(bool(_concordant([mirror[m]], sign[m], d, chromatin_threshold)[0])
+                                       for m in concordant)
+                        beyond = float(mirrored < len(concordant))
+                    row['beyond_mirror_' + roles] = beyond
+                    p = q = np.nan
+                    if (roles, fl) in pq:
+                        p, q = pq[(roles, fl)][0].get(node, np.nan), pq[(roles, fl)][1].get(node, np.nan)
+                    if not any(sign.values()):
+                        p = q = np.nan
+                    row['p_' + roles], row['q_' + roles] = p, q
+                    strongest, strongest_node, n_concordant = '', '', np.nan
+                    if fl != 'promoter' and node in row_of and n_nodes > 0:
+                        used = concordant or [m for m in marks if sign[m]]
+                        H_a, H_b, _ = operators.level(fl)
+                        k = row_of[node]
+                        row_a, row_b = H_a.getrow(k), H_b.getrow(k)
+                        columns = np.union1d(row_a.indices, row_b.indices)
+                        w_a = np.asarray(row_a[:, columns].todense()).ravel()
+                        w_b = np.asarray(row_b[:, columns].todense()).ravel()
+                        hit = np.zeros(len(columns), dtype=bool)
+                        best = (0.0, None, None)
+                        for m in used:
+                            va, vb = mark_vectors[m]
+                            contribution = (w_b * vb[columns] - w_a * va[columns]) * sign[m] * d
+                            change = own[m][columns]
+                            hit |= (np.sign(change) * sign[m] == d) & (np.abs(change) >= chromatin_threshold)
+                            if len(columns):
+                                j = int(np.argmax(contribution))
+                                if contribution[j] > best[0]:
+                                    best = (float(contribution[j]), m, j)
+                        n_concordant = int(hit.sum())
+                        if best[1] is not None:
+                            strongest_node = operators.nodes[columns[best[2]]]
+                            strongest = '{} {} log2 {:+.1f}'.format(_node_label(graph, strongest_node), best[1],
+                                                                    own[best[1]][columns[best[2]]])
+                    row['n_concordant_nodes_' + roles] = n_concordant
+                    row['strongest_node_' + roles] = strongest_node
+                    row['strongest_' + roles] = strongest
+                    # text of the level
+                    where = 'contacting fragment{}' if level == 'step1_marks' else 'node{}'
+                    if fl == 'promoter':
+                        if explains:
+                            text = '{} (concordant)'.format(_values_text({m: values[m] for m in concordant}))
+                        elif result == 'no consistent role':
+                            text = 'no mark with a consistent role here ({})'.format(_values_text(values))
+                        else:
+                            text = 'no concordant change ({})'.format(_values_text(values))
+                    elif n_nodes == 0:
+                        text = 'no nodes at {} step{}'.format(hops, '' if hops == 1 else 's')
+                    else:
+                        size = '{:,} {}'.format(n_nodes, where.format('' if n_nodes == 1 else 's'))
+                        if not pd.isna(n_concordant):
+                            size += ' ({:,} concordant)'.format(n_concordant)
+                        if explains:
+                            text = '{} at {}'.format(_values_text({m: values[m] for m in concordant}), size)
+                        elif result == 'no consistent role':
+                            text = 'no mark with a consistent role here ({}) at {}'.format(_values_text(values), size)
+                        else:
+                            text = 'no concordant change ({}) at {}'.format(_values_text(values), size)
+                        if strongest and explains:
+                            text += ', strongest {}'.format(strongest)
+                        text += ', P {}, q {}'.format(_p_text(p), _p_text(q))
+                        if explains:
+                            text += ', beyond mirror' if beyond == 1 else ', not beyond mirror' if beyond == 0 \
+                                else ', mirror n/a'
+                        text += ', ' + _support_short(hops, proximity)
+                    for presence in presences:
+                        row['explains_{}_{}'.format(roles, presence)] = explains
+                        row['result_{}_{}'.format(roles, presence)] = result
+                        row['detail_{}_{}'.format(roles, presence)] = text
+            elif level == 'promoter_contacts':
+                contact = float(np.nan_to_num(r.get('contact_direct', 0.0)))
+                total = counts['gained'] + counts['lost'] + counts['shared']
+                row.update(nodes_tested=total, contacts_gained=counts['gained'], contacts_lost=counts['lost'],
+                           contacts_shared=counts['shared'], contact_log2=contact)
+                for roles in roles_sets:
+                    sign = signs[roles].sign('contact', 'promoter') if isinstance(signs[roles], LevelSigns) else 1
+                    row['signs_' + roles] = 'contact:{:+d}'.format(int(sign))
+                    explains = bool(sign) and np.sign(contact) * sign == d and abs(contact) >= contact_threshold
+                    if total == 0:
+                        result = 'no contacts'
+                    elif not sign:
+                        result = 'no consistent role'
+                    elif explains:
+                        result = 'concordant'
+                    elif abs(contact) >= contact_threshold:
+                        result = 'discordant'
+                    else:
+                        result = 'below threshold'
+                    text = 'no contacts' if total == 0 else '{} gained, {} lost, {} shared, log2 {:+.1f}, {}'.format(
+                        counts['gained'], counts['lost'], counts['shared'], contact,
+                        {'concordant': 'concordant', 'discordant': 'discordant',
+                         'below threshold': 'below threshold',
+                         'no consistent role': 'no consistent role of the own contacts'}[result])
+                    for presence in presences:
+                        row['explains_{}_{}'.format(roles, presence)] = bool(explains)
+                        row['result_{}_{}'.format(roles, presence)] = result
+                        row['detail_{}_{}'.format(roles, presence)] = text
+            else:
+                prefix = 'promoter' if level == 'promoter_state' else 'step1'
+                row['nodes_tested'] = 1 if prefix == 'promoter' else int(level_nodes['direct'].get(node, 0))
+                for roles in roles_sets:
+                    for presence in presences:
+                        key = '{}_{}'.format(roles, presence)
+                        table = states.get((roles, presence))
+                        st = table.loc[node] if table is not None and node in table.index else None
+                        explains, result, text, transition, fragment = False, 'not callable', '', '', ''
+                        if st is None or str(st.get(prefix + '_transition', '')) == 'states not callable':
+                            text = 'not callable ({})'.format(presence) if st is not None else 'not computed'
+                            transition = 'states not callable' if st is not None else ''
+                        elif prefix == 'promoter':
+                            a, b = st['promoter_state_A'], st['promoter_state_B']
+                            transition = st['promoter_transition']
+                            supported = bool(st['promoter_supported'])
+                            if bool(st['promoter_explains']):
+                                result = 'concordant transition'
+                            elif bool(st['promoter_unresolved']):
+                                result = 'poised in both'
+                            elif a == b:
+                                result = 'unchanged'
+                            elif a in POISED or b in POISED:
+                                result = 'poised transition not supported' if not supported else \
+                                    'poised transition not concordant'
+                            else:
+                                result = 'transition without a poised state'
+                            explains = result in ('concordant transition', 'poised in both')
+                            where = '{} in {} and {}'.format(a, *names) if a == b else \
+                                '{} in {}, {} in {}'.format(a, names[0], b, names[1])
+                            text = '{} ({}; {})'.format(where, st.get('promoter_state_values', ''), presence)
+                            change = transition.split(': ', 1)[1] if ': ' in transition else ''
+                            text += {'concordant transition': ' - {}, concordant'.format(change),
+                                     'poised in both': ' - poised, trigger not among the measured layers',
+                                     'unchanged': ' - unchanged',
+                                     'poised transition not supported':
+                                         ' - {}, not supported by the mark changes'.format(change),
+                                     'poised transition not concordant': ' - {}, not concordant'.format(change),
+                                     'transition without a poised state': ' - {}'.format(change)}[result]
+                        else:
+                            transition = st['step1_transition']
+                            fragment = st.get('step1_state_fragment', '')
+                            total = int(np.nan_to_num(st.get('step1_contacting_fragments', 0)))
+                            if bool(st['step1_explains']):
+                                result = 'concordant transition'
+                            elif bool(st['step1_unresolved']):
+                                result = 'poised in both'
+                            elif transition == 'no poised fragment':
+                                result = 'no poised fragment'
+                            else:
+                                result = 'poised transition not concordant'
+                            explains = result in ('concordant transition', 'poised in both')
+                            if result == 'no poised fragment':
+                                text = 'no poised fragment among {:,} contacting fragment{} ({})'.format(
+                                    total, '' if total == 1 else 's', presence)
+                            else:
+                                a, b = st['step1_fragment_state_A'], st['step1_fragment_state_B']
+                                count = int(np.nan_to_num(st.get('step1_transition_fragments', 1)))
+                                where = '{} in {} and {}'.format(a, *names) if a == b else \
+                                    '{} in {}, {} in {}'.format(a, names[0], b, names[1])
+                                change = transition.split(': ', 1)[1] if ': ' in transition else ''
+                                text = 'contacting fragment {} ({} of {:,} with this transition): {} ({}; {})'.format(
+                                    _node_label(graph, fragment), count, total, where,
+                                    st.get('step1_fragment_values', ''), presence)
+                                text += {'concordant transition': ' - {}, concordant'.format(change),
+                                         'poised in both': ' - poised, trigger not among the measured layers',
+                                         'poised transition not concordant': ' - {}, not concordant'.format(change)
+                                         }[result]
+                            text += ', ' + _support_short(1, proximity)
+                        row['explains_' + key] = bool(explains)
+                        row['result_' + key] = result
+                        row['transition_' + key] = transition
+                        row['state_fragment_' + key] = fragment
+                        row['detail_' + key] = text
+            rows.append(row)
+    table = pd.DataFrame(rows)
+    front = ['node', 'genes', 'rna_log2FC', 'rank', 'level', 'hops', 'nodes_tested', 'mark_changes', 'mirror_changes',
+             'contacts_gained', 'contacts_lost', 'contacts_shared', 'contact_log2', 'proximity_support',
+             'proximity_support_ci']
+    per_roles = ['signs', 'concordant_marks', 'n_concordant_nodes', 'strongest_node', 'strongest', 'p', 'q',
+                 'beyond_mirror']
+    per_variant = ['explains', 'result', 'transition', 'state_fragment', 'detail']
+    order = [c for c in front if c in table]
+    for roles in roles_sets:
+        order += ['{}_{}'.format(c, roles) for c in per_roles if '{}_{}'.format(c, roles) in table]
+        for presence in presences:
+            order += ['{}_{}_{}'.format(c, roles, presence) for c in per_variant
+                      if '{}_{}_{}'.format(c, roles, presence) in table]
+    for column in [c for c in table if c.startswith('beyond_mirror_')]:
+        table[column] = pd.array([None if pd.isna(v) else bool(v) for v in table[column]], dtype='boolean')
+    for column in [c for c in table if c.startswith('n_concordant_nodes_')] + ['nodes_tested', 'contacts_gained',
+                                                                                'contacts_lost', 'contacts_shared']:
+        if column in table:
+            table[column] = pd.array([None if pd.isna(v) else int(v) for v in table[column]], dtype='Int64')
+    return table[order + [c for c in table if c not in order]]
+
+
+def explanation_variants(levels):
+    """(role set, presence statistic) pairs of an explanation_levels table, from its explains_<R>_<S> columns."""
+    out = []
+    for column in levels.columns:
+        match = re.fullmatch(r'explains_(\w+?)_(mean|max1kb)', column)
+        if match:
+            out.append((match.group(1), match.group(2)))
+    return out
+
+
+def explanation_level_summary(levels):
+    """Per gene (indexed by node) and per role set R and presence statistic S: explaining_levels_R_S (the levels
+    that explain the gene in rank order, ';'-separated), first_level_R_S ('none' without one) and
+    n_levels_explaining_R_S."""
+    out = pd.DataFrame(index=pd.Index(pd.unique(levels['node']), name='node'))
+    ordered = levels.sort_values(['node', 'rank'], kind='mergesort')
+    for roles, presence in explanation_variants(levels):
+        key = '{}_{}'.format(roles, presence)
+        hit = ordered[ordered['explains_' + key].astype(bool)]
+        joined = hit.groupby('node', sort=False)['level'].agg(';'.join)
+        out['explaining_levels_' + key] = joined.reindex(out.index).fillna('')
+        out['first_level_' + key] = hit.groupby('node', sort=False)['level'].first().reindex(out.index).fillna('none')
+        out['n_levels_explaining_' + key] = hit.groupby('node', sort=False).size().reindex(out.index).fillna(0) \
+            .astype(int)
+    return out
+
+
+def explanation_level_counts(levels):
+    """Genes explained at each level regardless of earlier levels (any) and genes first explained there (first),
+    per role set and presence statistic (long: roles, presence, rank, level; a last row 'none': genes explained at
+    no level). Columns: differential_genes, genes_any, genes_first, fraction_any, fraction_first; state levels:
+    any_transition / any_poised_in_both and first_transition / first_poised_in_both (concordant transition, poised
+    in both conditions); step levels: <any|first>_p_lt_0.05, _beyond_mirror, _beyond_mirror_p_lt_0.05, _q_lt_0.05
+    (q of explanation_levels: BH within the level over the genes with nodes at that step) and first_bh_q_lt_0.05
+    (BH across the genes first explained at that step, as cascade_table); proximity_support, proximity_ci and
+    median_nodes_tested of the genes explained there."""
+    summary = explanation_level_summary(levels)
+    total = len(summary)
+    rows = []
+    for roles, presence in explanation_variants(levels):
+        key = '{}_{}'.format(roles, presence)
+        first = summary['first_level_' + key]
+        for (rank, level), part in levels.groupby(['rank', 'level'], sort=True):
+            part = part.set_index('node')
+            explains = part['explains_' + key].astype(bool)
+            is_first = first.reindex(part.index) == level
+            row = dict(roles=roles, presence=presence, rank=int(rank), level=level, differential_genes=total,
+                       genes_any=int(explains.sum()), genes_first=int(is_first.sum()))
+            row['fraction_any'] = row['genes_any'] / total if total else np.nan
+            row['fraction_first'] = row['genes_first'] / total if total else np.nan
+            if level in STATE_LEVELS:
+                result = part['result_' + key]
+                for name, mask in (('any', explains), ('first', is_first)):
+                    row[name + '_transition'] = int((mask & (result == 'concordant transition')).sum())
+                    row[name + '_poised_in_both'] = int((mask & (result == 'poised in both')).sum())
+            if level == 'step1_marks' or re.fullmatch(r'step\d+', level):
+                p = part['p_' + roles].astype(float) if 'p_' + roles in part else pd.Series(np.nan, index=part.index)
+                q = part['q_' + roles].astype(float) if 'q_' + roles in part else pd.Series(np.nan, index=part.index)
+                beyond = part['beyond_mirror_' + roles].fillna(False).astype(bool) \
+                    if 'beyond_mirror_' + roles in part else pd.Series(False, index=part.index)
+                for name, mask in (('any', explains), ('first', is_first)):
+                    row[name + '_p_lt_0.05'] = int((mask & (p < 0.05)).sum())
+                    row[name + '_beyond_mirror'] = int((mask & beyond).sum())
+                    row[name + '_beyond_mirror_p_lt_0.05'] = int((mask & beyond & (p < 0.05)).sum())
+                    row[name + '_q_lt_0.05'] = int((mask & (q < 0.05)).sum())
+                first_p = p[is_first].to_numpy()
+                row['first_bh_q_lt_0.05'] = int((_benjamini_hochberg(first_p) < 0.05).sum()) if len(first_p) else 0
+            support = part['proximity_support']
+            row['proximity_support'] = float(support.iloc[0]) if len(support) and not pd.isna(support.iloc[0]) \
+                else np.nan
+            row['proximity_ci'] = part['proximity_support_ci'].iloc[0] if len(part) else ''
+            tested = part.loc[explains.to_numpy(), 'nodes_tested'].astype(float)
+            row['median_nodes_tested'] = float(tested.median()) if len(tested) else np.nan
+            rows.append(row)
+        none = int((first == 'none').sum())
+        rows.append(dict(roles=roles, presence=presence, rank=int(levels['rank'].max()) + 1, level='none',
+                         differential_genes=total, genes_any=none, genes_first=none,
+                         fraction_any=none / total if total else np.nan,
+                         fraction_first=none / total if total else np.nan))
+    return pd.DataFrame(rows)
+
+
+def explanation_combinations(levels, top=20):
+    """The most frequent combinations of explaining levels (upset-style counts of explaining_levels; 'none' for genes
+    explained at no level) per role set and presence statistic: roles, presence, rank, combination, n_levels,
+    genes, fraction_of_differential; the `top` most frequent per variant (ties by combination)."""
+    summary = explanation_level_summary(levels)
+    rows = []
+    for roles, presence in explanation_variants(levels):
+        key = '{}_{}'.format(roles, presence)
+        combos = summary['explaining_levels_' + key].replace('', 'none')
+        counts = combos.value_counts()
+        counts = counts.reset_index()
+        counts.columns = ['combination', 'genes']
+        counts = counts.sort_values(['genes', 'combination'], ascending=[False, True]).head(top)
+        for k, r in enumerate(counts.itertuples(index=False), start=1):
+            rows.append(dict(roles=roles, presence=presence, rank=k, combination=r.combination,
+                             n_levels=0 if r.combination == 'none' else len(r.combination.split(';')),
+                             genes=int(r.genes), fraction_of_differential=r.genes / len(summary)))
+    return pd.DataFrame(rows)
+
+
 def explanation_types(classes, cascade, marks, mark_signs, chromatin_threshold=1.0, states_callable=None):
     """Breakdown of the gene level and of step 1 of the cascade by explanation type and by mark.
 
@@ -1222,10 +1709,11 @@ def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rn
     for level, nodes in genes.items():
         subset = de if nodes is None else de[de['node'].isin(set(nodes))]
         rows = np.array([row_of[n] for n in subset['node']], dtype=np.int64)
-        H_a, H_b, n_level = operators.level(level)
+        H_a, H_b, _ = operators.level(level)
+        # nodes with a path weight in either condition (a gene with gained partners only has information at step 1)
         tests[level] = dict(nodes=subset['node'].to_numpy(), rows=rows, H_a=H_a[rows].tocsr(),
                             H_b=H_b[rows].tocsr(), direction=np.sign(subset['rna_log2FC'].to_numpy()),
-                            n=n_level[rows])
+                            n=operators.nodes_either(level)[rows])
     # nodes with a weight for any tested gene; the operators are restricted to them
     used = np.unique(np.concatenate([np.concatenate([t['H_a'].indices, t['H_b'].indices]) for t in tests.values()]
                                     + [np.zeros(0, dtype=np.int64)])).astype(np.int64)

@@ -16,6 +16,13 @@
 # tracks are coverage without input and are divided by their genome-wide mean (--stateScale genomeMean). For Md /
 # PA2 the active promoter mark is H3K4me2 (no H3K4me3 in the data set), declared active together with H3K27ac.
 # Kasumi-1 and AML have DNase only: bivalent / poised states are not callable (no repressive mark).
+# Presence of a mark on a fragment under two statistics, both reported: the fragment mean (outputs without suffix)
+# and the maximum over windows of at most 1 kb within the fragment (--stateWindow 1000, outputs *_max1kb).
+# Every level (promoter marks, own contacts, promoter state, step 1 marks, step 1 states, step 2, step 3) is evaluated
+# for every differential gene under both role sets and both statistics: <prefix>_explanations_all_levels.tsv (one row
+# per gene and level), _explanation_levels.tsv (genes explained at each level, any and first),
+# _explanation_combinations.tsv (top 20 combinations of explaining levels); the per-gene permutation test covers every
+# step for every differential gene under the declared and the learned signs.
 # Requires 17_minoux_fold.sh to have run.
 set -euo pipefail
 data=${1:?usage: 16_hops_n.sh <data_dir> <results_dir> <kasumi1 dir> <assi2019 dir> [permutations] [threads]}
@@ -29,7 +36,7 @@ out="$results/hops_n"
 mkdir -p "$out"
 common=(--verbose --maxHops 3 --genePermutations 200000 --rnaThreshold 1 --chromatinThreshold 1
         --permutations "$permutations" --bootstrap 1000 --seed 0 --threads "$threads"
-        --roles both --roleBootstrap 1000 --stateThreshold 2 --stateThresholds 1.5 2 3)
+        --roles both --roleBootstrap 1000 --stateThreshold 2 --stateThresholds 1.5 2 3 --stateWindow 1000)
 
 # hESC / hNEC (04_differential.sh)
 study="$data/chicago_calls/GSE86821_freire_pritchett_2017_H9_hESC_hNPC"
@@ -100,5 +107,5 @@ python "$here/figure_explanation_cascade.py" "$results" "$out/figures"
 for comparison in hESC_vs_hNEC Md_vs_PA2 siMM_vs_siRE t821_vs_FLT3ITD; do
     egaExplain -p "$out/$comparison" -o "$out/explain/$comparison" > "$out/explain_$comparison.log" 2>&1
 done
-# Md / PA2 bivalency calls against the sequential ChIP (re-ChIP) of Minoux et al.
+# Md / PA2 bivalency calls against the sequential ChIP (re-ChIP) of Minoux et al., fragment mean and max 1 kb window
 python "$here/rechip_validation.py" "$results" "$out/rechip" > "$out/rechip_validation.log" 2>&1
