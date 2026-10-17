@@ -5,7 +5,8 @@ S4 promoter hubs; S5 communities with a coordinated expression change; S6 nested
 S7 classification of differentially expressed genes; S8 candidates for regulation through indirect contacts;
 S9 virtual capture benchmark; S10 CRISPRi benchmark; S11 inter-chromosomal rearrangements and copy number of
 Kasumi-1; S12 chromatin assortativity (ChAseR) by graph distance; S13 promoter hubs against a polymer model.
-S24 explanation cascade of the differentially expressed genes (analysis/16_hops_n.sh).
+S24 explanation cascade of the differentially expressed genes (analysis/16_hops_n.sh); S25 chromatin state
+transitions of the differentially expressed genes at three presence thresholds.
 
 Usage: python supplement_tables.py <results dir> <output dir>
 """
@@ -859,7 +860,10 @@ CASCADE_COMPARISONS = (('hESC / hNEC', 'hops_n/hESC_vs_hNEC'), ('Md / PA2', 'hop
 def s24():
     """Explanation cascade (analysis/16_hops_n.sh, egaDifferential --maxHops 3), one block per comparison."""
     names = {'gene': 'Gene', 'gene_marks_only': '\\quad marks only', 'gene_interactions_only':
-             '\\quad interactions only', 'gene_both': '\\quad both', 'unexplained': 'Unexplained'}
+             '\\quad interactions only', 'gene_both': '\\quad both', 'gene_state': '\\quad bivalent resolved',
+             'gene_poised_unresolved': '\\quad bivalent in both', 'step1_marks': '\\quad marks',
+             'step1_state': '\\quad poised resolved', 'step1_poised_unresolved': '\\quad poised in both',
+             'unexplained': 'Unexplained'}
     rows = []
     for label, prefix in CASCADE_COMPARISONS:
         source = path(prefix + '_explanation_cascade.tsv')
@@ -870,7 +874,9 @@ def s24():
         for _, r in t.iterrows():
             level = r['level']
             name = names.get(level) or '{} step{}'.format(int(level[4:]), '' if level == 'step1' else 's')
-            step = level.startswith('step')
+            if str(r.get('note', '')) == 'states not callable':
+                name += ' (not callable)'
+            step = re.fullmatch(r'step\d+', level) is not None
 
             def count(column):
                 return integer(r[column]) if step and column in r and not pd.isna(r[column]) else ''
@@ -897,22 +903,91 @@ def s24():
           'Beyond mirror, $P<0.05$ & $q<0.1$ & $q<0.05$ & 3D support & Nodes & Genes at $q<0.05$', rows[:-1],
           'Explanation cascade of the baited promoter fragments of differentially expressed genes. Gene: a '
           'concordant change of a chromatin mark at the promoter fragment and/or of the summed strength of its own '
-          'interactions ($|\\log_2|$ change $\\geq 1$ in the direction of the expression change); the remaining '
-          'genes are assigned to the first graph step (1 to 3) at which a mark changes concordantly at the nodes '
-          'at exactly that distance, or remain unexplained. Reaching: genes not explained at an earlier level. '
+          'interactions ($|\\log_2|$ change $\\geq 1$ in the direction of the expression change), then a '
+          'transition of the promoter from or to the bivalent state (an active and a repressive mark present, mean '
+          'fold enrichment $\\geq 2$) concordant with the expression change (bivalent resolved), then a promoter '
+          'bivalent in both conditions (bivalent in both). Step 1: a concordant mark change summed over the '
+          'contacting fragments, then a concordant transition of a contacting fragment from or to the poised state '
+          '(poised resolved), then a contacting fragment poised in both conditions. The remaining genes are '
+          'assigned to the first graph step (2 or 3) at which a mark changes concordantly at the nodes at exactly '
+          'that distance, or remain unexplained. Not callable: the data set has no repressive mark. Reaching: genes not explained at an earlier level. '
           'Beyond mirror: the explaining marks do not change concordantly at the mirrored loci of the same step; '
           '$P$: per-gene permutation test of the step (200,000 permutations of the node signals), $q$: '
-          'Benjamini-Hochberg across the genes first explained at that step. 3D support: probability (95\\% '
+          'Benjamini-Hochberg across the genes first explained at that step by marks. 3D support: probability (95\\% '
           'interval) that graph neighbours at that step are closer in the nucleus than distance-matched pairs '
           '(GAM of H1 hESC for hESC / hNEC, HiPore-C of K562 for the two AML comparisons, none for the mouse '
           'comparison). Nodes: median number of nodes at that step. An explanation is the first concordant change '
           'given the measured layers.', 'tab:s24', size=r'\scriptsize', long=True, colsep='3pt')
 
 
+def s25():
+    """Chromatin state transitions of the differentially expressed genes per comparison at the presence thresholds
+    1.5, 2 and 3 (<prefix>_bivalent_transitions.tsv of analysis/16_hops_n.sh)."""
+    rows = []
+    thresholds = (1.5, 2.0, 3.0)
+    for label, prefix in CASCADE_COMPARISONS:
+        source = path(prefix + '_bivalent_transitions.tsv')
+        if not os.path.exists(source):
+            continue
+        t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+        first = True
+        if (t['transition'] == 'states not callable').all():
+            rows.append(' & '.join([label, 'states not callable (no repressive mark)'] + [''] * 8) + r' \\')
+            rows.append(r'\midrule')
+            continue
+        for level, where in (('promoter', 'Promoter'), ('step1', 'Step 1')):
+            part = t[t['level'] == level]
+            # transitions from, to or within the poised states and every changed state
+            keep = []
+            for transition in part['transition'].unique():
+                states = transition.split(':')[0].split(' -> ')
+                if len(states) == 2 and (states[0] != states[1] or states[0] in ('bivalent', 'poised enhancer')):
+                    keep.append(transition)
+            order = part[part['threshold'] == 2.0].set_index('transition')['genes'].reindex(keep).fillna(0)
+            for transition in order.sort_values(ascending=False).index:
+                cells = []
+                for threshold in thresholds:
+                    r = part[(part['threshold'] == threshold) & (part['transition'] == transition)]
+                    if not len(r):
+                        cells += ['0', '']
+                        continue
+                    r = r.iloc[0]
+                    cells.append('{} ({}/{})'.format(integer(r['genes']), integer(r['genes_up']),
+                                                     integer(r['genes_down'])))
+                    cells.append('{:.0f}'.format(100 * r['fraction_concordant'])
+                                 if not pd.isna(r['fraction_concordant']) else '--')
+                states, _, change = transition.partition(': ')
+                rows.append(' & '.join([label if first else '', where, tex(states.replace('->', '$\\to$')),
+                                        tex(change)] + cells) + r' \\')
+                first = False
+                where = ''
+        rows.append(r'\midrule')
+    if not rows:
+        return
+    table('table_s25.tex', 'p{1.5cm}llp{2.6cm}rrrrrr',
+          'Comparison & Level & Transition & Change & \\multicolumn{2}{c}{FE $\\geq 1.5$} & '
+          '\\multicolumn{2}{c}{FE $\\geq 2$} & \\multicolumn{2}{c}{FE $\\geq 3$} \\\\ & & & & Genes (up/down) & '
+          '\\% conc. & Genes (up/down) & \\% conc. & Genes (up/down) & \\% conc.', rows[:-1],
+          'Chromatin state transitions of the baited promoter fragments of differentially expressed genes at the '
+          'promoter and at step 1, at three presence thresholds of the mean fold enrichment (FE) over a fragment. '
+          'States are named from the roles of the marks: bivalent (promoter) or poised enhancer (other fragment): '
+          'an active-type and a repressive mark present; active: an active-type mark only; repressed: a repressive '
+          'mark only; unmarked: neither. Active-type: H3K4me3 at promoters and H3K4me3 or H3K4me1 elsewhere for '
+          'hESC / hNEC; H3K27ac or H3K4me2 (the available proxy of H3K4me3) for Md / PA2, whose coverage tracks '
+          'were divided by their genome-wide mean; repressive: H3K27me3. Step 1: per gene the transition of its '
+          'contacting fragments in this order: a concordant transition from or to a poised state, a fragment '
+          'poised in both conditions, another transition from or to a poised state. Genes (up/down): genes with '
+          'that transition, with expression up and down; \\% conc.: genes whose expression changes in the direction '
+          'of the transition (towards activity: active-type mark gained or repressive mark lost). Unchanged '
+          'non-poised states are omitted. Kasumi-1 and AML: DNase only, no state calls.', 'tab:s25',
+          size=r'\scriptsize', long=True, colsep='3pt')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
+                  s25):
         build()
         print(build.__name__, flush=True)
 
