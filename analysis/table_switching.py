@@ -64,13 +64,14 @@ def summary_table(src, out):
                 label if first else '', set_label, integer(r.get('n_events')), integer(r.get('n_tested')),
                 pct(r.get('concordant')), pct(r.get('discordant')), pct(r.get('concordant_null_permutation')),
                 pval(r.get('concordant_p_permutation')), pct(r.get('concordant_null_rotation')),
-                pval(r.get('concordant_p_rotation')), pct(r.get('stable_pairs_concordant'))]) + r' \\')
+                pval(r.get('concordant_p_rotation')), pval(r.get('concordant_p_swap')),
+                pct(r.get('stable_pairs_concordant'))]) + r' \\')
             first = False
         rows.append(r'\addlinespace')
     if rows and rows[-1] == r'\addlinespace':
         rows.pop()
     header = (r'Comparison & Set & Events & Tested & Conc.\ (\%) & Disc.\ (\%) & Perm.\ null (\%) & $P_\mathrm{perm}$ '
-              r'& Rot.\ null (\%) & $P_\mathrm{rot}$ & No switch (\%)')
+              r'& Rot.\ null (\%) & $P_\mathrm{rot}$ & $P_\mathrm{swap}$ & No switch (\%)')
     caption = (r'Enhancer switching and promoter competition. Switch: a fragment loses its contact with promoter A '
                r'(status lost or $\log_2$ change $\leq -1$) and gains a contact with promoter B (gained or '
                r'$\geq +1$); element: non-promoter fragments, any fragment: including promoters. Hub switch: '
@@ -81,10 +82,12 @@ def summary_table(src, out):
                r'down and B up (competition: the promoter gaining more of the shared elements up, the other down); '
                r'discordant: the reverse. Null models, 10,000 draws each: permutation of the expression changes among '
                r'the promoters of the events within strata of expression level and contact distance, and rotation of '
-               r'the expression changes along each chromosome; one-sided permutation $P$. No switch: concordant '
+               r'the expression changes along each chromosome, and swap of the roles of the two promoters, jointly '
+               r'for all events of an element (competition: per pair), which keeps the co-expression of the two '
+               r'promoters; one-sided permutation $P$. No switch: concordant '
                r'fraction of ordered promoter pairs that keep their contacts with the same element.')
     lines = [r'\begin{table}[!h]', r'\centering\scriptsize\setlength{\tabcolsep}{3pt}',
-             r'\begin{adjustbox}{max width=\textwidth}', r'\begin{tabular}{@{}llrrrrrrrrr@{}}', r'\toprule',
+             r'\begin{adjustbox}{max width=\textwidth}', r'\begin{tabular}{@{}llrrrrrrrrrr@{}}', r'\toprule',
              header + r' \\', r'\midrule'] + rows + [
              r'\bottomrule', r'\end{tabular}', r'\end{adjustbox}', r'\caption{' + caption + '}', r'\label{tab:s29}',
              r'\end{table}']

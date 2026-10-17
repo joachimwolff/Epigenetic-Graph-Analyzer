@@ -23,7 +23,11 @@ Statistics. The concordant fraction is compared with two null models of the expr
 `--permutations` draws: (i) a permutation of the expression changes among the promoters of the events within strata
 of expression level (quintiles) and contact distance class (median distance to their elements: < 100 kb, 100-500 kb,
 >= 500 kb); (ii) a rotation of the expression changes of all promoters with expression along each chromosome (gene
-order kept, local correlation of expression preserved). One-sided permutation P values, (1 + #null >= observed) /
+order kept, local correlation of expression preserved); (iii) a swap of the roles of the two promoters (lost /
+gained), at random and jointly for all events of an element, which keeps the expression of both promoters and their
+co-expression and tests the excess of concordant over discordant events. Promoters contacting the same element are
+often co-expressed (nearby genes), which lowers both the concordant and the discordant fraction below the
+expectation of (i); (ii) and (iii) keep that structure. One-sided permutation P values, (1 + #null >= observed) /
 (1 + permutations). Controls: the concordant fraction of ordered promoter pairs that keep their contact with the same
 element (no switch; by symmetry half of the pairs with opposite expression changes), and the fraction of lost
 promoters going down (gained promoters going up) in switch events against all lost (gained) promoter contacts of
@@ -32,7 +36,7 @@ elements without a switch.
 Competition. Pairs of baited promoters that share at least one non-promoter element. For each pair the net change of
 the shared contacts (gained minus lost) of each promoter; pairs with a different net change are oriented so that
 promoter 1 gains more of the shared elements. Competitive if promoter 1 goes up and promoter 2 down; tested against
-the same two null models.
+the same three null models (the role swap per pair).
 
 Ranking. Events are ordered by an evidence score, the sum of the contact change ((min(4, -log2FC lost) + min(4,
 log2FC gained)) / 2), the expression change (geometric mean of min(4, -log2FC of A) and min(4, log2FC of B), 0 unless
@@ -465,6 +469,31 @@ def competition_pairs(nodes, edges, contact_threshold=1.0, elements=None, max_sh
 
 # ------------------------------------------------------------------------------------------------------ null models
 
+def role_swap_test(concordant, discordant, clusters, n_perm=10000, seed=0, chunk=500):
+    """Asymmetry of concordant over discordant events: the roles of the two promoters (lost / gained, or winner /
+    loser) are swapped at random, jointly for all events of a cluster (an element, or a pair), which turns concordant
+    into discordant events and back. The null keeps the expression of both promoters and their co-expression.
+    Returns (null mean of the concordant fraction, one-sided P, null distribution)."""
+    concordant = np.asarray(concordant, dtype=bool)
+    discordant = np.asarray(discordant, dtype=bool)
+    if not len(concordant):
+        return np.nan, np.nan, np.array([])
+    codes = pd.factorize(pd.Series(clusters))[0]
+    k = codes.max() + 1
+    rng = np.random.default_rng(seed)
+    c = np.bincount(codes, weights=concordant, minlength=k)
+    d = np.bincount(codes, weights=discordant, minlength=k)
+    null = []
+    done = 0
+    while done < n_perm:
+        n = min(chunk, n_perm - done)
+        flip = rng.random((n, k)) < 0.5
+        null.append((np.where(flip, d[None, :], c[None, :]).sum(axis=1)) / len(concordant))
+        done += n
+    null = np.concatenate(null)
+    return float(null.mean()), permutation_p(float(concordant.mean()), null), null
+
+
 def distance_class(distances):
     return np.digitize(np.asarray(distances, dtype=float), DISTANCE_BREAKS)
 
@@ -863,9 +892,7 @@ def run(prefix, out_prefix, names=None, expression=None, gene_column='gene_name'
     rows, nulls = [], {}
     is_element = ~element_is_promoter(nodes, elements)
     for label, mask in (('non-promoter element', events['element_type'] == 'non-promoter element'),
-                        ('any fragment', np.ones(len(events), dtype=bool)),
-                        ('non-promoter element, strict contacts',
-                         (events['element_type'] == 'non-promoter element') & events['strict_contacts'])):
+                        ('any fragment', np.ones(len(events), dtype=bool))):
         sub = events[mask & events['expression_available']]
         pool = pd.Index(pd.unique(pd.concat([sub['promoter_lost'], sub['promoter_gained']])))
         dist = pd.concat([sub[['promoter_lost', 'distance_lost']].set_axis(['p', 'd'], axis=1),
@@ -890,28 +917,33 @@ def run(prefix, out_prefix, names=None, expression=None, gene_column='gene_name'
                     'concordant_chromatin_kept': float(sub.loc[~sub['element_chromatin_changed'],
                                                                'concordant'].mean())
                     if (~sub['element_chromatin_changed']).any() else np.nan})
-        if label != 'non-promoter element, strict contacts':
-            ctrl_contacts = contacts if label == 'any fragment' else \
-                contacts[is_element.reindex(contacts['element']).to_numpy()]
-            ordered, concordant = stable_pair_control(ctrl_contacts, rna)
-            n_tested = int(row['n_tested'])
-            row.update({'stable_pairs_ordered': ordered,
-                        'stable_pairs_concordant': concordant / ordered if ordered else np.nan})
-            if ordered and n_tested:
-                row['stable_pairs_fisher_p'] = stats.fisher_exact(
-                    [[row['n_concordant'], n_tested - row['n_concordant']],
-                     [concordant, ordered - concordant]], alternative='greater')[1]
-            one = one_sided_control(all_events, ctrl_contacts, rna)
-            for side, values in one.items():
-                for k, v in values.items():
-                    row['{}_{}'.format(side, k)] = v
+        swap_mean, swap_p, swap = role_swap_test(sub['concordant'], sub['discordant'], sub['element'], n_perm, seed)
+        row.update({'concordant_null_swap': swap_mean, 'concordant_p_swap': swap_p})
+        ctrl_contacts = contacts if label == 'any fragment' else \
+            contacts[is_element.reindex(contacts['element']).to_numpy()]
+        ordered, concordant = stable_pair_control(ctrl_contacts, rna)
+        n_tested = int(row['n_tested'])
+        row.update({'stable_pairs_ordered': ordered,
+                    'stable_pairs_concordant': concordant / ordered if ordered else np.nan})
+        if ordered and n_tested:
+            row['stable_pairs_fisher_p'] = stats.fisher_exact(
+                [[row['n_concordant'], n_tested - row['n_concordant']],
+                 [concordant, ordered - concordant]], alternative='greater')[1]
+        one = one_sided_control(all_events, ctrl_contacts, rna)
+        for side, values in one.items():
+            for k, v in values.items():
+                row['{}_{}'.format(side, k)] = v
         rows.append(row)
-        nulls[label] = (row.get('concordant', np.nan), perm.get('concordant'), rot.get('concordant'))
+        nulls[label] = (row.get('concordant', np.nan), {'permutation': perm.get('concordant'),
+                                                         'rotation': rot.get('concordant'), 'swap': swap})
 
     hubs, left, joined, p_nodes = hub_switches(nodes, edges, names, elements)
     write_table(hubs, out_prefix + '_switch_hubs.tsv')
     n_hub, hub_obs, hub_perm, hub_rot = hub_null_test(hubs, left, joined, p_nodes, nodes, levels, n_perm=n_perm,
                                                       seed=seed)
+    tested_hubs = hubs[hubs['expression_available']]
+    hub_swap_mean, hub_swap_p, hub_swap = role_swap_test(tested_hubs['concordant'], tested_hubs['discordant'],
+                                                         tested_hubs['element'], n_perm, seed)
     rows.append({'set': 'hub switch (two steps)', 'n_events': int(len(hubs)), 'n_elements': int(len(hubs)),
                  'n_tested': n_hub, 'concordant': hub_obs,
                  'n_concordant': int(hubs['concordant'].sum()), 'n_discordant': int(hubs['discordant'].sum()),
@@ -920,8 +952,9 @@ def run(prefix, out_prefix, names=None, expression=None, gene_column='gene_name'
                  'concordant_null_permutation': float(np.mean(hub_perm)) if len(hub_perm) else np.nan,
                  'concordant_p_permutation': permutation_p(hub_obs, hub_perm),
                  'concordant_null_rotation': float(np.mean(hub_rot)) if len(hub_rot) else np.nan,
-                 'concordant_p_rotation': permutation_p(hub_obs, hub_rot)})
-    nulls['hub switch'] = (hub_obs, hub_perm, hub_rot)
+                 'concordant_p_rotation': permutation_p(hub_obs, hub_rot),
+                 'concordant_null_swap': hub_swap_mean, 'concordant_p_swap': hub_swap_p})
+    nulls['hub switch'] = (hub_obs, {'permutation': hub_perm, 'rotation': hub_rot, 'swap': hub_swap})
     log.info('%d hub switches: %.0f s', len(hubs), time.time() - started)
 
     competition, _ = competition_pairs(nodes, edges, contact_threshold, elements)
@@ -941,7 +974,11 @@ def run(prefix, out_prefix, names=None, expression=None, gene_column='gene_name'
         comp_row['discordant'] = float(tested['reverse'].mean())
         rho, p = stats.spearmanr(tested['delta'], tested['rna_log2FC_1'] - tested['rna_log2FC_2'])
         comp_row.update({'spearman_delta_vs_difference': rho, 'spearman_p': p})
-        nulls['competition'] = (row['concordant'], perm['concordant'], rot['concordant'])
+        swap_mean, swap_p, swap = role_swap_test(tested['competitive'], tested['reverse'], np.arange(len(tested)),
+                                                 n_perm, seed)
+        comp_row.update({'concordant_null_swap': swap_mean, 'concordant_p_swap': swap_p})
+        nulls['competition'] = (row['concordant'], {'permutation': perm['concordant'], 'rotation': rot['concordant'],
+                                                    'swap': swap})
     rows.append(comp_row)
     summary = pd.DataFrame(rows)
     summary.insert(0, 'comparison', os.path.basename(out_prefix))
@@ -961,16 +998,18 @@ def run(prefix, out_prefix, names=None, expression=None, gene_column='gene_name'
                                 '{}_switch_top{}_{}.pdf'.format(base, k, names[c]))
         for label, key in (('non-promoter element', 'switch_null'), ('hub switch', 'hub_switch_null'),
                            ('competition', 'competition_null')):
-            if label in nulls and nulls[label][1] is not None and len(nulls[label][1]):
-                obs, perm, rot = nulls[label]
-                for kind, null in (('permutation', perm), ('rotation', rot)):
+            if label not in nulls:
+                continue
+            obs, draws = nulls[label]
+            for kind, null in draws.items():
+                if null is not None and len(null):
                     plot_null(null, obs, '{}_{}_{}.pdf'.format(base, key, kind),
                               '{} ({})'.format(label, kind),
                               'fraction concordant' if label != 'competition' else 'fraction competitive')
         np.savez_compressed(out_prefix + '_switch_nulls.npz',
-                            **{'{}__{}'.format(label.replace(' ', '_'), kind): np.asarray(v[i] if v[i] is not None
+                            **{'{}__{}'.format(label.replace(' ', '_'), kind): np.asarray(null if null is not None
                                                                                           else [])
-                               for label, v in nulls.items() for i, kind in ((1, 'permutation'), (2, 'rotation'))})
+                               for label, (_, draws) in nulls.items() for kind, null in draws.items()})
     with open(out_prefix + '_switch_run.json', 'w') as handle:
         json.dump({'prefix': prefix, 'names': names, 'marks': marks, 'elements': elements is not None,
                    'contact_threshold': contact_threshold, 'rna_threshold': rna_threshold,

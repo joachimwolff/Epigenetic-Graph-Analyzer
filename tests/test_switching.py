@@ -134,6 +134,18 @@ def test_null_draws_keep_values():
     assert switching.permutation_p(5.0, np.arange(10)) == (1 + 5) / 11
 
 
+def test_role_swap_test():
+    # 30 elements with 3 events each: all concordant -> significant; balanced -> not
+    clusters = np.repeat(np.arange(30), 3)
+    concordant = np.ones(90, dtype=bool)
+    discordant = np.zeros(90, dtype=bool)
+    mean, p, null = switching.role_swap_test(concordant, discordant, clusters, n_perm=2000, seed=0)
+    assert abs(mean - 0.5) < 0.02 and p < 0.001 and len(null) == 2000
+    concordant = np.tile([True, False], 45)
+    mean, p, _ = switching.role_swap_test(concordant, ~concordant, clusters, n_perm=2000, seed=0)
+    assert p > 0.2
+
+
 def test_null_test_detects_planted_concordance():
     rng = np.random.default_rng(0)
     n = 400
