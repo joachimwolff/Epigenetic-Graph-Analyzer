@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="generator" content="Epigenetic Graph Analyzer {{version}} (egaExplorer)">
+<title>{{title}}</title>
+<style>
+{{css}}
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="bar">
+    <div class="search" role="search">
+      <label for="q" class="vh">Gene</label>
+      <input id="q" type="search" placeholder="Search a gene" autocomplete="off" spellcheck="false"
+             role="combobox" aria-autocomplete="list" aria-controls="suggest" aria-expanded="false">
+      <ul id="suggest" role="listbox" hidden></ul>
+    </div>
+    <nav class="tabs" aria-label="Views" id="tabs">
+      <a href="#view=overview" data-view="overview">Overview</a>
+      <a href="#view=gene" data-view="gene" hidden id="tab-gene">Gene</a>
+      <a href="#view=genes" data-view="genes">Differential genes</a>
+      <a href="#view=communities" data-view="communities">Communities</a>
+      <a href="#view=switching" data-view="switching">Enhancer switching</a>
+      <a href="#view=triggers" data-view="triggers">Candidate triggers</a>
+    </nav>
+  </div>
+</header>
+<main class="doc">
+  <div class="title-block">
+    <p class="kicker">Differential graph explorer</p>
+    <h1>{{heading}}</h1>
+  </div>
+  <p id="status" class="note" role="status">Reading the embedded data.</p>
+  <div id="view"></div>
+</main>
+<footer class="foot">Epigenetic Graph Analyzer {{version}}, egaExplorer; generated {{date}}. The page works offline and loads nothing from the network.</footer>
+<div id="tip" role="tooltip" hidden></div>
+<script type="application/json" id="ega-index">{{index}}</script>
+<script type="application/octet-stream" id="ega-data">{{data}}</script>
+<script>
+{{js}}
+</script>
+</body>
+</html>

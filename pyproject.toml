@@ -46,6 +46,7 @@ egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
 egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
 egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
 egaReport = "epigeneticgraphanalyzer.egaReport:main"
+egaExplorer = "epigeneticgraphanalyzer.explorer:main"
 egaSwitching = "epigeneticgraphanalyzer.switching:main"
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
 egaTriggers = "epigeneticgraphanalyzer.egaTriggers:main"
@@ -57,7 +58,8 @@ version = {attr = "epigeneticgraphanalyzer._version.__version__"}
 include = ["epigeneticgraphanalyzer*"]
 
 [tool.setuptools.package-data]
-epigeneticgraphanalyzer = ["templates/*.html", "templates/*.css"]
+epigeneticgraphanalyzer = ["templates/*.html", "templates/*.css", "templates/explorer/*.html",
+                           "templates/explorer/*.css", "templates/explorer/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
