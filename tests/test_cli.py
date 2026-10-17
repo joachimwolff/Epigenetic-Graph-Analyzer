@@ -157,6 +157,13 @@ def test_differential_cli(tmp_path):
                               '-o', learned])
         roles = pd.read_csv(learned + '_mark_roles.tsv', sep='\t')
         assert {'promoter', 'step1', 'step2', 'step3', 'promoter_vs_contact'} <= set(roles['level'])
+        # roles per element type beside those over all nodes; element classes per node and condition
+        assert {'all', 'promoter', 'non-promoter element'} <= set(roles['element_type'])
+        elements = pd.read_csv(learned + '_elements.tsv', sep='\t')
+        assert len(elements) == 2 * elements['node'].nunique()
+        assert {'class_declared_mean', 'class_learned_max1kb', 'present_marks_mean'} <= set(elements.columns)
+        for name in ('_element_classes.tsv', '_element_transitions.tsv'):
+            assert os.path.exists(learned + name)
         assert 'contact' in set(roles['mark'])
         learned_classes = pd.read_csv(learned + '_gene_classes.tsv', sep='\t')
         assert learned_classes['explanation_detail'].astype(str).str.len().gt(0).all()

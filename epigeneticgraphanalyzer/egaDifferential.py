@@ -22,6 +22,8 @@ from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochbe
 from .states import (MARK_ROLES, bigwig_genome_mean, gene_states, learn_mark_roles, learned_level_signs,
                      learned_roles, learned_state_transitions, level_states_callable, parse_mark_roles,
                      resolve_mark_roles, role_signs, state_transition_table)
+from .elements import (assign_elements, element_agreement, element_class_counts, element_transitions,
+                       node_elements, node_types, read_element_bed, roles_per_element_type, stratum_masks, tss_status)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -132,6 +134,20 @@ def parse_arguments(args=None):
     parser.add_argument('--stateMinChange', type=float, default=0.5,
                         help='A state transition needs every mark crossing the presence threshold to change by at '
                              'least this log2 fold (pseudo count 1) in the direction of the crossing')
+    parser.add_argument('--annotation',
+                        help='Element classes: GTF or TSS BED whose transcription start sites make a fragment a '
+                             'promoter, baited or not (gene types --geneTypes; default: --tss)')
+    parser.add_argument('--elements', nargs='+',
+                        help='External element annotation, BED with a name column (e.g. ENCODE cCREs, ChromHMM '
+                             'states): one file for both conditions or one per condition (A B); the agreement of the '
+                             'element classes with it is written to <prefix>_element_agreement.tsv')
+    parser.add_argument('--primaryRepressive', nargs='*', default=None,
+                        help='Element classes: primary repressive marks (e.g. the Polycomb-type mark); a mark that is '
+                             'repressive without being primary makes a heterochromatin-like element (default: the '
+                             'marks declared repressive)')
+    parser.add_argument('--elementMinGenes', type=int, default=50,
+                        help='Roles learned per chromatin class of the nodes: classes with at least this many genes '
+                             'at a level')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
     parser.add_argument('--resolution', type=float, default=1.0, help='Community resolution parameter')
     parser.add_argument('--seed', type=int, default=0)
@@ -292,11 +308,40 @@ def main(args=None):
     # change of the promoter's own interactions, chromosome block-bootstrap intervals
     learned_table = learn_mark_roles(features, list(marks), declared, args.chromatinThreshold, args.rnaThreshold,
                                      n_boot=args.roleBootstrap, seed=args.seed, levels=operators.levels)
-    write_table(learned_table, prefix + '_mark_roles.tsv')
     # learned roles per level: no level decides for another
     learned = learned_roles(learned_table, declared)
     learned_signs = learned_level_signs(learned_table)
     log.info('mark roles declared %s, learned per level %s', declared, learned)
+    # element classes of every fragment per condition (declared and learned roles, both presence statistics)
+    started = time.time()
+    if args.annotation:
+        status = tss_status(graph, annotate_genes(nodes, load_tss(args.annotation, args.geneTypes)))
+    else:
+        status = tss_status(graph)
+    primary = args.primaryRepressive if args.primaryRepressive is not None else \
+        [m for m, r in declared.items() if r == 'repressive']
+    learned_other = {m: learned.get('direct', {}).get(m, 'neutral') for m in marks}
+    learned_bait = {m: learned.get('promoter', {}).get(m, 'neutral') for m in marks}
+    elements = node_elements(graph, state_signals_by, args.stateThreshold,
+                             {'declared': declared, 'learned': learned_other}, status, names=(name_a, name_b),
+                             primary=primary, bait_roles_by={'declared': declared, 'learned': learned_bait})
+    write_table(elements, prefix + '_elements.tsv')
+    other_ends = set(edges['node_b'])
+    write_table(element_class_counts(elements, other_ends), prefix + '_element_classes.tsv')
+    if args.elements:
+        external = [assign_elements(graph, read_element_bed(path)) for path in args.elements]
+        external = {name_a: external[0], name_b: external[-1]}
+        write_table(element_agreement(elements, external), prefix + '_element_agreement.tsv')
+    log.info('element classes of %d fragments: %.0f s', graph.number_of_nodes(), time.time() - started)
+    # roles learned per element type of the nodes (promoter / non-promoter element, chromatin class)
+    started = time.time()
+    masks = stratum_masks(elements, operators)
+    per_type = roles_per_element_type(features, operators, mark_vectors, list(marks), declared, masks,
+                                      args.chromatinThreshold, args.rnaThreshold, n_boot=args.roleBootstrap,
+                                      seed=args.seed, min_genes=args.elementMinGenes, threads=args.threads)
+    write_table(pd.concat([learned_table.assign(element_type='all'), per_type], ignore_index=True),
+                prefix + '_mark_roles.tsv')
+    log.info('roles per element type (%d strata): %.0f s', len(masks), time.time() - started)
     declared_setting = (declared, declared, role_signs(declared))
     learned_setting = (learned.get('promoter', {}), learned.get('direct', {}), learned_signs)
     promoter_roles, step1_roles, mark_signs = learned_setting if args.roles == 'learned' else declared_setting
@@ -352,6 +397,10 @@ def main(args=None):
             write = roles == main_roles or args.roles == 'both'
             variants[(roles, presence)] = cascade_with(settings[roles], suffix, presence, write) + (suffix, write)
     cascade, states, callable_ = variants[(main_roles, 'mean')][:3]
+    # class transitions of the fragments and the expression change of the genes in contact (step 0 .. maxHops)
+    write_table(element_transitions(elements, operators, features, args.rnaThreshold, n_boot=args.roleBootstrap,
+                                    seed=args.seed, differential=set(classes['node'])),
+                prefix + '_element_transitions.tsv')
     details = explanation_details(classes, cascade, graph, marks, mark_signs, args.chromatinThreshold, states=states,
                                   proximity=proximity)
     classes = classes.assign(explained_at=cascade['explained_at'].to_numpy(),
@@ -434,7 +483,8 @@ def main(args=None):
                                     {'declared': declared_setting[2], 'learned': learned_signs},
                                     states={key: value[1] for key, value in variants.items()},
                                     tests=tests_by if args.genePermutations else None, proximity=proximity,
-                                    chromatin_threshold=args.chromatinThreshold, names=(name_a, name_b))
+                                    chromatin_threshold=args.chromatinThreshold, names=(name_a, name_b),
+                                    node_types=node_types(elements))
     write_table(all_levels, prefix + '_explanations_all_levels.tsv')
     write_table(explanation_level_counts(all_levels), prefix + '_explanation_levels.tsv')
     write_table(explanation_combinations(all_levels, top=20), prefix + '_explanation_combinations.tsv')

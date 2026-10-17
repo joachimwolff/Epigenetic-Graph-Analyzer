@@ -407,6 +407,15 @@ class Run:
         self.cascade_learned = self.table('_explanation_cascade_learned.tsv')
         self.types = self.table('_explanation_types.tsv')
         self.roles = self.table('_mark_roles.tsv')
+        # roles over all nodes; the roles learned per element type of the nodes are kept apart
+        self.roles_by_type = None
+        if self.roles is not None and 'element_type' in self.roles:
+            kind = self.roles['element_type'].fillna('all')
+            self.roles_by_type = self.roles[kind != 'all'].reset_index(drop=True)
+            self.roles = self.roles[kind == 'all'].reset_index(drop=True)
+        self.elements = self.table('_elements.tsv')
+        self.element_classes = self.table('_element_classes.tsv')
+        self.element_transitions = self.table('_element_transitions.tsv')
         self.state_transitions = self.table('_state_transitions.tsv')
         self.bivalent = self.table('_bivalent_transitions.tsv')
         self.state_marks = self.table('_state_marks.tsv')
@@ -581,6 +590,19 @@ class Run:
             return None
         rows = self.roles[(self.roles['mark'] == mark) & (self.roles['level'] == roles_level)]
         return rows.iloc[0] if len(rows) else None
+
+    def element_lookup(self, roles='declared', presence='mean'):
+        """node -> (class in A, class in B, TSS status, TSS genes) from <prefix>_elements.tsv (declared roles, fragment
+        mean by default); {} without it."""
+        table = self.elements
+        column = 'class_{}_{}'.format(roles, presence)
+        if table is None or column not in table or 'condition' not in table:
+            return {}
+        a = table[table['condition'].astype(str) == str(self.names[0])].set_index('node')
+        b = table[table['condition'].astype(str) == str(self.names[1])].set_index('node')
+        b_class = b[column].reindex(a.index)
+        genes = a['tss_genes'].fillna('').astype(str) if 'tss_genes' in a else pd.Series('', index=a.index)
+        return {n: (ca, cb, st, gs) for n, ca, cb, st, gs in zip(a.index, a[column], b_class, a['tss_status'], genes)}
 
     def step_support(self):
         """3D proximity support per step from the cascade table: {k: (support, interval)}."""
@@ -1600,13 +1622,43 @@ def fmt_distance(bases):
     return '{:.1f} Mb'.format(bases / 1e6)
 
 
+PROMOTER_ADJECTIVE = {'active promoter': 'active', 'bivalent promoter': 'bivalent', 'poised promoter': 'poised',
+                      'primed promoter': 'primed', 'repressed promoter': 'repressed',
+                      'heterochromatin-like promoter': 'heterochromatin-like',
+                      'architectural promoter': 'architectural', 'unmarked promoter': 'unmarked'}
+
+
+ELEMENT_CLASS_ORDER = ('active promoter', 'bivalent promoter', 'poised promoter', 'primed promoter',
+                       'repressed promoter', 'heterochromatin-like promoter', 'architectural promoter',
+                       'promoter with marks of no role', 'unmarked promoter', 'active enhancer', 'primed enhancer',
+                       'poised enhancer', 'enhancer-marked element', 'repressed element',
+                       'heterochromatin-like element', 'architectural element', 'element with marks of no role',
+                       'unmarked element')
+
+
+def indefinite_article(phrase):
+    """'an' before a vowel sound, else 'a'."""
+    return 'an' if re.match(r'[aeiou]', plain_text(phrase).strip().lower()) else 'a'
+
+
+def class_noun(cls):
+    """Plain words of an element class for a place name: 'active enhancer', 'element' for marks without a role."""
+    cls = str(cls or '')
+    return 'element' if not cls or cls.endswith('marks of no role') else cls
+
+
 class Places:
     """Names of graph nodes by genes: a promoter by its genes, an other end by its distance from the report gene and
-    the nearest gene (baited promoters of the graph)."""
+    the nearest gene (baited promoters of the graph). With `elements` (node -> (class in A, class in B, TSS status,
+    TSS genes), Run.element_lookup) the element class is named in plain words: 'the bivalent promoter of Hoxa2',
+    'an active enhancer 120 kb upstream of Hoxa3 (near Skap2)', 'the active promoter of Skap2 (an other end)'; a
+    class that differs between the conditions is given per condition in parentheses."""
 
-    def __init__(self, graph, strands=None):
+    def __init__(self, graph, strands=None, elements=None, names=('A', 'B')):
         self.graph = graph
         self.strands = strands or {}
+        self.elements = elements or {}
+        self.names = list(names)
         index = {}
         for n, d in graph.nodes(data=True):
             if d.get('bait'):
@@ -1641,17 +1693,53 @@ class Places:
         data = self.graph.nodes[node] if node in self.graph else {}
         return gene_names(data.get('genes', '')) if data.get('bait') else []
 
-    def label(self, node, ref_node=None, ref_gene=None, markup=True, article=False):
-        """'Hoxa2 promoter' or 'element 1.0 Mb upstream of Hoxa3 (near Skap2)'; with `article` 'the' or 'an'."""
+    def element_class(self, node):
+        """(class in A, class in B) of a node, or None without the element table."""
+        info = self.elements.get(node)
+        return (info[0], info[1]) if info else None
+
+    def per_condition(self, classes, words):
+        """'bivalent in Md, active in PA2' from the classes of the two conditions."""
+        return ', '.join('{} in {}'.format(words(c), esc(n)) for c, n in zip(classes, self.names))
+
+    def label(self, node, ref_node=None, ref_gene=None, markup=True, article=False, classed=True):
+        """'Hoxa2 promoter' or 'element 1.0 Mb upstream of Hoxa3 (near Skap2)'; with `article` 'the' or 'an'. With
+        element classes: 'bivalent promoter of Hoxa2', 'active enhancer 1.0 Mb upstream of Hoxa3 (near Skap2)';
+        `classed` False leaves the class out (where the text states the state already)."""
         g = gene_span if markup else str
+        a_word = article
         if node not in self.graph:
-            return 'an unmapped fragment' if article else 'unmapped fragment'
+            return 'an unmapped fragment' if a_word else 'unmapped fragment'
+        classes = self.element_class(node) if classed else None
         names = self.promoter_genes(node)
+        if not names and classes and self.elements[node][2] == 'non-baited promoter':
+            # an other end holding a TSS: named as a promoter of its genes
+            names = gene_names(self.elements[node][3])
+            other_end = True
+        else:
+            other_end = False
         if names:
-            return '{}{} promoter'.format('the ' if article else '', g(names[0]))
+            if classes is None:
+                return '{}{} promoter'.format('the ' if a_word else '', g(names[0]))
+            suffix = ' (an other end)' if other_end else ''
+            words = [PROMOTER_ADJECTIVE.get(c) for c in classes]
+            if classes[0] == classes[1] and words[0]:
+                return '{}{} promoter of {}{}'.format('the ' if a_word else '', words[0], g(names[0]), suffix)
+            if classes[0] == classes[1]:
+                return '{}{} promoter{}'.format('the ' if a_word else '', g(names[0]), suffix)
+            detail = self.per_condition(classes, lambda c: PROMOTER_ADJECTIVE.get(c) or 'marks of no role')
+            return '{}{} promoter ({}{})'.format('the ' if a_word else '', g(names[0]), 'an other end; '
+                                                 if other_end else '', detail)
         data = self.graph.nodes[node]
         exclude = {ref_gene} if ref_gene else set()
         near = self.nearest_gene(node, exclude)
+        noun = 'element'
+        extra = ''
+        if classes is not None:
+            if classes[0] == classes[1]:
+                noun = class_noun(classes[0])
+            else:
+                extra = self.per_condition(classes, class_noun)
         if ref_node in self.graph and self.graph.nodes[ref_node].get('chrom') == data.get('chrom') and ref_gene:
             distance = self.middle(node) - self.middle(ref_node)
             strand = self.strands.get(ref_gene)
@@ -1659,12 +1747,19 @@ class Places:
                 side = 'upstream of' if (distance < 0) == (strand == '+') else 'downstream of'
             else:
                 side = 'from'
-            text = 'element {} {} {}'.format(fmt_distance(distance), side, g(ref_gene))
+            text = '{} {} {} {}'.format(noun, fmt_distance(distance), side, g(ref_gene))
+            inside = []
             if near is not None and near[1] < abs(distance):
-                text += ' (near {})'.format(g(near[0]))
+                inside.append('near {}'.format(g(near[0])))
+            if extra:
+                inside.append(extra)
+            if inside:
+                text += ' ({})'.format('; '.join(inside))
         else:
-            text = 'element on {}{}'.format(data.get('chrom'), ' near {}'.format(g(near[0])) if near else '')
-        return ('an ' if article else '') + text
+            text = '{} on {}{}'.format(noun, data.get('chrom'), ' near {}'.format(g(near[0])) if near else '')
+            if extra:
+                text += ' ({})'.format(extra)
+        return ('{} '.format(indefinite_article(text)) if a_word else '') + text
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -1860,8 +1955,8 @@ class GeneStory:
         others = self.fragment_others(node)
         return 'with {}'.format(', '.join(others[:2])) if others else '{} alone'.format(self.gene)
 
-    def place(self, node, ref_node, article=True, markup=True):
-        return self.places.label(node, ref_node, self.gene, markup=markup, article=article)
+    def place(self, node, ref_node, article=True, markup=True, classed=True):
+        return self.places.label(node, ref_node, self.gene, markup=markup, article=article, classed=classed)
 
     # sentences ------------------------------------------------------------------------------------------------------
     def expression_sentence(self):
@@ -1968,8 +2063,9 @@ class GeneStory:
             mark, value = strongest_change(best)
             if best.get('strongest_node') and mark and not isnan(value) and \
                     abs(value) >= self.run.chromatin_threshold:
-                sentence += ', most strongly at {} ({} log2 {}, about {}-fold)'.format(
-                    self.place(best['strongest_node'], node), mark, fmt_log2(value), fold(value))
+                sentence += ', most strongly at {}, where {} {} by log2 {} (about {}-fold)'.format(
+                    self.place(best['strongest_node'], node), mark, 'rises' if value > 0 else 'falls',
+                    fmt_log2(value), fold(value))
             sentence += ', beyond the change at distance-matched mirror loci (P = {}, q = {}).'.format(
                 fmt_pq(best['p']), fmt_pq(best['q']))
             out.append(sentence)
@@ -2109,7 +2205,7 @@ class GeneStory:
             if note:
                 text += ' ({})'.format(readable_note(note))
             if level == 'step1_state' and row.get('state_fragment'):
-                text += ' at {}'.format(self.place(row['state_fragment'], node))
+                text += ' at {}'.format(self.place(row['state_fragment'], node, classed=False))
                 count = transition_count(row.get('detail_raw'))
                 if count:
                     text += '; {} of {} partners'.format(*count)
@@ -2676,6 +2772,7 @@ class Report:
                 doc.p('Under the mark roles learned from these data, {}.'.format('; '.join(notes)), cls='note')
         doc.section('states', 'Chromatin states')
         self.state_block(doc, story)
+        self.partner_elements(doc, gene, nodes)
         doc.section('hub', 'Hub and community')
         self.hub_block(doc, gene, nodes, draw=False)
         community = self.gene_community_text(doc, gene, nodes)
@@ -2715,7 +2812,7 @@ class Report:
                     text += ' ({})'.format(readable_note(note))
                 if fragment:
                     described.add((fragment, transition))
-                    text += ' at {}'.format(story.place(fragment, node))
+                    text += ' at {}'.format(story.place(fragment, node, classed=False))
                     if count:
                         text += ' ({} of {} partners)'.format(*count)
                 values = fold_values(row.get('detail_raw'))
@@ -2742,6 +2839,85 @@ class Report:
                   run.command_value('--stateThreshold', 2.0), run.kind,
                   ' Re-ChIP: sequential ChIP signal of both marks on the same fragment; a signal of at least 2 '
                   'confirms the bivalent call.' if run.rechip is not None else ''), cls='note')
+
+    def class_counts_text(self, classes):
+        """'five active enhancers, three unmarked elements and one active promoter' from a list of classes."""
+        counts = pd.Series(list(classes), dtype=object).value_counts()
+        parts = []
+        for cls, n in counts.items():
+            noun = class_noun(cls)
+            if noun == 'element':
+                noun = 'element with marks of no declared role' if n == 1 else \
+                    'elements with marks of no declared role'
+            elif n != 1:
+                noun = re.sub(r'(enhancer|element|promoter)$', r'\1s', noun)
+            parts.append('{} {}'.format(number_word(int(n)), noun))
+        return join_words(parts)
+
+    def partner_elements(self, doc, gene, nodes):
+        """Element classes of the promoter fragments of the gene and of their direct partners in both conditions,
+        and the partners whose class changes (declared roles, fragment mean)."""
+        run = self.run
+        places = self.places
+        if not places.elements:
+            return
+        a, b = (esc(n) for n in run.names)
+        seeds = [n for n in nodes if n in run.graph]
+        partners = sorted({m for n in seeds for m in run.graph.neighbors(n)} - set(seeds))
+        info = [(m, places.elements.get(m)) for m in partners]
+        info = [(m, i) for m, i in info if i]
+        sentences = []
+        def adjective(c):
+            return PROMOTER_ADJECTIVE.get(c, 'with marks of no declared role')
+
+        def state(c):
+            return '{} in both {}s'.format(adjective(c[0]), run.kind) if c[0] == c[1] else \
+                '{} in {} and {} in {}'.format(adjective(c[0]), a, adjective(c[1]), b)
+        own = [(n, places.element_class(n)) for n in seeds if places.element_class(n)]
+        story = self.story(gene, nodes)
+        if len(own) == 1:
+            sentences.append('The promoter of {} is {}.'.format(gene_span(gene), state(own[0][1])))
+        elif own:
+            items = ['{} is {}'.format(story.fragment_name(n), state(c)) for n, c in own]
+            sentences.append('Of the promoter fragments of {}, {}.'.format(gene_span(gene), join_words(items)))
+        if info:
+            promoters = [i for _, i in info if i[2] in ('baited promoter', 'non-baited promoter')]
+            uncaptured = sum(1 for i in promoters if i[2] == 'non-baited promoter')
+            sentences.append('Of its {} direct partner{}, {} {} {}{}.'.format(
+                number_word(len(info)), '' if len(info) == 1 else 's',
+                number_word(len(promoters)) if promoters else 'none', 'is' if len(promoters) == 1 else 'are',
+                'the promoter of another gene' if len(promoters) == 1 else 'promoters of other genes',
+                '' if not uncaptured else ' ({} not captured)'.format(
+                    'it is' if len(promoters) == 1 else
+                    'all of them' if uncaptured == len(promoters) else '{} of them'.format(number_word(uncaptured)))))
+            texts = [self.class_counts_text([i[k] for _, i in info]) for k in (0, 1)]
+            if texts[0] == texts[1]:
+                sentences.append('In both {}s, the partners are {}.'.format(run.kind, texts[0]))
+            else:
+                for name, text in zip((a, b), texts):
+                    sentences.append('In {}, the partners are {}.'.format(name, text))
+            changed = [i for _, i in info if i[0] != i[1]]
+            if changed:
+                moves = pd.Series(['{} to {}'.format(class_noun(i[0]), class_noun(i[1])) for i in changed]) \
+                    .value_counts()
+                items = ['{} from {}'.format(number_word(int(n)), move) for move, n in moves.head(4).items()]
+                more = len(moves) - 4
+                sentences.append('{} partner{} change{} class between {} and {}: {}{}.'.format(
+                    capitalise(number_word(len(changed))), '' if len(changed) == 1 else 's',
+                    's' if len(changed) == 1 else '', a, b, join_words(items),
+                    ' and {} other change{}'.format(number_word(more), '' if more == 1 else 's') if more > 0 else ''))
+            else:
+                sentences.append('No partner changes class between {} and {}.'.format(a, b))
+        if not sentences:
+            return
+        doc.heading('Element classes of the promoter and its partners', level=3)
+        doc.p(' '.join(sentences))
+        doc.p('Element classes follow from the marks present on a fragment (fold enrichment of at least {:g}, fragment '
+              'mean) and the declared roles of the marks: active promoter or enhancer (an activating mark), primed '
+              'enhancer (the enhancer mark without an activating one), bivalent promoter or poised enhancer (with the '
+              'repressive mark), repressed (the repressive mark only), unmarked (none). A fragment is a promoter when '
+              'it holds an annotated transcription start site, whether it is captured or not.'.format(
+                  run.command_value('--stateThreshold', 2.0)), cls='note')
 
     def rechip_text(self, node, transition):
         run = self.run
@@ -2775,6 +2951,7 @@ class Report:
                                    'Comparison report')
         self.key_findings(doc)
         self.cascade_section(doc)
+        self.elements_section(doc)
         cards = self.gene_cards(doc)
         self.communities_section(doc)
         self.appendix(doc, genes=cards, main=True)
@@ -2936,6 +3113,91 @@ class Report:
         doc.figure([fig], 'Differential genes ({:,}) by the nearest level that explains their expression change '
                           '(left) and by every level that explains it (right), with the percentage of all '
                           'differential genes.'.format(total))
+
+    def elements_section(self, doc):
+        """Element classes of the fragments (declared roles, fragment mean), promoters among the other ends, class
+        transitions with the expression change of the genes in contact at step 1, and the roles learned per element
+        type."""
+        run = self.run
+        counts = run.element_classes
+        if counts is None or not len(counts):
+            return
+        a, b = run.names
+        doc.section('elements', 'Elements')
+        part = counts[(counts['roles'] == 'declared') & (counts['presence'] == 'mean')]
+        sentences = []
+        if 'other_end_fragments' in part:
+            ends = part[part['condition'].astype(str) == str(a)]
+            total = int(ends['other_end_fragments'].sum())
+            captured = int(ends.loc[ends['tss_status'] == 'baited promoter', 'other_end_fragments'].sum())
+            uncaptured = int(ends.loc[ends['tss_status'] == 'non-baited promoter', 'other_end_fragments'].sum())
+            if total:
+                sentences.append('Of the {:,} fragments at the other end of an interaction, {:,} ({:.0f}%) hold an '
+                                 'annotated transcription start site: {:,} are captured promoters themselves and '
+                                 '{:,} are promoters that were not captured.'.format(
+                                     total, captured + uncaptured, 100 * (captured + uncaptured) / total, captured,
+                                     uncaptured))
+        sentences.append('Every fragment is classed in each {} from the marks present on it and the declared roles '
+                         'of the marks (Table {}).'.format(run.kind, doc.table_count + 1))
+        doc.p(' '.join(sentences), cls='lead')
+        pivot = part.pivot_table(index='element_class', columns='condition', values='fragments', aggfunc='sum',
+                                 fill_value=0)
+        order = {c: k for k, c in enumerate(ELEMENT_CLASS_ORDER)}
+        rows = []
+        for cls in sorted(pivot.index, key=lambda c: (order.get(c, 99), c)):
+            rows.append({'Element class': cls, a: int(pivot.loc[cls].get(a, 0)), b: int(pivot.loc[cls].get(b, 0))})
+        doc.table(pd.DataFrame(rows), 'Fragments of the union graph by element class in {} and {} (declared mark '
+                                      'roles, presence at a fold enrichment of at least {:g}, fragment mean). '
+                                      'Promoters hold an annotated transcription start site, captured or '
+                                      'not.'.format(esc(a), esc(b), run.command_value('--stateThreshold', 2.0)),
+                  formats={a: fmt_int, b: fmt_int}, numeric=(a, b))
+        transitions = run.element_transitions
+        if transitions is not None and len(transitions):
+            t = transitions[(transitions['roles'] == 'declared') & (transitions['presence'] == 'mean') &
+                            (transitions['step'] == 1) & transitions['changed'].map(truthy)]
+            t = t[t['n_genes'] >= 20].sort_values('n_genes', ascending=False).head(8)
+            if len(t):
+                baseline = float(t['baseline_mean'].iloc[0])
+
+                def l2(value):
+                    return fmt_num(value, 2, signed=True).replace('-', '−')
+                frame = pd.DataFrame({
+                    'Class in {}, in {}'.format(a, b): ['{} to {}'.format(x, y) for x, y in zip(t['class_A'],
+                                                                                              t['class_B'])],
+                    'Fragments': t['n_fragments'].map(fmt_int).to_numpy(),
+                    'Genes in contact': t['n_genes'].map(fmt_int).to_numpy(),
+                    'Mean log2 expression change': ['{} ({} to {})'.format(l2(m), l2(lo), l2(hi))
+                                                    if not isnan(lo) else l2(m) for m, lo, hi in
+                                                    zip(t['mean_rna_log2FC'], t['ci_low'], t['ci_high'])]})
+                doc.table(frame, 'Element classes that change between {a} and {b} at the direct partners of '
+                                 'promoters, the most frequent first (at least 20 genes): the genes whose promoter '
+                                 'contacts at least one fragment with that change, and their mean log2 expression '
+                                 'change {b} / {a} with a 95% chromosome block-bootstrap interval. All genes with a '
+                                 'direct partner: mean log2 {m}. Steps 0 to {k} and all role sets are in the '
+                                 'element transition table of the run.'.format(
+                                     a=esc(a), b=esc(b), m=l2(baseline), k=run.max_hops),
+                          numeric=('Fragments', 'Genes in contact'))
+        roles = run.roles_by_type
+        if roles is not None and len(roles):
+            r = roles[roles['element_type'].isin(['promoter', 'non-promoter element']) &
+                      roles['level'].astype(str).str.fullmatch(r'step\d+')]
+            if len(r):
+                rows = []
+                for (mark, level), group in r.groupby(['mark', 'level'], sort=False):
+                    row = {'Mark': mark, 'Step': level_hops(level)}
+                    for kind, label in (('promoter', 'Promoter nodes'), ('non-promoter element', 'Other elements')):
+                        g = group[group['element_type'] == kind]
+                        rho = fmt_num(g['rho'].iloc[0], signed=True).replace('-', '\u2212') if len(g) else ''
+                        row[label] = '{} (rho {})'.format(g['learned_role'].iloc[0], rho) \
+                            if len(g) else 'no nodes'
+                    rows.append(row)
+                frame = pd.DataFrame(rows).sort_values(['Mark', 'Step'], kind='mergesort')
+                doc.table(frame, 'Roles of the marks learned from the data at each step, separately for the nodes '
+                                 'that are promoters (captured or not) and for the other elements: the association '
+                                 '(Spearman rho) of the mark change summed over those nodes with the expression '
+                                 'change; active or repressive when the 95% chromosome block-bootstrap interval '
+                                 'excludes 0, otherwise no consistent effect. Roles per chromatin class are in the '
+                                 'mark roles table of the run.')
 
     def select_findings(self):
         """Per cascade level the genes with the strongest support among those first explained there: beyond the
@@ -3501,7 +3763,7 @@ def main(args=None):
     # keep the figures for the matplotlib PDF when Chromium is not used or may fail
     chromium = find_chromium(args.chromium) if args.pdf in ('auto', 'chromium') else None
     keep = args.pdf == 'matplotlib' or (args.pdf == 'auto' and chromium is None)
-    places = Places(run.graph)
+    places = Places(run.graph, elements=run.element_lookup(), names=run.names)
     report = Report(run, args, keep, places)
     if args.annotation:
         genes = report_genes(run, args)
