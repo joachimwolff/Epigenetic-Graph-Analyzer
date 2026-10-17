@@ -629,7 +629,8 @@ def cascade_label(hops):
     return 'gene' if hops == 0 else 'step{}'.format(hops)
 
 
-def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, contact_threshold=None, states=None):
+def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, contact_threshold=None, states=None,
+                        structural=None):
     """Where the expression change of every differentially expressed gene finds its first explanation.
 
     `classes` is the output of classify_genes (differential genes with their features and mirror features). Level
@@ -648,7 +649,13 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
     while the expression changes (explained_type 'poised unresolved': a poised state released or reinforced by a
     trigger outside the measured layers). Only then does the gene move on to the next step.
 
-    Returns a DataFrame (indexed by node) with explained_at ('gene', 'step1', ..., 'unexplained'), explained_hops
+    With `structural` (structural.structural_genes levels, indexed by node) the genes still unexplained after the
+    gene level are tested for a structural variant near the promoter (sv_explains: explained_at
+    'structural_variant', explained_type 'structural variant', explained_by the join and its change) and then for a
+    copy number change of the promoter region (cn_explains: explained_type 'copy number'), before step 1.
+
+    Returns a DataFrame (indexed by node) with explained_at ('gene', ['structural_variant',] 'step1', ...,
+    'unexplained'), explained_hops
     (0 at the gene), explained_type ('marks', 'interactions', 'both', 'state', 'poised unresolved'; '' when
     unexplained), explained_by (at the gene: 'marks', 'interactions', 'both' or the state transition; at a step:
     the concordant marks or the state transition), beyond_mirror (at a step explained by marks: not every
@@ -706,6 +713,18 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
             explained_by[hit] = table[prefix + '_transition'].to_numpy(dtype=object)[hit]
 
     state_rules('promoter', 'gene', 0, np.ones(len(classes)))
+    if structural is not None:
+        table = structural.reindex(index)
+        for column, kind, by in (('sv_explains', 'structural variant', 'sv_by'),
+                                 ('cn_explains', 'copy number', 'cn_by')):
+            if column not in table:
+                continue
+            hit = table[column].fillna(False).to_numpy(dtype=bool) & (at == 'unexplained')
+            at[hit] = 'structural_variant'
+            hops[hit] = 0
+            nodes[hit] = 1
+            explained_type[hit] = kind
+            explained_by[hit] = table[by].fillna('').to_numpy(dtype=object)[hit]
     for level in levels:
         k = level_hops(level)
         open_ = at == 'unexplained'
@@ -738,7 +757,8 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
                         index=classes['node'].to_numpy() if 'node' in classes else classes.index)
 
 
-def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=None, states_callable=None):
+def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=None, states_callable=None,
+                  structural=False):
     """Counts of the explanation cascade (explanation_cascade), one row per level.
 
     Rows: gene (with gene_marks_only, gene_interactions_only, gene_both, gene_state, gene_poised_unresolved), step1
@@ -750,6 +770,8 @@ def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=No
     names of `genes` (node -> gene names) at FDR < 0.05 listed); proximity_support and proximity_ci of the step
     from a read_proximity_support curve; median_nodes_tested. `states_callable` ({'promoter': bool, 'step1':
     bool}) writes 'states not callable' into the note of the state rows of a level whose marks lack the state calls.
+    With `structural` (or genes explained at 'structural_variant') the rows structural_variant,
+    structural_variant_breakpoint and structural_variant_copy_number follow the gene rows.
     """
     total = len(cascade)
     if max_hops is None:
@@ -783,6 +805,14 @@ def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=No
         r = row(name, gene & (kind == value), reaching)
         rows.append(state_note(r, 'promoter') if value in ('state', 'poised unresolved') else r)
     reaching -= int(gene.sum())
+    sv = at == 'structural_variant'
+    if structural or sv.any():
+        r = row('structural_variant', sv, reaching)
+        r['median_nodes_tested'] = 1.0 if sv.any() else np.nan
+        rows.append(r)
+        rows.append(row('structural_variant_breakpoint', sv & (kind == 'structural variant'), reaching))
+        rows.append(row('structural_variant_copy_number', sv & (kind == 'copy number'), reaching))
+        reaching -= int(sv.sum())
     for k in range(1, max_hops + 1):
         level = cascade_label(k)
         mask = at == level
@@ -839,7 +869,7 @@ def _support_text(hops, proximity):
 
 
 def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chromatin_threshold=1.0,
-                        pseudo_count=1.0, states=None, proximity=None):
+                        pseudo_count=1.0, states=None, proximity=None, structural=None):
     """Per differential gene: which layers and marks explain it, at which level of the cascade, and how.
 
     Columns: explaining_marks_step0 / explaining_marks_step1 ('mark:sign:log2' of the marks changing concordantly
@@ -858,6 +888,9 @@ def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chrom
       proximity support of that hop when `proximity` (read_proximity_support) holds it;
     * chromatin states (promoter or step 1): 'explained at the promoter by a chromatin state transition: promoter
       bivalent in hESC (...), resolved to active in hNEC by loss of H3K27me3' or '... by a poised state: ...';
+    * structural variant / copy number (with `structural`, structural.structural_genes levels): 'explained by a
+      structural variant: promoter 0.4 Mb from the t(8;21) breakpoint (...), present in B only (...); contacts to
+      chromosome 21 near RUNX1 gained (...)' or 'explained by a copy number change: relative copy number ...';
     * unexplained: 'no concordant change at the promoter, its interactions or up to hop n'.
     """
     marks = list(mark_signals)
@@ -932,8 +965,13 @@ def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chrom
                 ' over {:,} node{} at exactly {} steps'.format(int(nodes), '' if int(nodes) == 1 else 's', int(hops))
                 if not pd.isna(nodes) else '') + \
                 _support_text(hops, proximity)
+        elif level == 'structural_variant' and structural is not None and node in structural.index:
+            entry = structural.loc[node]
+            detail = 'explained by a copy number change: ' + str(entry.get('cn_detail', '')) \
+                if kind == 'copy number' else 'explained by a structural variant: ' + str(entry.get('sv_detail', ''))
         elif level == 'unexplained':
-            detail = 'no concordant change at the promoter, its interactions or up to hop {}'.format(max_hops)
+            detail = 'no concordant change at the promoter, its interactions{} or up to hop {}'.format(
+                ', a structural variant' if structural is not None else '', max_hops)
         row['explanation_detail'] = detail
         rows.append(row)
     return pd.DataFrame(rows).set_index('node')
@@ -943,18 +981,25 @@ ROLE_SETS = ('declared', 'learned')
 PRESENCE_STATISTICS = ('mean', 'max1kb')
 STATE_LEVELS = ('promoter_state', 'step1_state')
 POISED = ('bivalent', 'poised enhancer')
+# structural variant levels (structural.py), ranked after the promoter levels when breakpoints / copy number are given
+STRUCTURAL_LEVELS = ('structural_variant', 'copy_number')
 
 
-def explanation_level_names(max_hops):
+def explanation_level_names(max_hops, structural=()):
     """Levels of the all-level report in their fixed rank order: promoter marks, the promoter's own contacts, the
-    promoter chromatin state, step 1 marks, step 1 states of the contacting fragments, step 2 .. step max_hops."""
-    return ['promoter_marks', 'promoter_contacts', 'promoter_state', 'step1_marks', 'step1_state'] + \
+    promoter chromatin state, the structural variant and copy number levels named in `structural` (only with
+    breakpoint / copy number input), step 1 marks, step 1 states of the contacting fragments, step 2 .. step
+    max_hops."""
+    return ['promoter_marks', 'promoter_contacts', 'promoter_state'] + \
+        [lv for lv in STRUCTURAL_LEVELS if lv in structural] + ['step1_marks', 'step1_state'] + \
         ['step{}'.format(k) for k in range(2, max_hops + 1)]
 
 
 def explanation_level_label(level):
-    """'promoter marks', 'contacts', 'promoter state', 'step 1 marks', 'step 1 states', 'step 2', ..."""
+    """'promoter marks', 'contacts', 'promoter state', 'structural variant', 'copy number', 'step 1 marks',
+    'step 1 states', 'step 2', ..."""
     labels = {'promoter_marks': 'promoter marks', 'promoter_contacts': 'contacts', 'promoter_state': 'promoter state',
+              'structural_variant': 'structural variant', 'copy_number': 'copy number',
               'step1_marks': 'step 1 marks', 'step1_state': 'step 1 states'}
     return labels.get(level, 'step {}'.format(level[4:]))
 
@@ -969,6 +1014,8 @@ def cascade_first_level(cascade):
                         'interactions': 'promoter_contacts'}.get(kind, 'promoter_state'))
         elif at == 'step1':
             out.append('step1_marks' if kind == 'marks' else 'step1_state')
+        elif at == 'structural_variant':
+            out.append('copy_number' if kind == 'copy number' else 'structural_variant')
         elif at == 'unexplained':
             out.append('none')
         else:
@@ -1008,7 +1055,7 @@ def _values_text(values, digits=1):
 
 def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, states=None, tests=None, proximity=None,
                        chromatin_threshold=1.0, contact_threshold=None, pseudo_count=1.0, names=('A', 'B'),
-                       node_types=None):
+                       node_types=None, structural=None, structural_levels=()):
     """Every level of the explanation cascade evaluated for every differential gene (long format, one row per gene
     and level), also when an earlier level already explains the gene.
 
@@ -1041,6 +1088,14 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     poised transition not concordant, poised transition not supported, transition without a poised state,
     unchanged, no poised fragment, not callable), transition_R_S and state_fragment_R_S (state levels), and
     detail_R_S, the text of that level. Mark and contact levels do not depend on the presence statistic.
+
+    With `structural` (structural.structural_genes levels, indexed by node) and `structural_levels` (a subset of
+    STRUCTURAL_LEVELS) the levels structural_variant (a join near the promoter, gained or lost with an active partner
+    region; results concordant, discordant, no active partner element, junction contacts discordant, present in
+    both, absent, no breakpoint nearby) and copy_number (relative copy number change at the promoter; concordant,
+    discordant, below threshold, no value) follow the promoter levels, the same under every role set; columns
+    sv_name, sv_status, sv_distance, sv_partner, sv_partner_genes, sv_partner_classes, sv_support,
+    sv_junction_log2 and copy_number_A / _B / _log2 of those rows.
     """
     if contact_threshold is None:
         contact_threshold = chromatin_threshold
@@ -1051,7 +1106,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     roles_sets = list(signs)
     feature_levels = operators.levels
     max_hops = len(feature_levels)
-    level_order = explanation_level_names(max_hops)
+    structural_levels = [lv for lv in structural_levels if structural is not None]
+    level_order = explanation_level_names(max_hops, structural_levels)
     rank = {lv: i + 1 for i, lv in enumerate(level_order)}
     nodes = classes['node'].to_numpy()
     direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
@@ -1091,6 +1147,9 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
         base = dict(node=node, genes=r.get('genes', ''), rna_log2FC=float(r['rna_log2FC']))
         for level in level_order:
             row = dict(base, rank=rank[level], level=level)
+            if level in STRUCTURAL_LEVELS:
+                rows.append(_structural_row(row, level, structural, node, roles_sets, presences))
+                continue
             hops = 0 if level.startswith('promoter') else int(re.match(r'step(\d+)', level).group(1))
             row['hops'] = hops
             row['proximity_support'], row['proximity_support_ci'] = _support(hops, proximity)
@@ -1337,6 +1396,33 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
         if column in table:
             table[column] = pd.array([None if pd.isna(v) else int(v) for v in table[column]], dtype='Int64')
     return table[order + [c for c in table if c not in order]]
+
+
+def _structural_row(row, level, structural, node, roles_sets, presences):
+    """Row of the structural variant or copy number level of one gene (explanation_levels)."""
+    entry = structural.loc[node] if node in structural.index else pd.Series(dtype=object)
+    row.update(hops=0, proximity_support=np.nan, proximity_support_ci='')
+    if level == 'structural_variant':
+        explains = bool(entry.get('sv_explains', False))
+        result = str(entry.get('sv_result', 'no breakpoint nearby'))
+        text = str(entry.get('sv_detail', 'no breakpoint nearby'))
+        row['nodes_tested'] = int(np.nan_to_num(entry.get('sv_breakends', 0)))
+        for column in ('sv_name', 'sv_status', 'sv_distance', 'sv_partner', 'sv_partner_genes', 'sv_partner_classes',
+                       'sv_support', 'sv_junction_log2'):
+            row[column] = entry.get(column, np.nan)
+    else:
+        explains = bool(entry.get('cn_explains', False))
+        result = str(entry.get('cn_result', 'no value'))
+        text = str(entry.get('cn_detail', 'no copy number value at the promoter'))
+        row['nodes_tested'] = 1
+        row['copy_number_A'], row['copy_number_B'] = entry.get('cn_A', np.nan), entry.get('cn_B', np.nan)
+        row['copy_number_log2'] = entry.get('cn_log2', np.nan)
+    for roles in roles_sets:
+        for presence in presences:
+            row['explains_{}_{}'.format(roles, presence)] = explains
+            row['result_{}_{}'.format(roles, presence)] = result
+            row['detail_{}_{}'.format(roles, presence)] = text
+    return row
 
 
 def explanation_variants(levels):
