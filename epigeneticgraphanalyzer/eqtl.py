@@ -421,13 +421,17 @@ def variant_fragments(significant, fmap, chroms=AUTOSOMES):
     return df.sort_values(['chrom', 'pos']).reset_index(drop=True)
 
 
-def sample_controls(pairs, promoters, universe, candidates, significant, n_controls=5, window=0.1, seed=0):
+def sample_controls(pairs, promoters, universe, candidates, significant, n_controls=5, window=0.1, seed=0,
+                    fragment_length=None, length_window=0.15, bait=None):
     """Distance-matched non-eQTL pairs for every eQTL pair (row index of `pairs` = set_id).
 
     control_gene: the variant fragment with genes of `universe` (gene ids with a baited promoter) whose nearest
     baited TSS lies within a factor 10**window of the eQTL distance; control_fragment: fragments of `candidates`
     (chrom, pos, frag) within that distance window of the gene's baited TSSs. Pairs in `significant` (PairSet), and
-    fragments that are a promoter fragment of the gene, are never controls."""
+    fragments that are a promoter fragment of the gene, are never controls. With `fragment_length` (per fragment
+    index), control fragments also lie within a factor 10**length_window of the length of the eQTL fragment, and with
+    `bait` (mask) they share its bait status: the fragment of a lead variant is drawn by position, so long fragments
+    (more restriction-fragment reads, more edges) and promoter fragments are over-represented among eQTL fragments."""
     rng = np.random.default_rng(seed)
     factor = 10.0 ** window
     tss_rows = [(promoters[g][0], p, g) for g in universe if g in promoters for p in promoters[g][1]]
@@ -464,6 +468,11 @@ def sample_controls(pairs, promoters, universe, candidates, significant, n_contr
             if b > a:
                 d = _nearest(c_pos[a:b], g_pos)
                 ok = (d >= low) & (d <= high) & (c_frag[a:b] != frag) & ~np.isin(c_frag[a:b], g_frags)
+                if fragment_length is not None:
+                    ratio = np.abs(np.log10(fragment_length[c_frag[a:b]] / fragment_length[frag]))
+                    ok &= ratio <= length_window + 1e-9
+                if bait is not None:
+                    ok &= bait[c_frag[a:b]] == bait[frag]
                 idx = np.nonzero(ok)[0]
                 if len(idx):
                     idx = idx[~significant.contains(c_frag[a:b][idx], np.full(len(idx), gene, dtype=object))]
@@ -676,7 +685,12 @@ def _design(table, terms):
                'log1p_bait_degree': np.log1p(table['bait_degree']),
                'log1p_variant_degree': np.log1p(table['variant_degree']),
                'log10_fragment_length': np.log10(table['fragment_length'].clip(lower=1))}
-    X = pd.DataFrame({t: columns[t] if t in columns else table[t] for t in terms}, index=table.index)
+    X = pd.DataFrame({t: columns[t] if t in columns else table[t] for t in terms if t != 'distance_bins'},
+                     index=table.index)
+    if 'distance_bins' in terms:
+        bins = distance_bin(table['distance'].to_numpy())
+        for label in distance_bin_labels()[1:]:
+            X['bin_' + label] = (bins == label).astype(float)
     return X.astype(float)
 
 
@@ -698,14 +712,18 @@ def _safe_pvalue(fit, k):
         return np.nan
 
 
+DISTANCE_TERMS = ['log10_distance', 'distance_bins']
+ADJUSTMENT_TERMS = ['log1p_bait_degree', 'log1p_variant_degree', 'log10_fragment_length', 'variant_on_bait']
 MODEL_SETS = {
-    'all_pairs': (None, ['log10_distance', 'direct', 'two_step', 'three_step']),
-    'all_pairs_adjusted': (None, ['log10_distance', 'direct', 'two_step', 'three_step', 'log1p_bait_degree',
-                                  'log1p_variant_degree', 'log10_fragment_length']),
-    'without_direct': (lambda t: t['direct'] == 0, ['log10_distance', 'two_step', 'three_step']),
-    'without_direct_adjusted': (lambda t: t['direct'] == 0, ['log10_distance', 'two_step', 'three_step',
-                                                              'log1p_bait_degree', 'log1p_variant_degree',
-                                                              'log10_fragment_length']),
+    'all_pairs': (None, DISTANCE_TERMS + ['direct', 'two_step', 'three_step']),
+    'all_pairs_adjusted': (None, DISTANCE_TERMS + ['direct', 'two_step', 'three_step'] + ADJUSTMENT_TERMS),
+    'without_direct': (lambda t: t['direct'] == 0, DISTANCE_TERMS + ['two_step', 'three_step']),
+    'without_direct_adjusted': (lambda t: t['direct'] == 0, DISTANCE_TERMS + ['two_step', 'three_step'] +
+                                ADJUSTMENT_TERMS),
+}
+CONDITIONAL_SETS = {
+    'conditional_all_pairs': (None, ['log10_distance', 'direct', 'two_step', 'three_step']),
+    'conditional_without_direct': (lambda t: t['direct'] == 0, ['log10_distance', 'two_step', 'three_step']),
 }
 TESTED_TERMS = ('direct', 'two_step', 'three_step')
 
@@ -722,7 +740,7 @@ def logistic_models(table, n_boot=200, seed=0, model_sets=None):
         if not len(sub) or y.nunique() < 2:
             continue
         X = _design(sub, terms)
-        terms = [t for t in terms if X[t].nunique() > 1]
+        terms = [t for t in X.columns if X[t].nunique() > 1]
         if not terms:
             continue
         X = X[terms]
@@ -736,6 +754,8 @@ def logistic_models(table, n_boot=200, seed=0, model_sets=None):
                 continue
         boot = np.array(boot)
         for k, term in enumerate(terms):
+            if term.startswith('bin_'):
+                continue
             row = {'model': name, 'term': term, 'pairs': len(sub), 'eqtl_pairs': int(y.sum()),
                    'term_positive': int((sub[term] > 0).sum()) if term in TESTED_TERMS else np.nan,
                    'coefficient': float(full.params[term]), 'odds_ratio': float(np.exp(full.params[term])),
@@ -757,8 +777,7 @@ def conditional_models(table):
     the path terms given log distance, on all sets and on pairs without a direct edge."""
     from statsmodels.discrete.conditional_models import ConditionalLogit
     rows = []
-    for name, (subset, terms) in (('conditional_all_pairs', MODEL_SETS['all_pairs']),
-                                  ('conditional_without_direct', MODEL_SETS['without_direct'])):
+    for name, (subset, terms) in CONDITIONAL_SETS.items():
         sub = table if subset is None else table[subset(table)]
         y = (sub['group'] == 'eqtl').astype(float)
         informative = sub.groupby('set_id')['group'].transform(lambda g: (g == 'eqtl').any() and (g != 'eqtl').any())

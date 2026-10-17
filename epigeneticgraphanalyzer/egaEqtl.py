@@ -45,6 +45,10 @@ def parse_arguments(args=None):
     parser.add_argument('--maxDistance', type=int, default=1000000)
     parser.add_argument('--controls', type=int, default=5, help='Controls per eQTL pair and control type')
     parser.add_argument('--window', type=float, default=0.1, help='Distance matching window, log10 units')
+    parser.add_argument('--lengthWindow', type=float, default=0.15,
+                        help='Fragment length matching window of control fragments, log10 units (negative: off)')
+    parser.add_argument('--noBaitMatching', action='store_true',
+                        help='Do not match control fragments on the bait status of the eQTL fragment')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Block-bootstrap resamples for fractions, odds')
     parser.add_argument('--modelBootstrap', type=int, default=200, help='Block-bootstrap resamples for the models')
     parser.add_argument('--mirror', action='store_true', help='Also evaluate the mirrored control graph')
@@ -111,7 +115,9 @@ def main(args=None):
     universe = sorted(set(significant['gene_id']) & set(promoters))
     candidates = variant_fragments(significant, fmap)
     table = sample_controls(pairs, promoters, universe, candidates, sig, n_controls=args.controls,
-                            window=args.window, seed=args.seed)
+                            window=args.window, seed=args.seed,
+                            fragment_length=fmap.length(np.arange(fmap.n)) if args.lengthWindow >= 0 else None,
+                            length_window=args.lengthWindow, bait=None if args.noBaitMatching else bait)
     extra = dict(info, fragments=fmap.n, baits=int(bait.sum()), genes_with_baited_promoter=len(promoters),
                  control_gene_universe=len(universe), control_fragment_candidates=len(candidates),
                  eqtl_pairs_with_control_gene=int(table.loc[table['group'] == 'control_gene', 'set_id'].nunique()),

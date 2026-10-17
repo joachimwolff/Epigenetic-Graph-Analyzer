@@ -275,3 +275,28 @@ def test_cli_end_to_end(tmp_path):
     assert {'all_pairs', 'without_direct'} <= set(models['model'])
     mapping = pd.read_csv(prefix + '_mapping.tsv', sep='\t')
     assert dict(zip(mapping['step'], mapping['n']))['pairs'] == len(leads)
+
+
+def test_sample_controls_match_fragment_length_and_bait_status():
+    fmap, bait, promoters, leads, significant = control_setup()
+    pairs, _ = map_pairs(leads, fmap, promoters)
+    sig = significant_pairs(significant, fmap)
+    universe = sorted(set(significant['gene_id']) & set(promoters))
+    candidates = variant_fragments(significant, fmap)
+    length = fmap.length(np.arange(fmap.n)).astype(float)
+    table = sample_controls(pairs, promoters, universe, candidates, sig, window=0.5, fragment_length=length,
+                            bait=bait)
+    assert sorted(table.loc[table['group'] == 'control_fragment', 'var_frag']) == [35]
+    # a control fragment twice as long as the eQTL fragment is not a match
+    longer = length.copy()
+    longer[35] = 2 * length[25]
+    table = sample_controls(pairs, promoters, universe, candidates, sig, window=0.5, fragment_length=longer,
+                            length_window=0.15)
+    assert (table['group'] == 'control_fragment').sum() == 0
+    # nor is a baited fragment for an eQTL fragment without bait
+    other = bait.copy()
+    other[35] = True
+    table = sample_controls(pairs, promoters, universe, candidates, sig, window=0.5, bait=other)
+    assert (table['group'] == 'control_fragment').sum() == 0
+    # gene controls share the eQTL fragment and are unaffected
+    assert sorted(table.loc[table['group'] == 'control_gene', 'gene_id']) == ['G10', 'G40']
