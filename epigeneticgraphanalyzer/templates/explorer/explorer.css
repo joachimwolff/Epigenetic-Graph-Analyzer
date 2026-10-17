@@ -98,7 +98,7 @@ p { margin: 0.45rem 0 0.8rem; max-width: 75ch; }
 .glance-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(0, 1fr); gap: 1.5rem; align-items: start; }
 .glance-grid.single { grid-template-columns: minmax(0, 1fr); }
 p.glance { font-size: 1.02rem; margin-top: 0; }
-@media (max-width: 760px) { .glance-grid { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 980px) { .glance-grid { grid-template-columns: minmax(0, 1fr); } .glance-grid figure { max-width: 34rem; } }
 
 figure { margin: 0.6rem 0 1.2rem; min-width: 0; }
 figcaption, .caption { color: var(--muted); font-size: 0.86rem; margin-top: 0.35rem; max-width: 75ch; }
