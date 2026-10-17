@@ -28,6 +28,7 @@ classifiers = [
 [project.optional-dependencies]
 leiden = ["python-igraph>=0.10", "leidenalg>=0.9"]
 test = ["pytest>=7"]
+triggers = ["MOODS-python>=1.9.4", "pyfaidx>=0.8"]
 
 [project.urls]
 Homepage = "https://github.com/joachimwolff/Epigenetic-Graph-Analyzer"
@@ -45,6 +46,7 @@ egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
 egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
 egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
 egaReport = "epigeneticgraphanalyzer.egaReport:main"
+egaTriggers = "epigeneticgraphanalyzer.egaTriggers:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "epigeneticgraphanalyzer._version.__version__"}
