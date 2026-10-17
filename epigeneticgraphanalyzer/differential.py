@@ -44,6 +44,23 @@ log = logging.getLogger(__name__)
 PAIR_KEY = ['chrom', 'bait_start', 'bait_end', 'other_start', 'other_end']
 
 
+class LevelSigns(dict):
+    """Mark signs per level, e.g. learned separately at every level (states.learned_level_signs): level name
+    ('promoter', 'direct', 'indirect', 'hop<k>') -> {mark: +1 | -1 | 0}; the promoter's own interactions are the
+    mark 'contact' at the promoter level. A mark or level without an entry has sign 0 (no consistent effect)."""
+
+    def sign(self, mark, level):
+        return self.get(level, {}).get(mark, 0)
+
+
+def sign_of(mark_signs, mark, level, default=1):
+    """Expected direction of a change of `mark` at `level` on expression: from LevelSigns per level, from a plain
+    dict mark -> sign the same at every level (marks without an entry: `default`)."""
+    if isinstance(mark_signs, LevelSigns):
+        return mark_signs.sign(mark, level)
+    return mark_signs.get(mark, default)
+
+
 def _key(df):
     return (df['chrom'] + ':' + df['bait_start'].astype(str) + '-' + df['bait_end'].astype(str) + '|' +
             df['chrom'] + ':' + df['other_start'].astype(str) + '-' + df['other_end'].astype(str))
@@ -571,7 +588,8 @@ def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_thr
         for mark in marks:
             column = mark + '_' + level
             values = np.nan_to_num(de[column].to_numpy(dtype=float))
-            concordant = (np.sign(values) * mark_signs.get(mark, 1) == direction) & (np.abs(values) >= chromatin_threshold)
+            concordant = (np.sign(values) * sign_of(mark_signs, mark, level) == direction) & \
+                (np.abs(values) >= chromatin_threshold)
             hit |= concordant
             for i in np.nonzero(concordant)[0]:
                 level_marks[i].append(mark)
@@ -638,10 +656,12 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
 
     by_marks = np.zeros(len(classes), dtype=bool)
     for mark in marks:
-        by_marks |= concordant(mark + '_promoter', mark_signs.get(mark, 1))
+        by_marks |= concordant(mark + '_promoter', sign_of(mark_signs, mark, 'promoter'))
     contact = np.nan_to_num(classes['contact_direct'].to_numpy(dtype=float)) if 'contact_direct' in classes \
         else np.zeros(len(classes))
-    by_contact = (np.sign(contact) == direction) & (np.abs(contact) >= contact_threshold)
+    # gained interactions with expression up (declared); with LevelSigns the learned sign of 'contact'
+    contact_sign = mark_signs.sign('contact', 'promoter') if isinstance(mark_signs, LevelSigns) else 1
+    by_contact = (np.sign(contact) * contact_sign == direction) & (np.abs(contact) >= contact_threshold)
     at = np.array(['unexplained'] * len(classes), dtype=object)
     hops = np.full(len(classes), np.nan)
     explained_by = np.array([''] * len(classes), dtype=object)
@@ -677,7 +697,7 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
     for level in levels:
         k = level_hops(level)
         open_ = at == 'unexplained'
-        hit_marks = {m: concordant('{}_{}'.format(m, level), mark_signs.get(m, 1)) & open_ for m in marks}
+        hit_marks = {m: concordant('{}_{}'.format(m, level), sign_of(mark_signs, m, level)) & open_ for m in marks}
         hit = np.zeros(len(classes), dtype=bool)
         for values in hit_marks.values():
             hit |= values
@@ -688,7 +708,7 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
             np.full(len(classes), np.nan)
         nodes[hit] = size[hit]
         have_mirror = all('{}_{}_mirror'.format(m, level) in classes for m in marks)
-        mirrored = {m: hit_marks[m] & concordant('{}_{}_mirror'.format(m, level), mark_signs.get(m, 1))
+        mirrored = {m: hit_marks[m] & concordant('{}_{}_mirror'.format(m, level), sign_of(mark_signs, m, level))
                     for m in marks} if have_mirror else {}
         for i in np.nonzero(hit)[0]:
             explaining = [m for m in marks if hit_marks[m][i]]
@@ -793,29 +813,54 @@ def _mark_item(mark, value):
     return '{}:{}:{:.2f}'.format(mark, '+' if value > 0 else '-', value)
 
 
+def _changed(mark, value):
+    return '{} {} (log2 {:+.1f})'.format(mark, 'gained' if value > 0 else 'lost', value)
+
+
+def _support_text(hops, proximity):
+    """'; 3D proximity support at hop 2: 0.54 (0.52-0.56) against 0.5 for matched pairs', empty without a value."""
+    if proximity is None or int(hops) not in proximity:
+        return ''
+    value, low, high = proximity[int(hops)]
+    return '; 3D proximity support at hop {}: {:.2f} ({:.2f}-{:.2f}) against 0.5 for matched pairs'.format(
+        int(hops), value, low, high)
+
+
 def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chromatin_threshold=1.0,
-                        pseudo_count=1.0, states=None):
-    """Per differential gene: which layers and marks explain it at the gene (step 0) and at step 1, and how.
+                        pseudo_count=1.0, states=None, proximity=None):
+    """Per differential gene: which layers and marks explain it, at which level of the cascade, and how.
 
     Columns: explaining_marks_step0 / explaining_marks_step1 ('mark:sign:log2' of the marks changing concordantly
-    at the promoter / summed over the direct partners, ';'-separated), interactions_gained / interactions_lost /
-    interactions_shared (the promoter's own union edges), step1_fragments (fragments in contact in either
-    condition), step1_concordant_fragments (of them, with a concordant change of at least one mark of at least
-    `chromatin_threshold`), step1_concordant_by_mark ('mark:n'), step1_strongest ('fragment mark log2' of the
-    largest concordant change) and explanation_detail, a sentence for genes explained at the gene or at step 1,
-    e.g. 'promoter: H3K27me3 lost (log2 -2.1), H3K4me3 gained (+1.4); own interactions +1.3 (4 gained, 1 lost)' or
-    'step 1: H3K4me1 gained (summed +1.6), concordant at 3 of 5 contacting fragments, strongest chr1:100-200 (+2.0)'.
+    at the promoter / summed over the direct partners, ';'-separated; signs of `mark_signs` at that level, plain or
+    LevelSigns), interactions_gained / interactions_lost / interactions_shared (the promoter's own union edges),
+    step1_fragments (fragments in contact in either condition), step1_concordant_fragments (of them, with a
+    concordant change of at least one mark of at least `chromatin_threshold`), step1_concordant_by_mark ('mark:n'),
+    step1_strongest ('fragment mark log2' of the largest concordant change) and explanation_detail, one sentence per
+    gene from its cascade level (explanation_cascade):
+
+    * gene by marks and / or interactions: 'explained at the promoter by H3K27me3 lost (log2 -2.1), H3K4me3 gained
+      (log2 +1.4) and by contact gain of the promoter (4 gained, 1 lost, log2 +1.3)';
+    * step 1 by marks: 'explained at the enhancers (step 1) by H3K4me1 gained (summed log2 +1.6; concordant at 3 of
+      5 contacting fragments, strongest chr1:100-200 log2 +2.0)';
+    * step k >= 2: 'explained at hop 2 by H3K27ac gained (log2 +1.2) over 35 nodes at exactly 2 steps', with the 3D
+      proximity support of that hop when `proximity` (read_proximity_support) holds it;
+    * chromatin states (promoter or step 1): 'explained at the promoter by a chromatin state transition: promoter
+      bivalent in hESC (...), resolved to active in hNEC by loss of H3K27me3' or '... by a poised state: ...';
+    * unexplained: 'no concordant change at the promoter, its interactions or up to hop n'.
     """
     marks = list(mark_signals)
     direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
     rows = []
     at = cascade.reindex(classes['node'].to_numpy())
+    max_hops = max([level_hops(lv) for lv in hop_levels(classes, marks)] + [1])
     for i, (_, r) in enumerate(classes.iterrows()):
         node = r['node']
         step0 = [(m, float(r[m + '_promoter'])) for m in marks if m + '_promoter' in r and
-                 _concordant([r[m + '_promoter']], mark_signs.get(m, 1), direction[i], chromatin_threshold)[0]]
+                 _concordant([r[m + '_promoter']], sign_of(mark_signs, m, 'promoter'), direction[i],
+                             chromatin_threshold)[0]]
         step1 = [(m, float(r[m + '_direct'])) for m in marks if m + '_direct' in r and
-                 _concordant([r[m + '_direct']], mark_signs.get(m, 1), direction[i], chromatin_threshold)[0]]
+                 _concordant([r[m + '_direct']], sign_of(mark_signs, m, 'direct'), direction[i],
+                             chromatin_threshold)[0]]
         status = {'gained': 0, 'lost': 0, 'shared': 0}
         partners = list(graph.neighbors(node)) if node in graph else []
         for partner in partners:
@@ -825,7 +870,8 @@ def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chrom
             for m in marks:
                 a, b = mark_signals[m][0].get(partner, 0.0), mark_signals[m][1].get(partner, 0.0)
                 change = np.log2((b + pseudo_count) / (a + pseudo_count))
-                if np.sign(change) * mark_signs.get(m, 1) == direction[i] and abs(change) >= chromatin_threshold:
+                if np.sign(change) * sign_of(mark_signs, m, 'direct') == direction[i] and \
+                        abs(change) >= chromatin_threshold:
                     per_mark[m].append((partner, change))
         concordant_fragments = {p for v in per_mark.values() for p, _ in v}
         strongest = max(((p, m, c) for m, v in per_mark.items() for p, c in v), key=lambda x: abs(x[2]), default=None)
@@ -838,30 +884,44 @@ def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chrom
                    step1_concordant_by_mark=';'.join('{}:{}'.format(m, len(v)) for m, v in per_mark.items() if v),
                    step1_strongest='{} {} {:+.2f}'.format(*strongest) if strongest else '')
         level, kind = at.loc[node, 'explained_at'], at.loc[node, 'explained_type'] if 'explained_type' in at else ''
+        hops = at.loc[node, 'explained_hops'] if 'explained_hops' in at else np.nan
         detail = ''
+        where = {'gene': 'at the promoter', 'step1': 'at the enhancers (step 1)'}.get(level)
         if level == 'gene' and kind in ('marks', 'interactions', 'both'):
             parts = []
             if kind in ('marks', 'both'):
-                parts.append('promoter: ' + ', '.join('{} {} ({}{:+.1f})'.format(m, 'gained' if v > 0 else 'lost',
-                                                                                'log2 ' if k == 0 else '', v)
-                                                      for k, (m, v) in enumerate(step0)))
+                parts.append('at the promoter by ' + ', '.join(_changed(m, v) for m, v in step0))
             if kind in ('interactions', 'both'):
-                parts.append('own interactions {:+.1f} ({} gained, {} lost)'.format(float(r['contact_direct']),
-                                                                                    status['gained'], status['lost']))
-            detail = '; '.join(parts)
+                contact = float(r['contact_direct'])
+                parts.append('by contact {} of the promoter ({} gained, {} lost, log2 {:+.1f})'.format(
+                    'gain' if contact > 0 else 'loss', status['gained'], status['lost'], contact))
+            detail = 'explained ' + ' and '.join(parts)
         elif level == 'step1' and kind == 'marks':
             parts = []
             for m, v in step1:
                 best = max(per_mark[m], key=lambda x: abs(x[1]), default=None)
-                text = '{} {} (summed {:+.1f}), concordant at {} of {} contacting fragments'.format(
+                text = '{} {} (summed log2 {:+.1f}; concordant at {} of {} contacting fragments'.format(
                     m, 'gained' if v > 0 else 'lost', v, len(per_mark[m]), len(partners))
                 if best is not None:
-                    text += ', strongest {} ({:+.1f})'.format(best[0], best[1])
-                parts.append(text)
-            detail = 'step 1: ' + '; '.join(parts)
-        elif states is not None and kind in ('state', 'poised unresolved') and node in states.index:
+                    text += ', strongest {} log2 {:+.1f}'.format(best[0], best[1])
+                parts.append(text + ')')
+            detail = 'explained at the enhancers (step 1) by ' + ', '.join(parts) + _support_text(1, proximity)
+        elif states is not None and kind in ('state', 'poised unresolved') and node in states.index and where:
             column = 'promoter_state_summary' if level == 'gene' else 'step1_state_summary'
-            detail = ('' if level == 'gene' else 'step 1: ') + str(states.loc[node, column])
+            what = 'a chromatin state transition' if kind == 'state' else 'a poised state'
+            detail = 'explained {} by {}: {}'.format(where, what, states.loc[node, column]) + \
+                (_support_text(1, proximity) if level == 'step1' else '')
+        elif isinstance(level, str) and level.startswith('step') and kind == 'marks' and not pd.isna(hops):
+            name = level_name(int(hops))
+            explaining = [m for m in str(at.loc[node, 'explained_by']).split(',') if m + '_' + name in r]
+            nodes = r.get('n_' + name, np.nan)
+            detail = 'explained at hop {} by {}{}'.format(
+                int(hops), ', '.join(_changed(m, float(r[m + '_' + name])) for m in explaining),
+                ' over {:,} node{} at exactly {} steps'.format(int(nodes), '' if int(nodes) == 1 else 's', int(hops))
+                if not pd.isna(nodes) else '') + \
+                _support_text(hops, proximity)
+        elif level == 'unexplained':
+            detail = 'no concordant change at the promoter, its interactions or up to hop {}'.format(max_hops)
         row['explanation_detail'] = detail
         rows.append(row)
     return pd.DataFrame(rows).set_index('node')
@@ -908,7 +968,7 @@ def explanation_types(classes, cascade, marks, mark_signs, chromatin_threshold=1
             if column not in data:
                 continue
             values = np.nan_to_num(data[column].to_numpy(dtype=float))
-            hit = by_marks & _concordant(values, mark_signs.get(mark, 1), rna, chromatin_threshold)
+            hit = by_marks & _concordant(values, sign_of(mark_signs, mark, column_level), rna, chromatin_threshold)
             add(level, 'mark', mark, hit, hit & (values > 0), hit & (values < 0))
         if level == 'gene' and 'contact_direct' in data:
             contact = np.nan_to_num(data['contact_direct'].to_numpy(dtype=float))
@@ -961,7 +1021,8 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
         first, explaining = None, []
         for level in levels:
             explaining = [m for m in marks
-                          if _concordant(gene[m + '_' + level], mark_signs.get(m, 1), direction, chromatin_threshold)]
+                          if _concordant(gene[m + '_' + level], sign_of(mark_signs, m, level), direction,
+                                         chromatin_threshold)]
             if explaining:
                 first = level
                 break
@@ -969,7 +1030,7 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
             continue
         hops = level_hops(first)
         mirrored = [m for m in explaining if m + '_' + first + '_mirror' in gene and
-                    _concordant(gene[m + '_' + first + '_mirror'], mark_signs.get(m, 1), direction,
+                    _concordant(gene[m + '_' + first + '_mirror'], sign_of(mark_signs, m, first), direction,
                                 chromatin_threshold)]
         i = row_of[gene['node']]
         H_a, H_b, _ = operators.level(first)
@@ -981,7 +1042,8 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
             columns = np.union1d(row_a.indices, row_b.indices)
             weight_a = np.asarray(row_a[:, columns].todense()).ravel()
             weight_b = np.asarray(row_b[:, columns].todense()).ravel()
-            contribution = (weight_b * vector_b[columns] - weight_a * vector_a[columns]) * mark_signs.get(mark, 1) * direction
+            contribution = (weight_b * vector_b[columns] - weight_a * vector_a[columns]) * \
+                sign_of(mark_signs, mark, first) * direction
             for k in np.argsort(contribution)[::-1][:top]:
                 if contribution[k] <= 0:
                     break
@@ -1099,8 +1161,11 @@ def _hop_statistics(state, index):
         vector_a, vector_b = state['vectors'][mark]
         values_a = vector_a[index]
         values_b = vector_b[index]
-        sign = state['signs'].get(mark, 1)
         for level, test in state['tests'].items():
+            sign = sign_of(state['signs'], mark, level)
+            if sign == 0 and isinstance(state['signs'], LevelSigns):
+                # no consistent effect learned at this level: the mark does not enter its statistic
+                continue
             change = np.log2((test['H_b'] @ values_b + state['pseudo_count']) /
                              (test['H_a'] @ values_a + state['pseudo_count']))
             np.maximum(best[level], change * (sign * test['direction'])[:, None], out=best[level])

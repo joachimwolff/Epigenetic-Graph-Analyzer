@@ -17,9 +17,9 @@ from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochbe
                            match_communities, mirror_comparison, mirrored_features, nested_models, permutation_test,
                            _interval_signals, cascade_table, default_threads, explanation_cascade, read_proximity_support,
                            union_graph, explanation_details, explanation_types)
-from .states import (MARK_ROLES, bigwig_genome_mean, gene_states, learn_mark_roles, learned_roles,
-                     learned_state_transitions, parse_mark_roles, resolve_mark_roles, role_signs,
-                     state_transition_table, states_callable)
+from .states import (MARK_ROLES, bigwig_genome_mean, gene_states, learn_mark_roles, learned_level_signs,
+                     learned_roles, learned_state_transitions, level_states_callable, parse_mark_roles,
+                     resolve_mark_roles, role_signs, state_transition_table)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -110,9 +110,11 @@ def parse_arguments(args=None):
                              'precedence over --markSign; marks declared nowhere are active')
     parser.add_argument('--roles', choices=('declared', 'learned', 'both'), default='declared',
                         help='Roles used by the explanation cascade and the states: declared (--markRoles / '
-                             '--markSign), learned from the data (<prefix>_mark_roles.tsv), or both (declared for the '
-                             'main outputs, learned in addition as <prefix>_explanation_cascade_learned.tsv and '
-                             'columns *_learned)')
+                             '--markSign), learned from the data separately at every level (<prefix>_mark_roles.tsv: '
+                             'promoter, step 1 .. --maxHops and the own interactions; at each level the cascade uses '
+                             'the role learned there, a mark without a consistent effect at a level explains no gene '
+                             'there), or both (declared for the main outputs, learned in addition as '
+                             '<prefix>_explanation_cascade_learned.tsv and columns *_learned)')
     parser.add_argument('--roleBootstrap', type=int, default=1000,
                         help='Chromosome block-bootstrap resamples of the learned roles and learned states')
     parser.add_argument('--stateTracksA', nargs='+',
@@ -266,31 +268,35 @@ def main(args=None):
     # learned roles: association of every mark change with the expression change (step 0, step 1) and with the
     # change of the promoter's own interactions, chromosome block-bootstrap intervals
     learned_table = learn_mark_roles(features, list(marks), declared, args.chromatinThreshold, args.rnaThreshold,
-                                     n_boot=args.roleBootstrap, seed=args.seed)
+                                     n_boot=args.roleBootstrap, seed=args.seed, levels=operators.levels)
     write_table(learned_table, prefix + '_mark_roles.tsv')
+    # learned roles per level: no level decides for another
     learned = learned_roles(learned_table, declared)
-    log.info('mark roles declared %s, learned %s', declared, learned)
-    roles = learned if args.roles == 'learned' else declared
-    mark_signs = role_signs(roles)
+    learned_signs = learned_level_signs(learned_table)
+    log.info('mark roles declared %s, learned per level %s', declared, learned)
+    declared_setting = (declared, declared, role_signs(declared))
+    learned_setting = (learned.get('promoter', {}), learned.get('direct', {}), learned_signs)
+    promoter_roles, step1_roles, mark_signs = learned_setting if args.roles == 'learned' else declared_setting
     classes = classify_genes(classified, list(marks), mark_signs, args.rnaThreshold, args.chromatinThreshold,
                              proximity=proximity)
     # learned states: recurring mark combinations and their transitions, rated by the expression changes
-    write_table(learned_state_transitions(features, graph, state_signals,
-                                          dict(zip(learned_table['mark'], learned_table['learned_sign'])),
+    write_table(learned_state_transitions(features, graph, state_signals, learned_signs,
                                           args.stateThreshold, args.rnaThreshold, args.stateMinFragments,
                                           n_boot=args.roleBootstrap, seed=args.seed),
                 prefix + '_state_transitions.tsv')
 
-    def cascade_with(roles, suffix):
-        """Explanation cascade with the states of `roles` (gene: marks / interactions, then bivalent promoter states;
-        step 1: marks, then poised states of contacting fragments; then the first step with a concordant mark
-        change); transitions and cascade counts at every presence threshold."""
-        signs = role_signs(roles)
-        callable_ = states_callable(roles)
-        log.info('roles %s: bivalent promoters %s, poised contacting fragments %s', roles,
+    def cascade_with(setting, suffix):
+        """Explanation cascade with the roles of `setting` (promoter roles, step-1 roles, mark signs per level):
+        gene: marks / interactions, then bivalent promoter states; step 1: marks, then poised states of contacting
+        fragments; then the first step with a concordant mark change. Transitions and cascade counts at every
+        presence threshold."""
+        roles, roles_step1, signs = setting
+        callable_ = level_states_callable(roles, roles_step1)
+        log.info('roles %s (step 1: %s): bivalent promoters %s, poised contacting fragments %s', roles, roles_step1,
                  'callable' if callable_['promoter'] else 'not callable',
                  'callable' if callable_['step1'] else 'not callable')
-        tables = {t: gene_states(classes, graph, state_signals, roles, t, args.stateMinChange, names=(name_a, name_b))
+        tables = {t: gene_states(classes, graph, state_signals, roles, t, args.stateMinChange, names=(name_a, name_b),
+                                 step1_roles=roles_step1)
                   for t in thresholds}
         transitions_report, thresholds_report = [], []
         for t in thresholds:
@@ -308,19 +314,25 @@ def main(args=None):
                     prefix + '_explanation_types' + suffix + '.tsv')
         return cascade, states, callable_
 
-    cascade, states, callable_ = cascade_with(roles, '')
-    details = explanation_details(classes, cascade, graph, marks, mark_signs, args.chromatinThreshold, states=states)
+    setting = learned_setting if args.roles == 'learned' else declared_setting
+    cascade, states, callable_ = cascade_with(setting, '')
+    details = explanation_details(classes, cascade, graph, marks, mark_signs, args.chromatinThreshold, states=states,
+                                  proximity=proximity)
     classes = classes.assign(explained_at=cascade['explained_at'].to_numpy(),
                              explained_type=cascade['explained_type'].to_numpy(),
                              explained_by=cascade['explained_by'].to_numpy())
     classes = classes.join(details, on='node').join(states, on='node')
     if args.roles == 'both':
-        other, _, other_callable = cascade_with(learned, '_learned')
+        other, other_states, other_callable = cascade_with(learned_setting, '_learned')
         write_table(cascade_table(other, max_hops=args.maxHops, states_callable=other_callable),
                     prefix + '_explanation_cascade_learned.tsv')
+        other_details = explanation_details(classes, other, graph, marks, learned_signs, args.chromatinThreshold,
+                                            states=other_states, proximity=proximity)
         classes = classes.assign(explained_at_learned=other['explained_at'].to_numpy(),
                                  explained_type_learned=other['explained_type'].to_numpy(),
-                                 explained_by_learned=other['explained_by'].to_numpy())
+                                 explained_by_learned=other['explained_by'].to_numpy(),
+                                 explanation_detail_learned=other_details['explanation_detail']
+                                 .reindex(classes['node']).to_numpy())
     write_table(classes, prefix + '_gene_classes.tsv')
     indirect_only = indirect_only_genes(graph, operators, mark_vectors, features, list(marks), mark_signs,
                                         args.rnaThreshold, args.chromatinThreshold, genes=differential_nodes,

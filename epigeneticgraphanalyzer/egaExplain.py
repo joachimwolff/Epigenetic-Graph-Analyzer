@@ -14,9 +14,13 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             2, 3, ... hops) and the marks that explain the change, the nodes that explain it through
                             indirect contacts, and a one-line summary. With egaDifferential --proximitySupport the
                             summary states how often graph neighbours at the explaining level are close in the
-                            nucleus (support decreases with the number of hops). Genes explained at the gene or at
-                            step 1 of the explanation cascade are described by the layers and marks of that level
-                            (explanation_detail of egaDifferential); a chromatin state transition of the promoter
+                            nucleus (support decreases with the number of hops). Every gene is described by the
+                            level of the explanation cascade that explains it first (explanation_detail of
+                            egaDifferential): at the promoter by marks with direction and value and / or by the
+                            contact gain or loss of the promoter (interactions gained, lost, log2 change), at the
+                            enhancers (step 1) by marks, the number of concordant fragments and the strongest, or at
+                            hop k by marks and the number of nodes with the 3D proximity support of hop k and the
+                            nodes carrying the change; a chromatin state transition of the promoter
                             (e.g. 'promoter bivalent in hESC (H3K4me3 4.1, H3K27me3 3.2), resolved to active in hNEC
                             by loss of H3K27me3') or of a contacting fragment explaining the gene is added.
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
@@ -214,6 +218,10 @@ def gene_report(graph, prefix, names, marks, edges):
         detail = r.get('explanation_detail', '')
         if isinstance(detail, str) and detail:
             explanation = detail
+            at = str(r.get('explained_at', ''))
+            if at.startswith('step') and at[4:].isdigit() and int(at[4:]) >= 2 and drivers and \
+                    r.get('explained_type', '') == 'marks':
+                explanation += ' (nodes: {})'.format(drivers)
         states = []
         for column in ('promoter_state_summary', 'step1_state_summary'):
             text = r.get(column, '')

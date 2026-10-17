@@ -4,9 +4,10 @@ Roles
     Every mark has a role: 'active', 'repressive', 'enhancer' (active-type at fragments that are not baited
     promoters), 'architectural', 'neutral' or 'unknown'. Roles are declared (--markRoles, or --markSign with +1 =
     active, -1 = repressive) and can be learned from the data (learn_mark_roles): the association of the change of a
-    mark with the expression change at the gene (step 0) and at its directly contacting fragments (step 1), with
-    chromosome block-bootstrap intervals. The sign of a role (+1 active / enhancer, -1 repressive, 0 otherwise) is
-    the expected direction of a mark change on expression in the explanation cascade.
+    mark with the expression change, separately at the promoter (step 0) and at every graph step 1 .. maxHops, with
+    chromosome block-bootstrap intervals; no level decides for another (learned_roles, learned_level_signs give the
+    role of a mark per level). The sign of a role (+1 active / enhancer, -1 repressive, 0 otherwise) is the expected
+    direction of a mark change on expression in the explanation cascade.
 
 States
     A mark is present on a fragment in a condition if its mean signal over the fragment reaches a threshold (fold
@@ -28,6 +29,7 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
+from .differential import LevelSigns, hop_levels, level_hops
 from .validation import block_resample_items, block_resamples
 
 log = logging.getLogger(__name__)
@@ -207,8 +209,14 @@ def state_sentence(where, state_a, state_b, values_a, values_b, gained, lost, na
     return text + (' by ' + by if by else '')
 
 
+def level_states_callable(promoter_roles, step1_roles=None):
+    """states_callable with the roles of the promoter for the promoter and those of step 1 for step 1."""
+    step1_roles = promoter_roles if step1_roles is None else step1_roles
+    return {'promoter': states_callable(promoter_roles)['promoter'], 'step1': states_callable(step1_roles)['step1']}
+
+
 def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=0.5, pseudo_count=1.0,
-                names=('A', 'B')):
+                names=('A', 'B'), step1_roles=None):
     """Chromatin state transitions of every differential gene at its promoter fragment (step 0) and at its directly
     contacting fragments (step 1).
 
@@ -228,25 +236,29 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
     otherwise a contacting fragment poised in both conditions. step1_transitions lists all labels of changed or
     poised fragments with their counts. Levels without the roles of their states get 'states not callable'.
     promoter_state_summary and step1_state_summary describe the transition in words, naming the marks.
+    `step1_roles` (default `roles`) are the roles at step 1, e.g. those learned there (learned_roles).
     """
-    callable_ = states_callable(roles)
+    step1_roles = roles if step1_roles is None else step1_roles
+    callable_ = level_states_callable(roles, step1_roles)
     nodes = classes['node'].tolist()
     direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
     out = pd.DataFrame(index=pd.Index(nodes, name='node'))
-    used_marks = [m for m, r in roles.items() if r in ('active', 'enhancer', 'repressive')]
+    used_marks = list(dict.fromkeys(m for given in (roles, step1_roles) for m, r in given.items()
+                                    if r in ('active', 'enhancer', 'repressive')))
 
     def values(node, marks, condition):
         return {m: float(state_signals[m][condition].get(node, 0.0)) for m in marks}
 
-    def states_of(fragments, bait):
+    def states_of(fragments, bait, level_roles):
         signal_a = {m: np.array([state_signals[m][0].get(f, 0.0) for f in fragments]) for m in used_marks}
         signal_b = {m: np.array([state_signals[m][1].get(f, 0.0) for f in fragments]) for m in used_marks}
-        return fragment_states(signal_a, roles, threshold, bait), fragment_states(signal_b, roles, threshold, bait)
+        return (fragment_states(signal_a, level_roles, threshold, bait),
+                fragment_states(signal_b, level_roles, threshold, bait))
 
     if callable_['promoter']:
         active, repressive = _state_marks(roles, True)
         promoter_marks = list(dict.fromkeys(active + repressive))
-        state_a, state_b = states_of(nodes, np.ones(len(nodes), dtype=bool))
+        state_a, state_b = states_of(nodes, np.ones(len(nodes), dtype=bool), roles)
         for m in promoter_marks:
             out['promoter_{}_A'.format(m)] = [state_signals[m][0].get(n, 0.0) for n in nodes]
             out['promoter_{}_B'.format(m)] = [state_signals[m][1].get(n, 0.0) for n in nodes]
@@ -282,7 +294,8 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
         fragments = sorted({m for ns in neighbours.values() for m in ns})
         position = {m: i for i, m in enumerate(fragments)}
         is_bait = np.array([bool(graph.nodes[f].get('bait', False)) for f in fragments], dtype=bool)
-        state_a, state_b = states_of(fragments, is_bait) if fragments else (np.zeros(0, object), np.zeros(0, object))
+        state_a, state_b = states_of(fragments, is_bait, step1_roles) if fragments else (np.zeros(0, object),
+                                                                                           np.zeros(0, object))
         columns = {key: [] for key in ('step1_poised_A', 'step1_poised_B', 'step1_transitions', 'step1_transition',
                                        'step1_transition_fragments', 'step1_explains', 'step1_unresolved',
                                        'step1_state_fragment', 'step1_state_summary')}
@@ -293,10 +306,11 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
                 sa, sb = state_a[j], state_b[j]
                 if sa == sb and sa not in POISED_STATES:
                     continue
-                active, repressive = _state_marks(roles, is_bait[j])
+                active, repressive = _state_marks(step1_roles, is_bait[j])
                 shown = list(dict.fromkeys(active + repressive))
                 va, vb = values(fragment, shown, 0), values(fragment, shown, 1)
-                gained, lost, ok = _transition(va, vb, sa, sb, roles, is_bait[j], threshold, min_change, pseudo_count)
+                gained, lost, ok = _transition(va, vb, sa, sb, step1_roles, is_bait[j], threshold, min_change,
+                                               pseudo_count)
                 d = transition_direction(sa, sb)
                 strength = max([abs(np.log2((vb[m] + pseudo_count) / (va[m] + pseudo_count))) for m in gained + lost]
                                + [0.0])
@@ -386,76 +400,118 @@ def _concordance(x, y, x_threshold, y_threshold):
     return float(np.mean(np.sign(x[keep]) == np.sign(y[keep]))) if keep.any() else np.nan
 
 
-def learn_mark_roles(features, marks, declared=None, chromatin_threshold=1.0, rna_threshold=1.0, n_boot=1000,
-                     seed=0):
-    """Role of every mark learned from the data.
+def step_label(level):
+    """Step name of a feature level in the mark roles table: promoter, step1 (direct), step2 (indirect), step<k>."""
+    return 'promoter' if level == 'promoter' else 'step{}'.format(level_hops(level))
 
-    Per mark, over the genes of `features` (gene_features with contact_direct): Spearman rho of the mark change at
-    the promoter (step 0) and summed over the direct partners (step 1, genes with partners) with the expression
-    change, and of the promoter mark change with the change of the promoter's own interactions (contact_direct);
-    concordance at step 0 and step 1: the fraction of genes with |expression change| >= `rna_threshold` and |mark
-    change| >= `chromatin_threshold` whose signs agree (0.5 without relation; a repressive mark goes below 0.5).
-    95% intervals from `n_boot` chromosome block-bootstrap resamples (validation.block_resample_items). learned_role:
-    'active' if the interval of the expression rho at step 0 lies above 0, 'repressive' if below; where it includes 0
-    the interval at step 1 decides; otherwise 'no consistent effect'. steps_disagree: the step-0 and step-1
-    intervals exclude 0 on opposite sides. disagrees: declared and learned roles have opposite signs.
+
+def learn_mark_roles(features, marks, declared=None, chromatin_threshold=1.0, rna_threshold=1.0, n_boot=1000,
+                     seed=0, levels=None):
+    """Role of every mark learned from the data, separately at every level (long format, one row per mark and level).
+
+    Levels: the promoter (step 0) and the graph steps 1 .. maxHops (`levels`: feature levels 'direct', 'indirect',
+    'hop<k>'; default all levels of `features`). Per mark and level: Spearman rho of the mark change at that level
+    (promoter fragment; contact-weighted sum over the nodes at exactly k steps) with the expression change, over the
+    genes with nodes at that step (all genes at the promoter), and concordance: the fraction of genes with
+    |expression change| >= `rna_threshold` and |mark change| >= `chromatin_threshold` whose signs agree (0.5
+    without relation; a repressive mark goes below 0.5). Two further kinds of rows: level 'promoter_vs_contact', the
+    association of the promoter mark change with the change of the promoter's own interactions (contact_direct,
+    genes with direct partners; concordance with |contact change| >= `chromatin_threshold`), and mark 'contact',
+    level 'promoter': the own interaction change itself versus expression (genes with direct partners; declared
+    role active: gained interactions with expression up). 95% intervals from `n_boot` chromosome block-bootstrap
+    resamples (validation.block_resample_items).
+
+    learned_role per row: 'active' if the interval of rho lies above 0, 'repressive' if below, 'no consistent
+    effect' otherwise ('promoter_vs_contact': 'rises with contact', 'falls with contact'). No level decides for
+    another. learned_sign +1 / -1 / 0; disagrees: declared and learned signs are opposite.
     """
     data = features.dropna(subset=['rna_log2FC']).reset_index(drop=True)
+    if levels is None:
+        levels = hop_levels(data, marks)
+    levels = ['promoter'] + [lv for lv in levels if lv != 'promoter']
     rna = data['rna_log2FC'].to_numpy(dtype=float)
+    every = np.ones(len(data), dtype=bool)
+    with_partners = data['n_direct'].to_numpy() > 0 if 'n_direct' in data else every
     contact = np.nan_to_num(data['contact_direct'].to_numpy(dtype=float)) if 'contact_direct' in data else None
-    has_partners = data['n_direct'].to_numpy() > 0 if 'n_direct' in data else np.ones(len(data), dtype=bool)
     chroms = _chromosomes(data['node'])
     resamples = list(block_resample_items(chroms, n_boot, seed)) if len(data) else []
-    rows = []
+    declared = declared or {}
+    tests = []
     for mark in marks:
-        step0 = np.nan_to_num(data[mark + '_promoter'].to_numpy(dtype=float))
-        step1 = np.nan_to_num(data[mark + '_direct'].to_numpy(dtype=float)) if mark + '_direct' in data else None
+        for level in levels:
+            column = '{}_{}'.format(mark, level)
+            if column not in data:
+                continue
+            mask = every if level == 'promoter' or 'n_' + level not in data else data['n_' + level].to_numpy() > 0
+            tests.append(dict(mark=mark, level=step_label(level), feature=level, versus='expression',
+                              declared_role=declared.get(mark, ''),
+                              x=np.nan_to_num(data[column].to_numpy(dtype=float)), y=rna, mask=mask,
+                              y_threshold=rna_threshold))
+        if contact is not None and mark + '_promoter' in data:
+            tests.append(dict(mark=mark, level='promoter_vs_contact', feature='promoter', versus='contact_direct',
+                              declared_role=declared.get(mark, ''),
+                              x=np.nan_to_num(data[mark + '_promoter'].to_numpy(dtype=float)), y=contact,
+                              mask=with_partners, y_threshold=chromatin_threshold))
+    if contact is not None:
+        tests.append(dict(mark='contact', level='promoter', feature='contact_direct', versus='expression',
+                          declared_role='active', x=contact, y=rna, mask=with_partners, y_threshold=rna_threshold))
+    rows = []
+    for test in tests:
+        x, y, mask = test['x'], test['y'], test['mask']
 
         def statistics(index):
-            values = {'rho_step0': _spearman(step0[index], rna[index]),
-                      'concordance_step0': _concordance(step0[index], rna[index], chromatin_threshold, rna_threshold)}
-            if step1 is not None:
-                sub = index[has_partners[index]]
-                values['rho_step1'] = _spearman(step1[sub], rna[sub])
-                values['concordance_step1'] = _concordance(step1[sub], rna[sub], chromatin_threshold, rna_threshold)
-            if contact is not None:
-                values['rho_contact'] = _spearman(step0[index], contact[index])
-            return values
+            sub = index[mask[index]]
+            return (_spearman(x[sub], y[sub]),
+                    _concordance(x[sub], y[sub], chromatin_threshold, test['y_threshold']))
 
-        observed = statistics(np.arange(len(data)))
-        boot = [statistics(items) for items in resamples]
-        row = {'mark': mark, 'declared_role': (declared or {}).get(mark, ''), 'n_genes': len(data)}
-        for key, value in observed.items():
-            values = np.array([b[key] for b in boot], dtype=float)
-            row[key] = value
-            row[key + '_ci_low'] = float(np.nanpercentile(values, 2.5)) if np.isfinite(values).any() else np.nan
-            row[key + '_ci_high'] = float(np.nanpercentile(values, 97.5)) if np.isfinite(values).any() else np.nan
-        # the gene's own fragment decides; step 1 where step 0 is undecided
-        signs = {k: 1 if row[k + '_ci_low'] > 0 else -1 if row[k + '_ci_high'] < 0 else 0
-                 for k in ('rho_step0', 'rho_step1') if k in observed}
-        decided = signs.get('rho_step0', 0) or signs.get('rho_step1', 0)
-        row['learned_role'] = {1: 'active', -1: 'repressive'}.get(decided, 'no consistent effect')
-        row['steps_disagree'] = bool(signs.get('rho_step0', 0) * signs.get('rho_step1', 0) < 0)
+        rho, concordance = statistics(np.arange(len(data)))
+        boot = np.array([statistics(items) for items in resamples], dtype=float).reshape(-1, 2)
+        row = {k: test[k] for k in ('mark', 'level', 'feature', 'versus', 'declared_role')}
+        row['hops'] = 0 if test['feature'] in ('promoter', 'contact_direct') else level_hops(test['feature'])
+        row['n_genes'] = int(mask.sum())
+        for k, (name, value) in enumerate((('rho', rho), ('concordance', concordance))):
+            values = boot[:, k]
+            finite = np.isfinite(values).any()
+            row[name] = value
+            row[name + '_ci_low'] = float(np.nanpercentile(values, 2.5)) if finite else np.nan
+            row[name + '_ci_high'] = float(np.nanpercentile(values, 97.5)) if finite else np.nan
+        sign = 1 if row['rho_ci_low'] > 0 else -1 if row['rho_ci_high'] < 0 else 0
+        if test['level'] == 'promoter_vs_contact':
+            labels = {1: 'rises with contact', -1: 'falls with contact'}
+        else:
+            labels = {1: 'active', -1: 'repressive'}
+        row['learned_role'] = labels.get(sign, 'no consistent effect')
+        row['learned_sign'] = sign
         declared_sign = ROLE_SIGN.get(row['declared_role'], 0)
-        learned_sign = {'active': 1, 'repressive': -1}.get(row['learned_role'], 0)
-        row['learned_sign'] = learned_sign
-        row['disagrees'] = bool(declared_sign and learned_sign and declared_sign != learned_sign)
+        row['disagrees'] = bool(declared_sign and sign and declared_sign != sign)
         rows.append(row)
     return pd.DataFrame(rows)
 
 
 def learned_roles(table, declared):
-    """Roles for the cascade from learn_mark_roles: a learned active mark keeps a declared enhancer role (else
+    """Roles per level for the cascade and the states from learn_mark_roles: {feature level ('promoter', 'direct',
+    'indirect', 'hop<k>'): {mark: role}}. At every level a learned active mark keeps a declared enhancer role (else
     'active'), a learned repressive mark is 'repressive', a mark without a consistent effect 'neutral'."""
     roles = {}
-    for row in table.itertuples():
+    for row in table[(table['versus'] == 'expression') & (table['mark'] != 'contact')].itertuples():
         if row.learned_sign > 0:
-            roles[row.mark] = 'enhancer' if declared.get(row.mark) == 'enhancer' else 'active'
+            role = 'enhancer' if declared.get(row.mark) == 'enhancer' else 'active'
         elif row.learned_sign < 0:
-            roles[row.mark] = 'repressive'
+            role = 'repressive'
         else:
-            roles[row.mark] = 'neutral'
+            role = 'neutral'
+        roles.setdefault(row.feature, {})[row.mark] = role
     return roles
+
+
+def learned_level_signs(table):
+    """LevelSigns from learn_mark_roles: the learned sign of every mark at every level, and of the promoter's own
+    interactions (mark 'contact' at the promoter level)."""
+    signs = LevelSigns()
+    for row in table[table['versus'] == 'expression'].itertuples():
+        level = 'promoter' if row.feature == 'contact_direct' else row.feature
+        signs.setdefault(level, {})[row.mark] = int(row.learned_sign)
+    return signs
 
 
 def mark_combinations(present, marks):
@@ -480,8 +536,9 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
     (validation.block_resamples; groups of at least `min_genes` genes), the numbers of genes changing at least
     `rna_threshold` up and down, and concordance (fraction of those in the direction of the mean). Rows of kind 'combination' give the fragments
     per condition and, per level, the mean expression change of genes entering and leaving the combination, with
-    intervals, and a label: 'bivalent-like' (holds marks of opposite `learned_signs` and a transition leaving it
-    has an interval excluding 0, i.e. its resolution predicts the direction), 'active-like' (entering it goes with
+    intervals, and a label: 'bivalent-like' (at step 0 or step 1, it holds marks of opposite `learned_signs` at
+    that level and a transition leaving it has an interval excluding 0 at that level, i.e. its resolution predicts
+    the direction; `learned_signs` is LevelSigns or one sign per mark for both levels), 'active-like' (entering it goes with
     up or leaving it with down: interval above / below 0), 'repressive-like' (the opposite), 'neutral' otherwise
     (step 0 first, step 1 where step 0 is undecided).
     """
@@ -537,7 +594,12 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
             rows.append(dict(kind='transition', level=level, combination_a=a, combination_b=b,
                              transition='{} -> {}'.format(a, b), changed=a != b,
                              n_fragments=int(fragments.get((a, b), 0)), **s))
-    sign = {m: learned_signs.get(m, 0) for m in marks}
+    # signs per level: LevelSigns (promoter for step 0, direct for step 1) or one sign per mark for both
+    if isinstance(learned_signs, LevelSigns):
+        sign = {'step0': {m: learned_signs.sign(m, 'promoter') for m in marks},
+                'step1': {m: learned_signs.sign(m, 'direct') for m in marks}}
+    else:
+        sign = {level: {m: learned_signs.get(m, 0) for m in marks} for level in ('step0', 'step1')}
 
     def effect(entering, leaving):
         up = entering['ci_low'] > 0 or leaving['ci_high'] < 0
@@ -549,9 +611,10 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
                    n_fragments=int((combo[0] == c).sum() + (combo[1] == c).sum()),
                    fragments_A=int((combo[0] == c).sum()), fragments_B=int((combo[1] == c).sum()))
         members = c.split('+') if c not in ('none', 'other') else []
-        opposite = any(sign[m] > 0 for m in members) and any(sign[m] < 0 for m in members)
-        decided, resolution = 0, False
+        decided, bivalent_like = 0, False
         for level in ('step0', 'step1'):
+            # marks of opposite learned signs at this level and a resolution at this level
+            opposite = any(sign[level][m] > 0 for m in members) and any(sign[level][m] < 0 for m in members)
             entering = summary([g for (a, b), idx in groups[(level, None)].items() if b == c and a != c for g in idx])
             leaving = summary([g for (a, b), idx in groups[(level, None)].items() if a == c and b != c for g in idx])
             for name, s in (('entering', entering), ('leaving', leaving)):
@@ -561,11 +624,12 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
                 row['{}_{}_ci_high'.format(level, name)] = s['ci_high']
             if not decided:
                 decided = effect(entering, leaving)
-            resolution |= any(rated[(level, a, b)]['ci_low'] > 0 or rated[(level, a, b)]['ci_high'] < 0
-                              for (lv, a, b) in rated if lv == level and a == c and b != c)
+            resolution = any(rated[(level, a, b)]['ci_low'] > 0 or rated[(level, a, b)]['ci_high'] < 0
+                             for (lv, a, b) in rated if lv == level and a == c and b != c)
+            bivalent_like |= opposite and resolution
         if c == 'other':
             row['label'] = 'pooled rare combinations'
-        elif opposite and resolution:
+        elif bivalent_like:
             row['label'] = 'bivalent-like'
         else:
             row['label'] = {1: 'active-like', -1: 'repressive-like'}.get(decided, 'neutral')

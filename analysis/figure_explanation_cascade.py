@@ -8,7 +8,9 @@ conditions ('poised in both conditions'); the indirect steps (2, 3, ...) and the
 baited promoter fragments; the hatched part of a mark bar at a step are the genes beyond the mirrored loci with a
 per-gene permutation P < 0.05. The number of genes and, where a step curve was given (--proximitySupport), the
 probability that graph neighbours at that step are close in the nucleus are written next to each bar. Comparisons
-whose marks allow no state calls (no repressive mark) say so.
+whose marks allow no state calls (no repressive mark) say so. With the roles learned at every level
+(<prefix>_explanation_cascade_learned.tsv) a second PDF per comparison, explanation_cascade_<name>_learned.pdf, has
+no per-gene permutation test and no 3D support.
 
 Usage: python figure_explanation_cascade.py <results dir> <figure dir> [name=prefix ...]
        (default: the four comparisons of analysis/16_hops_n.sh under <results dir>/hops_n)
@@ -120,13 +122,15 @@ def main():
     comparisons = [tuple(x.split('=', 1)) for x in sys.argv[3:]] or COMPARISONS
     os.makedirs(figures, exist_ok=True)
     for name, prefix in comparisons:
-        source = os.path.join(results, prefix + '_explanation_cascade.tsv')
-        if not os.path.exists(source):
-            print('missing', source)
-            continue
-        target = os.path.join(figures, 'explanation_cascade_{}.pdf'.format(name))
-        draw(pd.read_csv(source, sep='\t', keep_default_na=False, na_values=['']), target)
-        print(target)
+        # declared roles; roles learned separately at every level (egaDifferential --roles both)
+        for suffix in ('', '_learned'):
+            source = os.path.join(results, prefix + '_explanation_cascade' + suffix + '.tsv')
+            if not os.path.exists(source):
+                print('missing', source)
+                continue
+            target = os.path.join(figures, 'explanation_cascade_{}{}.pdf'.format(name, suffix))
+            draw(pd.read_csv(source, sep='\t', keep_default_na=False, na_values=['']), target)
+            print(target)
 
 
 if __name__ == '__main__':

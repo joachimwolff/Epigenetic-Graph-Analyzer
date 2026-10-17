@@ -6,7 +6,7 @@ import os
 import numpy as np
 import pandas as pd
 
-from epigeneticgraphanalyzer import (egaAnnotateGraph, egaBuildMultiway, egaCreateGraph, egaDifferential, egaIndirectContacts, egaPlotLocus, egaPlotNeighbourhood,
+from epigeneticgraphanalyzer import (egaAnnotateGraph, egaBuildMultiway, egaCreateGraph, egaDifferential, egaExplain, egaIndirectContacts, egaPlotLocus, egaPlotNeighbourhood,
                                      egaValidateMultiway)
 from epigeneticgraphanalyzer.graph import read_graph
 
@@ -147,6 +147,24 @@ def test_differential_cli(tmp_path):
                           '--expression', expression_path, '--expressionColumns', 'A', 'B', '--geneKey', 'genes',
                           '--permutations', '5', '--bootstrap', '20', '--roleBootstrap', '20', '-o', other])
     pd.testing.assert_frame_equal(classes, pd.read_csv(other + '_gene_classes.tsv', sep='\t'))
+    # roles learned per level: long table, learned cascade and per-gene text
+    for mode in ('learned', 'both'):
+        learned = os.path.join(d, 'out', mode)
+        egaDifferential.main(['--interactionsA'] + ibed_a + ['--interactionsB', ibed_b, '-f', 'ibed', '--names', 'A',
+                              'B', '--tss', tss, '--tracksA', 'H3K27ac=' + bw_a, '--tracksB', 'H3K27ac=' + bw_b,
+                              '--expression', expression_path, '--expressionColumns', 'A', 'B', '--geneKey', 'genes',
+                              '--permutations', '5', '--bootstrap', '20', '--roleBootstrap', '20', '--roles', mode,
+                              '-o', learned])
+        roles = pd.read_csv(learned + '_mark_roles.tsv', sep='\t')
+        assert {'promoter', 'step1', 'step2', 'step3', 'promoter_vs_contact'} <= set(roles['level'])
+        assert 'contact' in set(roles['mark'])
+        learned_classes = pd.read_csv(learned + '_gene_classes.tsv', sep='\t')
+        assert learned_classes['explanation_detail'].astype(str).str.len().gt(0).all()
+    assert os.path.exists(learned + '_explanation_cascade_learned.tsv')
+    assert 'explanation_detail_learned' in learned_classes
+    egaExplain.main(['-p', learned, '-o', os.path.join(d, 'out', 'explain')])
+    report = pd.read_csv(os.path.join(d, 'out', 'explain_genes.tsv'), sep='\t')
+    assert len(report) == len(learned_classes)
     from epigeneticgraphanalyzer import egaPlotDifferential
     figure = os.path.join(d, 'out', 'differential.png')
     gene = 'GENE{}'.format(baits.index(next(b for b in baits if b[0] == sorted(gained)[0][0] and b[1] == sorted(gained)[0][1])))

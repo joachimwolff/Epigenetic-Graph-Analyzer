@@ -7,7 +7,8 @@ import pytest
 
 from epigeneticgraphanalyzer.differential import cascade_table, classify_genes, explanation_cascade
 from epigeneticgraphanalyzer.states import (NOT_CALLABLE, fragment_states, gene_states, learn_mark_roles,
-                                            learned_roles, learned_state_transitions, mark_crossings,
+                                            learned_level_signs, learned_roles, learned_state_transitions,
+                                            mark_crossings,
                                             parse_mark_roles, resolve_mark_roles, role_signs, states_callable,
                                             transition_direction, transition_label)
 
@@ -54,15 +55,66 @@ def toy_features(n=400, seed=0):
 
 def test_learned_roles():
     features = toy_features()
-    table = learn_mark_roles(features, ['R', 'Z'], {'R': 'active', 'Z': 'unknown'}, n_boot=200, seed=1)
-    table = table.set_index('mark')
-    # declared active, learned repressive: the loss of R goes with expression up and interactions up
-    assert table.loc['R', 'learned_role'] == 'repressive' and table.loc['R', 'learned_sign'] == -1
-    assert table.loc['R', 'rho_step0_ci_high'] < 0 and table.loc['R', 'rho_contact_ci_high'] < 0
-    assert table.loc['R', 'concordance_step0'] < 0.5
-    assert bool(table.loc['R', 'disagrees'])
-    assert table.loc['Z', 'learned_role'] == 'no consistent effect' and not bool(table.loc['Z', 'disagrees'])
-    assert learned_roles(table.reset_index(), {'R': 'active'}) == {'R': 'repressive', 'Z': 'neutral'}
+    table = learn_mark_roles(features, ['R', 'Z'], {'R': 'active', 'Z': 'unknown'}, n_boot=200, seed=1,
+                             levels=['direct'])
+    row = table.set_index(['mark', 'level'])
+    # declared active, learned repressive at the promoter: the loss of R goes with expression up and interactions up
+    assert row.loc[('R', 'promoter'), 'learned_role'] == 'repressive'
+    assert row.loc[('R', 'promoter'), 'learned_sign'] == -1 and row.loc[('R', 'promoter'), 'rho_ci_high'] < 0
+    assert row.loc[('R', 'promoter'), 'concordance'] < 0.5 and bool(row.loc[('R', 'promoter'), 'disagrees'])
+    assert row.loc[('R', 'promoter_vs_contact'), 'rho_ci_high'] < 0
+    assert row.loc[('R', 'promoter_vs_contact'), 'learned_role'] == 'falls with contact'
+    # no level decides for another: R at step 1 is noise
+    assert row.loc[('R', 'step1'), 'learned_role'] == 'no consistent effect'
+    assert row.loc[('Z', 'promoter'), 'learned_role'] == 'no consistent effect'
+    assert not bool(row.loc[('Z', 'promoter'), 'disagrees'])
+    # the own interactions versus expression
+    assert row.loc[('contact', 'promoter'), 'learned_role'] == 'active'
+    assert learned_roles(table, {'R': 'active'}) == {'promoter': {'R': 'repressive', 'Z': 'neutral'},
+                                                     'direct': {'R': 'neutral', 'Z': 'neutral'}}
+    signs = learned_level_signs(table)
+    assert signs.sign('R', 'promoter') == -1 and signs.sign('R', 'direct') == 0
+    assert signs.sign('contact', 'promoter') == 1
+
+
+def per_level_features(n=600, seed=2):
+    """Mark M lost at the promoter and gained at step 1 of up-regulated genes (repressive at the promoter, activating
+    at step 1); at step 2 it is noise."""
+    rng = np.random.default_rng(seed)
+    rna = rng.normal(0, 1.5, n)
+    return pd.DataFrame({
+        'node': ['chr{}:{}-{}'.format(i % 10 + 1, 1000 * i, 1000 * i + 500) for i in range(n)],
+        'genes': ['g{}'.format(i) for i in range(n)], 'rna_log2FC': rna,
+        'contact_direct': rng.normal(0, 0.3, n), 'n_direct': np.full(n, 3), 'n_indirect': np.full(n, 8),
+        'M_promoter': -rna + rng.normal(0, 0.8, n), 'M_direct': rna + rng.normal(0, 0.8, n),
+        'M_indirect': rng.normal(0, 1.5, n)})
+
+
+def test_roles_learned_per_level_and_cascade():
+    features = per_level_features()
+    table = learn_mark_roles(features, ['M'], {'M': 'active'}, n_boot=200, seed=0)
+    row = table.set_index(['mark', 'level'])
+    assert row.loc[('M', 'promoter'), 'learned_role'] == 'repressive'
+    assert row.loc[('M', 'step1'), 'learned_role'] == 'active'
+    assert row.loc[('M', 'step2'), 'learned_role'] == 'no consistent effect'
+    assert bool(row.loc[('M', 'promoter'), 'disagrees']) and not bool(row.loc[('M', 'step1'), 'disagrees'])
+    assert list(row.loc[('M', 'promoter'), ['feature', 'hops']]) == ['promoter', 0]
+    assert list(row.loc[('M', 'step2'), ['feature', 'hops']]) == ['indirect', 2]
+    signs = learned_level_signs(table)
+    # two up-regulated genes: M gained at the promoter only (explained by an active role, not by the learned
+    # repressive one; gained at step 2, where M has no consistent effect), and M gained at step 1 only
+    genes = pd.DataFrame({'node': ['chr1:1-2', 'chr1:3-4'], 'rna_log2FC': [2.0, 2.0], 'contact_direct': [0.0, 0.0],
+                          'n_direct': [3, 3], 'n_indirect': [8, 8], 'M_promoter': [2.0, 0.0],
+                          'M_direct': [0.0, 2.0], 'M_indirect': [2.0, 0.0]})
+    declared = explanation_cascade(genes, ['M'], {'M': 1})
+    learned = explanation_cascade(genes, ['M'], signs)
+    assert list(declared['explained_at']) == ['gene', 'step1']
+    assert list(learned['explained_at']) == ['unexplained', 'step1']
+    # M lost at the promoter of an up-regulated gene explains it with the learned repressive role
+    genes.loc[0, 'M_promoter'] = -2.0
+    assert explanation_cascade(genes, ['M'], signs)['explained_at'].iloc[0] == 'gene'
+    classes = classify_genes(genes, ['M'], signs)
+    assert list(classes['explanation']) == ['promoter', 'direct']
 
 
 def test_fragment_states_from_roles():
