@@ -146,6 +146,9 @@ def test_gene_triggers_toy(motifs):
     assert table.set_index('tf').loc['PAX7', 'evidence'] == 'family of PAX3'
     assert table['rank'].tolist() == list(range(1, len(table) + 1))
     assert table.iloc[-1]['tf'] == 'PAX7'
+    # motif 0 hits 1 of 4 windows overall and 1 of the gene's 2 scanned windows (promoter, m2): P = 1 - 0.75^2
+    assert np.isclose(pax3['motif_background_fraction'], 0.25)
+    assert np.isclose(pax3['gene_motif_p'], 1 - 0.75 ** 2)
 
 
 def test_egatriggers_end_to_end(tmp_path, motifs):

@@ -92,24 +92,26 @@ def part_b(directory, top=5):
         t = pd.read_csv(path, sep='\t')
         t = t[t['gene'].astype(str).str.split(',').apply(lambda gs: gene in gs)].sort_values('rank')
         if t.empty:
-            rows.append(' & '.join([LABELS[comparison], tex(gene), '', 'no candidate'] + [''] * 5) + r' \\')
+            rows.append(' & '.join([LABELS[comparison], tex(gene), '', 'no candidate'] + [''] * 6) + r' \\')
             continue
         head = t.iloc[0]
+        t = t[t['gene_node'] == head['gene_node']]  # several promoter fragments: the first listed
         for i, r in enumerate(t.drop_duplicates('tf').head(top).itertuples()):
             what = '{} ({:+.1f}, {})'.format(gene, head['gene_log2FC'], head['explained_at'])
             rows.append(' & '.join([LABELS[comparison] if i == 0 else '', tex(what) if i == 0 else '',
                                     str(r.rank), tex(r.tf) + ('' if r.evidence == 'named factor' else '$^f$'),
                                     tex(r.motif), num(r.tf_log2FC, 1), tex(r.relation.split('-')[0]),
-                                    '{}/{}'.format(r.n_nodes_with_motif, r.n_nodes_scanned),
+                                    '{}/{}'.format(r.n_nodes_with_motif, r.n_nodes_scanned), pval(r.gene_motif_p),
                                     tex(r.steps_with_motif)]) + r' \\')
-    header = 'Comparison & Gene (log2FC, explained at) & Rank & Factor & Motif & log2FC & Relation & Nodes & Steps'
+    header = 'Comparison & Gene (log2FC, explained at) & Rank & Factor & Motif & log2FC & Relation & Nodes & P & Steps'
     caption = ('Candidate trigger factors of selected genes: factors whose motif occurs at the promoter fragment or '
                'the explaining nodes of the gene and whose expression changes (padj $<0.05$; t(8;21) vs FLT3-ITD: '
                '$P<0.05$). Relation: activator (factor changes with the gene) or repressor (against it). Nodes: '
                'scanned nodes of the gene with the motif. $^f$ family member of the factor named by the motif. '
-               'Ranked by the mean rank of nodes with the motif, motif score, factor change, graph distance to the '
-               'factor and group enrichment; candidates, not decisions.')
-    return longtable('lllllrlrl', header, rows, caption, 'tab:s31b')
+               'P: binomial P of the nodes with the motif against the motif frequency in marked windows. Ranked by '
+               'the mean rank of P, motif score, factor change, graph distance to the factor and group enrichment; '
+               'candidates, not decisions.')
+    return longtable('lllllrlrrl', header, rows, caption, 'tab:s31b')
 
 
 def main(argv):

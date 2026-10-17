@@ -18,7 +18,9 @@ the nucleotide composition of all scanned windows). Outputs (prefix -o):
                               promoter fragment or explaining nodes, factor (or a member of its family) changed in
                               expression (padj < --alpha), with the relation to the gene (activator- or
                               repressor-consistent), the motif evidence, the factor's graph distance to the gene and
-                              the motif's enrichment q in the gene's groups. Candidates are reported, not decided.
+                              the motif's enrichment q in the gene's groups, and the gene-level motif P (binomial:
+                              nodes of the gene with the motif against the motif's frequency in marked windows).
+                              Candidates are reported, not decided.
   <out>_explaining_nodes.tsv.gz  every node of every gene's levels with the explaining flag.
   <out>_windows.tsv.gz        scanned window per node with signal and GC content.
   <out>_scan.npz              hit counts and best scores (nodes x motifs), reused when present (--cache).
@@ -193,7 +195,8 @@ def main(args=None):
                                    args.padjColumn, args.baseColumn)
     triggers = gene_triggers(classes, nodes, window_index, counts, best, motifs, maxima, expression, graph,
                              alpha=args.alpha, group_q=group_q, symbol_nodes=gene_symbol_nodes(graph),
-                             max_hops=args.maxHops, top=args.topPerGene, family=not args.noFamily)
+                             max_hops=args.maxHops, top=args.topPerGene, family=not args.noFamily,
+                             motif_background=present[marked].mean(axis=0))
     triggers.insert(0, 'comparison', comparison)
     write_table(triggers, out + '_gene_triggers.tsv')
     log.info('candidate triggers: %d rows for %d genes', len(triggers), triggers['gene_node'].nunique()

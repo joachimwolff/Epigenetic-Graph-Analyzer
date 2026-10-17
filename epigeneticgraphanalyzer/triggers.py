@@ -567,15 +567,16 @@ def relation(gene_lfc, tf_lfc):
 
 
 def rank_candidates(df):
-    """Rank candidates of one gene by the mean of the ranks of: number of the gene's scanned nodes carrying the
-    motif (more first), best relative motif score, absolute expression change of the factor, graph distance from
+    """Rank candidates of one gene by the mean of the ranks of: the gene-level motif P (the number of the gene's
+    scanned nodes carrying the motif against the motif's background frequency; smaller first), best relative motif
+    score, absolute expression change of the factor, graph distance from
     the gene to the factor's own promoter (closer first, absent last) and motif enrichment q of the gene's groups
     (smaller first); candidates of the named factor before family members."""
     if df.empty:
         return df
     hops = df['tf_hops'].astype(float).fillna(99)
     q = df['group_q'].astype(float).fillna(1.0)
-    ranks = pd.concat([df['n_nodes_with_motif'].rank(ascending=False), df['best_rel_score'].rank(ascending=False),
+    ranks = pd.concat([df['gene_motif_p'].rank(), df['best_rel_score'].rank(ascending=False),
                        df['tf_log2FC'].abs().rank(ascending=False), hops.rank(), q.rank()], axis=1)
     df = df.assign(rank_score=ranks.mean(axis=1), _family=(df['evidence'] != 'named factor').astype(int))
     df = df.sort_values(['_family', 'rank_score', 'tf_padj']).drop(columns='_family')
@@ -584,7 +585,7 @@ def rank_candidates(df):
 
 
 def gene_triggers(classes, nodes, window_index, counts, best, motifs, maxima, expression, graph, alpha=0.05,
-                  group_q=None, symbol_nodes=None, max_hops=3, top=25, family=True):
+                  group_q=None, symbol_nodes=None, max_hops=3, top=25, family=True, motif_background=None):
     """Candidate trigger factors per explained or poised gene.
 
     Scanned set of a gene: its promoter fragment and its explaining nodes at every step. For every motif with a hit
@@ -594,8 +595,14 @@ def gene_triggers(classes, nodes, window_index, counts, best, motifs, maxima, ex
     promoter hit, steps with a hit, total hits, best score relative to the motif maximum), the factor (log2FC,
     padj, base expression, relation to the gene: activator- or repressor-consistent), the graph distance from the
     gene's promoter to a node carrying the factor's gene and the smallest enrichment q of the motif in a group of
-    the gene. At most `top` candidates per gene (n_candidates gives the total).
+    the gene. `motif_background` (fraction of background windows with a hit per motif; default: all windows of
+    `counts`) gives motif_background_fraction and gene_motif_p, the binomial P of at least n_nodes_with_motif of the
+    gene's n_nodes_scanned windows carrying the motif: motifs that hit almost every window (AT-rich homeobox
+    motifs, GC-rich KLF / SP motifs) score low here. At most `top` candidates per gene (n_candidates gives the total).
     """
+    if motif_background is None:
+        motif_background = (np.asarray(counts) > 0).mean(axis=0)
+    motif_background = np.clip(np.asarray(motif_background, dtype=float), 1e-6, 1 - 1e-6)
     if symbol_nodes is None:
         symbol_nodes = gene_symbol_nodes(graph)
     group_q = group_q or {}
@@ -647,7 +654,9 @@ def gene_triggers(classes, nodes, window_index, counts, best, motifs, maxima, ex
                             promoter_has_motif=bool(promoter_pos is not None and sub[promoter_pos, j] > 0),
                             steps_with_motif=';'.join(steps), hits=int(sub[:, j].sum()), best_score=best_score,
                             best_rel_score=best_score / maxima[j] if maxima[j] > 0 else np.nan,
-                            group_q=group_q.get((g, j), np.nan))
+                            group_q=group_q.get((g, j), np.nan),
+                            motif_background_fraction=float(motif_background[j]),
+                            gene_motif_p=float(stats.binom.sf(len(with_motif) - 1, len(idx), motif_background[j])))
             seen = set()
             for tf in motif_tfs[j]:
                 members = []
@@ -683,5 +692,5 @@ def gene_triggers(classes, nodes, window_index, counts, best, motifs, maxima, ex
                'promoter_transition', 'poised_both', 'rank', 'n_candidates', 'tf', 'evidence', 'relation',
                'tf_log2FC', 'tf_padj', 'tf_expression', 'tf_in_graph', 'tf_hops', 'motif_id', 'motif',
                'n_nodes_with_motif', 'n_nodes_scanned', 'promoter_has_motif', 'steps_with_motif', 'hits',
-               'best_score', 'best_rel_score', 'group_q', 'rank_score']
+               'motif_background_fraction', 'gene_motif_p', 'best_score', 'best_rel_score', 'group_q', 'rank_score']
     return pd.DataFrame(rows, columns=columns)
