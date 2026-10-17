@@ -6,7 +6,8 @@ S7 classification of differentially expressed genes; S8 candidates for regulatio
 S9 virtual capture benchmark; S10 CRISPRi benchmark; S11 inter-chromosomal rearrangements and copy number of
 Kasumi-1; S12 chromatin assortativity (ChAseR) by graph distance; S13 promoter hubs against a polymer model.
 S24 explanation cascade of the differentially expressed genes (analysis/16_hops_n.sh); S25 chromatin state
-transitions of the differentially expressed genes at three presence thresholds.
+transitions of the differentially expressed genes at three presence thresholds; S26 validation of the Md / PA2
+bivalency calls against the sequential ChIP (analysis/rechip_validation.py).
 
 Usage: python supplement_tables.py <results dir> <output dir>
 """
@@ -973,8 +974,8 @@ def s25():
           'States are named from the roles of the marks: bivalent (promoter) or poised enhancer (other fragment): '
           'an active-type and a repressive mark present; active: an active-type mark only; repressed: a repressive '
           'mark only; unmarked: neither. Active-type: H3K4me3 at promoters and H3K4me3 or H3K4me1 elsewhere for '
-          'hESC / hNEC; H3K27ac or H3K4me2 (the available proxy of H3K4me3) for Md / PA2, whose coverage tracks '
-          'were divided by their genome-wide mean; repressive: H3K27me3. Step 1: per gene the transition of its '
+          'hESC / hNEC; H3K27ac or H3K4me2 (the available proxy of H3K4me3) for Md / PA2, as fold enrichment of the '
+          'Minoux et al. tracks over their pooled input; repressive: H3K27me3. Step 1: per gene the transition of its '
           'contacting fragments in this order: a concordant transition from or to a poised state, a fragment '
           'poised in both conditions, another transition from or to a poised state. Genes (up/down): genes with '
           'that transition, with expression up and down; \\% conc.: genes whose expression changes in the direction '
@@ -983,11 +984,101 @@ def s25():
           size=r'\scriptsize', long=True, colsep='3pt')
 
 
+def s26():
+    """Validation of the bivalency calls of Md / PA2 against the sequential ChIP (analysis/rechip_validation.py,
+    <results>/hops_n/rechip/rechip_validation.tsv)."""
+    source = path('hops_n', 'rechip', 'rechip_validation.tsv')
+    if not os.path.exists(source):
+        return
+    t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+    t['threshold'] = t['threshold'].astype(str)
+
+    def pct(x):
+        return '--' if pd.isna(x) else '{:.0f}'.format(100 * x)
+
+    def head(cells):
+        return r'\midrule' + '\n' + ' & '.join('\\textit{' + c + '}' if c else '' for c in cells) + r' \\'
+
+    rows = []
+    calls = t[t['section'] == 'class']
+    for condition in ('Md', 'PA2'):
+        first = True
+        for threshold in ('1.5', '2.0', '3.0'):
+            for _, r in calls[(calls['condition'] == condition) & (calls['threshold'] == threshold)].iterrows():
+                rows.append(' & '.join([condition if first else '', threshold if r['group'] == 'bivalent' else '',
+                                        tex(r['group']), integer(r['n']), num(r['median_rechip'], 2),
+                                        '{}--{}'.format(num(r['q25_rechip'], 2), num(r['q75_rechip'], 2)),
+                                        pct(r['fraction_ge_2']), pct(r['fraction_ge_3']), '']) + r' \\')
+                first = False
+    rows.append(head(['Condition', 'FE', 'Bivalent calls', 'Re-ChIP $\\geq 2$', 'Precision (\\%)', 'Recall (\\%)',
+                      'Re-ChIP $\\geq 3$', 'Precision (\\%)', 'Recall (\\%)']))
+    scores = t[(t['section'] == 'call')]
+    auc = {}
+    for condition in ('Md', 'PA2'):
+        for cutoff in (2.0, 3.0):
+            r = scores[(scores['condition'] == condition) & (scores['threshold'] == 'score') &
+                       (scores['cutoff'] == cutoff)]
+            auc[(condition, cutoff)] = float(r['auc'].iloc[0]) if len(r) else float('nan')
+        for threshold in ('1.5', '2.0', '3.0'):
+            part = scores[(scores['condition'] == condition) & (scores['threshold'] == threshold)]
+            two, three = (part[part['cutoff'] == c].iloc[0] for c in (2.0, 3.0))
+            rows.append(' & '.join([condition if threshold == '1.5' else '', threshold, integer(two['n_called']),
+                                    integer(two['n_positive']), pct(two['precision']), pct(two['recall']),
+                                    integer(three['n_positive']), pct(three['precision']), pct(three['recall'])])
+                        + r' \\')
+    rows.append(head(['Scope', 'Transition Md $\\to$ PA2', '', 'Fragments', 'Median re-ChIP Md / PA2',
+                      '$\\geq 2$ Md / PA2 (\\%)', 'Median $\\log_2$ change', 'Median rank change', '$P$ (rank)']))
+    moves = t[(t['section'] == 'transition') & (t['threshold'] == '2.0')]
+    keep = ('bivalent -> active only', 'bivalent -> bivalent', 'bivalent -> repressive only', 'bivalent -> none',
+            'active only -> bivalent', 'repressive only -> bivalent', 'none -> bivalent')
+    for scope in ('DE genes', 'all baits'):
+        first = True
+        part = moves[moves['scope'] == scope].set_index('group')
+        for label in keep:
+            if label not in part.index:
+                continue
+            r = part.loc[label]
+            rows.append(' & '.join([scope if first else '',
+                                    r'\multicolumn{2}{l}{' + tex(label).replace('->', '$\\to$') + '}', integer(r['n']),
+                                    '{} / {}'.format(num(r['median_rechip_Md'], 1), num(r['median_rechip_PA2'], 1)),
+                                    '{} / {}'.format(pct(r['fraction_ge_2_Md']), pct(r['fraction_ge_2_PA2'])),
+                                    num(r['median_log2_change'], 2), num(r['median_rank_change'], 1),
+                                    pval(r.get('rank_wilcoxon_p', float('nan')))]) + r' \\')
+            first = False
+    rows.append(head(['Poised in both (DE genes)', '', '', 'Fragments', 'Re-ChIP $\\geq 2$ in both',
+                      'Re-ChIP $\\geq 3$ in both', '', '', '']))
+    for _, r in t[t['section'] == 'poised_in_both'].iterrows():
+        rows.append(' & '.join([r'\multicolumn{3}{l}{' + tex(r['group']) + '}', integer(r['n']),
+                                integer(r['confirmed_ge_2']), integer(r['confirmed_ge_3']), '', '', '']) + r' \\')
+    table('table_s26.tex', 'llp{2.6cm}rrrrrr',
+          'Condition & FE & EGA call & Fragments & Median re-ChIP & IQR & Re-ChIP $\\geq 2$ (\\%) & '
+          'Re-ChIP $\\geq 3$ (\\%) &', rows,
+          'Bivalency calls of the Md / PA2 comparison against the sequential ChIP (re-ChIP: H3K27me3 then H3K4me2, '
+          'Minoux et al.; fold enrichment over the pooled input). Promoter fragments (bait nodes of the union graph) '
+          'are called bivalent when an active mark (H3K27ac or H3K4me2) and H3K27me3 are present at a mean fold '
+          'enrichment (FE) of at least 1.5, 2 or 3 over the fragment, active only, repressive only or none. First '
+          'block: re-ChIP FE of the fragments of every call. Second block: precision and recall of the bivalent '
+          'call for re-ChIP FE $\\geq 2$ and $\\geq 3$. The AUC of the two-mark score min(max active FE, '
+          'H3K27me3 FE) is {:.2f} (re-ChIP $\\geq 2$) and {:.2f} ($\\geq 3$) in Md and {:.2f} and {:.2f} in PA2. '
+          'Third block: re-ChIP FE of promoter fragments by state in Md and in PA2 at FE $\\geq 2$, for the '
+          'promoters of differentially expressed genes and for all promoter fragments; $\\geq 2$: fraction of '
+          'fragments with re-ChIP FE $\\geq 2$; change: median $\\log_2$ (PA2 + 1) / (Md + 1); the re-ChIP signal '
+          'of the two libraries differs as a whole (PA2: lower at bivalent, higher at unmarked fragments), so the '
+          'change is also given as the change of the percentile rank of the fragment among all promoter fragments '
+          'of its condition (percentage points, PA2 minus Md), $P$: Wilcoxon signed-rank test of the rank change. '
+          'Fourth block: differentially '
+          'expressed genes explained as poised in both conditions at the promoter or at a contacting fragment '
+          '(step 1), and all differentially expressed genes with a promoter bivalent in both, with the number of '
+          'fragments with re-ChIP FE $\\geq 2$ ($\\geq 3$) in both conditions.'.format(
+              auc[('Md', 2.0)], auc[('Md', 3.0)], auc[('PA2', 2.0)], auc[('PA2', 3.0)]),
+          'tab:s26', size=r'\scriptsize', long=True, colsep='3pt')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
     for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
-                  s25):
+                  s25, s26):
         build()
         print(build.__name__, flush=True)
 

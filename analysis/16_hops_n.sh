@@ -8,12 +8,15 @@
 #   Md / PA2:             none (mouse, no multi-way data)
 #   Kasumi-1 and AML:     HiPore-C of K562 (09_porec.sh), the closest myeloid cell line with multi-way data
 # Mark roles are declared per data set (--markRoles; --markSign H3K27me3=-1 kept, same signs) and learned from the
-# data (--roles both: the cascade under the declared roles, in addition under the learned ones, *_learned.tsv).
+# data separately at the promoter, at every step and for the own interactions (<prefix>_mark_roles.tsv; --roles
+# both: the cascade under the declared roles, in addition under the roles learned at each level, *_learned.tsv).
 # Chromatin states: a mark is present on a fragment at a mean fold enrichment >= 2 (--stateThreshold; report at
-# 1.5, 2 and 3). Roadmap .fc.signal tracks are fold enrichments over input; the Minoux and DNase tracks are
-# coverage without input and are divided by their genome-wide mean (--stateScale genomeMean). For Md / PA2 the
-# active promoter mark is H3K4me2 (no H3K4me3 in the data set), declared active together with H3K27ac. Kasumi-1
-# and AML have DNase only: bivalent / poised states are not callable (no repressive mark).
+# 1.5, 2 and 3). Roadmap .fc.signal tracks are fold enrichments over input; for Md / PA2 the states use the fold
+# enrichment of the Minoux et al. tracks over their pooled input (17_minoux_fold.sh, --stateTracksA/B), the DNase
+# tracks are coverage without input and are divided by their genome-wide mean (--stateScale genomeMean). For Md /
+# PA2 the active promoter mark is H3K4me2 (no H3K4me3 in the data set), declared active together with H3K27ac.
+# Kasumi-1 and AML have DNase only: bivalent / poised states are not callable (no repressive mark).
+# Requires 17_minoux_fold.sh to have run.
 set -euo pipefail
 data=${1:?usage: 16_hops_n.sh <data_dir> <results_dir> <kasumi1 dir> <assi2019 dir> [permutations] [threads]}
 results=${2:?}
@@ -46,13 +49,16 @@ egaDifferential "${common[@]}" \
 # Md / PA2 (05_kessler_md_pa2.sh)
 k="$data/kessler"
 kessler() { for mark in H3K27ac H3K4me2 H3K27me3; do printf '%s=%s ' "$mark" "$k/E10.5_$1_${mark}_R1.bigwig"; done; }
+# states on fold enrichment over pooled input (17_minoux_fold.sh); the mark changes keep the Kessler tracks
+fold() { for mark in H3K27ac H3K4me2 H3K27me3; do printf '%s=%s ' "$mark" "$results/minoux_fold/$1_${mark}.fold.bw"; done; }
 egaDifferential "${common[@]}" \
     --interactionsA "$k"/GSM6505208_*.txt.gz "$k"/GSM6505209_*.txt.gz \
     --interactionsB "$k"/GSM6505210_*.txt.gz "$k"/GSM6505211_*.txt.gz \
     --format washu --replicates intersect --names Md PA2 \
     --tss "$k/mm10.ncbiRefSeq.gtf" --geneTypes \
     --tracksA $(kessler MD) --tracksB $(kessler PA2) --markSign H3K27me3=-1 \
-    --markRoles H3K27ac=active H3K4me2=active H3K27me3=repressive --stateScale genomeMean \
+    --markRoles H3K27ac=active H3K4me2=active H3K27me3=repressive \
+    --stateTracksA $(fold Md) --stateTracksB $(fold PA2) \
     --expression "$results/kessler/deseq2_PA2_vs_Md.tsv" --log2FCColumn log2FoldChange \
     --padjColumn padj --alpha 0.05 --geneKey genes \
     -o "$out/Md_vs_PA2" > "$out/Md_vs_PA2.log" 2>&1
@@ -94,3 +100,5 @@ python "$here/figure_explanation_cascade.py" "$results" "$out/figures"
 for comparison in hESC_vs_hNEC Md_vs_PA2 siMM_vs_siRE t821_vs_FLT3ITD; do
     egaExplain -p "$out/$comparison" -o "$out/explain/$comparison" > "$out/explain_$comparison.log" 2>&1
 done
+# Md / PA2 bivalency calls against the sequential ChIP (re-ChIP) of Minoux et al.
+python "$here/rechip_validation.py" "$results" "$out/rechip" > "$out/rechip_validation.log" 2>&1
