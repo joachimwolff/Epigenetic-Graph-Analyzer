@@ -115,6 +115,10 @@ def parse_arguments(args=None):
                              'columns *_learned)')
     parser.add_argument('--roleBootstrap', type=int, default=1000,
                         help='Chromosome block-bootstrap resamples of the learned roles and learned states')
+    parser.add_argument('--stateTracksA', nargs='+',
+                        help='mark=file.bw for the chromatin states of condition A (e.g. fold enrichment over input), '
+                             'when the --tracksA signal is not on a fold-enrichment scale; marks not listed use --tracksA')
+    parser.add_argument('--stateTracksB', nargs='+', help='as --stateTracksA for condition B')
     parser.add_argument('--stateMinChange', type=float, default=0.5,
                         help='A state transition needs every mark crossing the presence threshold to change by at '
                              'least this log2 fold (pseudo count 1) in the direction of the crossing')
@@ -184,7 +188,10 @@ def main(args=None):
     marks = {}
     # mean signal over every node fragment (as annotation.bigwig_node_signal), read in parallel
     node_list = list(graph.nodes)
-    paths = list(dict.fromkeys(p for tracks in (tracks_a, tracks_b) for mark in tracks for p in tracks[mark]))
+    state_tracks_a = dict(tracks_a, **parse_track_arguments(args.stateTracksA)) if args.stateTracksA else tracks_a
+    state_tracks_b = dict(tracks_b, **parse_track_arguments(args.stateTracksB)) if args.stateTracksB else tracks_b
+    paths = list(dict.fromkeys(p for tracks in (tracks_a, tracks_b, state_tracks_a, state_tracks_b)
+                               for mark in tracks for p in tracks[mark]))
     started = time.time()
     read = _interval_signals(paths, [graph.nodes[n]['chrom'] for n in node_list],
                              np.array([graph.nodes[n]['start'] for n in node_list], dtype=np.int64),
@@ -210,7 +217,7 @@ def main(args=None):
     state_rows = []
     for mark in marks:
         values = []
-        for condition, tracks in ((name_a, tracks_a), (name_b, tracks_b)):
+        for condition, tracks in ((name_a, state_tracks_a), (name_b, state_tracks_b)):
             signal = np.mean([np.array([read[p][n] for n in node_list]) * scale[p] for p in tracks[mark]], axis=0)
             values.append(dict(zip(node_list, signal.tolist())))
             row = {'mark': mark, 'declared_role': declared[mark], 'condition': condition,
