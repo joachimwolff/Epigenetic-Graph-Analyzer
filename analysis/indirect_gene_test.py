@@ -20,7 +20,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
-from epigeneticgraphanalyzer.differential import ActivityOperators, gene_level_indirect_test
+from epigeneticgraphanalyzer.differential import ActivityOperators, default_threads, gene_level_indirect_test
 
 log = logging.getLogger('indirect_gene_test')
 
@@ -50,6 +50,8 @@ def main(args=None):
     parser.add_argument('--markSign', nargs='*', default=['H3K27me3=-1', 'H3K9me3=-1'])
     parser.add_argument('--rnaThreshold', type=float, default=1.0)
     parser.add_argument('--permutations', type=int, default=20000)
+    parser.add_argument('--threads', type=int, default=default_threads(),
+                        help='Worker processes (default: the available cores, at most 32)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--output', '-o', required=True, help='Output prefix')
     args = parser.parse_args(args)
@@ -69,7 +71,7 @@ def main(args=None):
     loaded = time.time()
     log.info('%d differential genes, %d permutations', len(tested), args.permutations)
     test = gene_level_indirect_test(operators, vectors, tested, marks, signs, args.rnaThreshold,
-                                    args.permutations, args.seed)
+                                    args.permutations, args.seed, threads=args.threads)
     finished = time.time()
     test = test.merge(tested[['node', 'genes']], on='node', how='left')
     test = test[['node', 'genes', 'indirect_statistic', 'indirect_p', 'indirect_q']]

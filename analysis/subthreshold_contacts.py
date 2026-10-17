@@ -32,7 +32,7 @@ import pandas as pd
 from epigeneticgraphanalyzer.annotation import bigwig_node_signal, parse_track_arguments
 from epigeneticgraphanalyzer.differential import (ActivityOperators, consensus_scores, differential_edges_from_scores,
                                                    gene_features, gene_level_indirect_test, indirect_only_genes,
-                                                   mirrored_features)
+                                                   default_threads, mirrored_features)
 from epigeneticgraphanalyzer.io import read_baits, read_interactions
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -104,6 +104,8 @@ def main(args=None):
     parser.add_argument('--tracksA', nargs='+', required=True)
     parser.add_argument('--tracksB', nargs='+', required=True)
     parser.add_argument('--permutations', type=int, default=20000)
+    parser.add_argument('--threads', type=int, default=default_threads(),
+                        help='Worker processes (default: the available cores, at most 32)')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--output', '-o', required=True)
     args = parser.parse_args(args)
@@ -218,7 +220,7 @@ def main(args=None):
         ops = ActivityOperators(g, candidate_nodes)
         vec = {m: (ops.vector(a), ops.vector(b)) for m, (a, b) in signals.items()}
         feats = gene_features(g, signals, candidate_change, operators=ops, mark_vectors=vec)
-        feats = feats.join(mirrored_features(g, ops, tracks_a, tracks_b), on='node')
+        feats = feats.join(mirrored_features(g, ops, tracks_a, tracks_b, threads=args.threads), on='node')
         only = indirect_only_genes(g, ops, vec, feats, marks, signs, args.rnaThreshold, args.chromatinThreshold)
         return feats, only
 
@@ -235,7 +237,7 @@ def main(args=None):
     vectors_all = {m: (operators_all.vector(a), operators_all.vector(b)) for m, (a, b) in signals.items()}
     tested = pd.read_csv(args.prefix + '_gene_classes.tsv', sep='\t', usecols=['node', 'rna_log2FC'])
     test = gene_level_indirect_test(operators_all, vectors_all, tested, marks, signs, args.rnaThreshold,
-                                    args.permutations, args.seed).set_index('node')
+                                    args.permutations, args.seed, threads=args.threads).set_index('node')
 
     out = candidates[['node', 'genes', 'rna_log2FC', 'explaining_marks', 'indirect_p', 'indirect_q']].copy()
     by_candidate = nodes_table.groupby('candidate') if len(nodes_table) else None
