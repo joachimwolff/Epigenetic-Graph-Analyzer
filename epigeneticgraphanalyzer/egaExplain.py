@@ -14,7 +14,11 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             2, 3, ... hops) and the marks that explain the change, the nodes that explain it through
                             indirect contacts, and a one-line summary. With egaDifferential --proximitySupport the
                             summary states how often graph neighbours at the explaining level are close in the
-                            nucleus (support decreases with the number of hops).
+                            nucleus (support decreases with the number of hops). Genes explained at the gene or at
+                            step 1 of the explanation cascade are described by the layers and marks of that level
+                            (explanation_detail of egaDifferential); a chromatin state transition of the promoter
+                            (e.g. 'promoter bivalent in hESC (H3K4me3 4.1, H3K27me3 3.2), resolved to active in hNEC
+                            by loss of H3K27me3') or of a contacting fragment explaining the gene is added.
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -206,7 +210,20 @@ def gene_report(graph, prefix, names, marks, edges):
                     explanation += '; ' + proximity
         else:
             explanation = 'no concordant chromatin change'
-        summary = '{} {}{:.1f}; interactions {} lost, {} gained, {} shared{}; {}'.format(
+        # explanation cascade of egaDifferential: the layers and marks at the gene and at step 1, chromatin states
+        detail = r.get('explanation_detail', '')
+        if isinstance(detail, str) and detail:
+            explanation = detail
+        states = []
+        for column in ('promoter_state_summary', 'step1_state_summary'):
+            text = r.get(column, '')
+            if column == 'step1_state_summary' and r.get('explained_type', '') not in ('state', 'poised unresolved'):
+                continue
+            if isinstance(text, str) and text and text not in explanation:
+                states.append(text)
+        if states:
+            explanation += '; ' + '; '.join(states)
+        summary ='{} {}{:.1f}; interactions {} lost, {} gained, {} shared{}; {}'.format(
             gene, '+' if r['rna_log2FC'] > 0 else '', r['rna_log2FC'], counts['lost'], counts['gained'],
             counts['shared'], '; community {}'.format(transition) if transition else '', explanation)
         row = dict(node=node, gene=gene, rna_log2FC=r['rna_log2FC'], interactions_lost=counts['lost'],
@@ -214,6 +231,9 @@ def gene_report(graph, prefix, names, marks, edges):
                    community_status=fate, community_transition=transition, explanation_level=level,
                    explaining_marks=r.get('explaining_marks', ''), indirect_drivers=drivers,
                    summary=summary)
+        for column in ('explained_at', 'explained_type', 'explained_by', 'promoter_transition', 'step1_transition'):
+            if column in r:
+                row[column] = r[column]
         if 'explaining_hops' in r:
             row['explaining_hops'] = level_hops(level) if explained else np.nan
         if 'proximity_support' in r:

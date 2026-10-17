@@ -16,7 +16,10 @@ from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochbe
                            gene_community_changes, gene_level_hop_test, indirect_only_genes, level_name,
                            match_communities, mirror_comparison, mirrored_features, nested_models, permutation_test,
                            _interval_signals, cascade_table, default_threads, explanation_cascade, read_proximity_support,
-                           union_graph)
+                           union_graph, explanation_details, explanation_types)
+from .states import (MARK_ROLES, bigwig_genome_mean, gene_states, learn_mark_roles, learned_roles,
+                     learned_state_transitions, parse_mark_roles, resolve_mark_roles, role_signs,
+                     state_transition_table, states_callable)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -56,7 +59,8 @@ def parse_arguments(args=None):
     parser.add_argument('--tracksA', nargs='+', required=True, help='mark=file.bw[,rep.bw] for condition A')
     parser.add_argument('--tracksB', nargs='+', required=True, help='mark=file.bw[,rep.bw] for condition B')
     parser.add_argument('--markSign', nargs='*', default=['H3K27me3=-1', 'H3K9me3=-1'],
-                        help='mark=+1|-1, the expected direction of a mark on expression (default +1)')
+                        help='mark=+1|-1|0, the expected direction of a mark on expression (default +1); an alias of '
+                             '--markRoles with +1 = active, -1 = repressive, 0 = neutral')
     parser.add_argument('--expression', required=True,
                         help='Gene table: either a log2 fold change column (--log2FCColumn) or two expression '
                              'columns (--expressionColumns)')
@@ -84,6 +88,36 @@ def parse_arguments(args=None):
                              'adds to every explained gene the probability that graph neighbours at its explaining '
                              'level are closer in the nucleus than distance-matched pairs (proximity_support, '
                              'proximity_support_ci; 1.0 / NA at the promoter)')
+    parser.add_argument('--stateThreshold', type=float, default=2.0,
+                        help='Chromatin states: a mark is present on a fragment if its mean signal over the fragment '
+                             'is at least this value (fold enrichment; see --stateScale). Bivalent promoter (bait): an '
+                             'active-role and a repressive-role mark present; poised enhancer (other fragment): an '
+                             'active- or enhancer-role and a repressive-role mark present')
+    parser.add_argument('--stateThresholds', type=float, nargs='*', default=[1.5, 2.0, 3.0],
+                        help='Presence thresholds of the state transition report (<prefix>_bivalent_transitions.tsv, '
+                             '<prefix>_state_thresholds.tsv); the cascade uses --stateThreshold')
+    parser.add_argument('--stateScale', choices=('fold', 'genomeMean'), default='fold',
+                        help="'fold': the bigWig signal is a fold enrichment over input (e.g. Roadmap .fc.signal); "
+                             "'genomeMean': coverage tracks without input, divided by their genome-wide mean "
+                             "(sumData / nBasesCovered of the bigWig header) before the threshold")
+    parser.add_argument('--stateMinFragments', type=int, default=50,
+                        help='Learned states: mark combinations seen on at least this many fragments (both '
+                             'conditions) are kept, the rest pooled')
+    parser.add_argument('--markRoles', nargs='*', default=[],
+                        help='Declared mark roles, mark=role entries and / or TSV files with the columns mark and role; '
+                             'roles: ' + ', '.join(MARK_ROLES) + ' (enhancer: active-type at fragments that are not '
+                             'baited promoters; architectural, neutral, unknown: no expected direction). They take '
+                             'precedence over --markSign; marks declared nowhere are active')
+    parser.add_argument('--roles', choices=('declared', 'learned', 'both'), default='declared',
+                        help='Roles used by the explanation cascade and the states: declared (--markRoles / '
+                             '--markSign), learned from the data (<prefix>_mark_roles.tsv), or both (declared for the '
+                             'main outputs, learned in addition as <prefix>_explanation_cascade_learned.tsv and '
+                             'columns *_learned)')
+    parser.add_argument('--roleBootstrap', type=int, default=1000,
+                        help='Chromosome block-bootstrap resamples of the learned roles and learned states')
+    parser.add_argument('--stateMinChange', type=float, default=0.5,
+                        help='A state transition needs every mark crossing the presence threshold to change by at '
+                             'least this log2 fold (pseudo count 1) in the direction of the crossing')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
     parser.add_argument('--resolution', type=float, default=1.0, help='Community resolution parameter')
     parser.add_argument('--seed', type=int, default=0)
@@ -166,11 +200,27 @@ def main(args=None):
         for n in graph.nodes:
             graph.nodes[n][mark + '_' + name_a] = mean_a[n]
             graph.nodes[n][mark + '_' + name_b] = mean_b[n]
-    mark_signs = {m: 1 for m in marks}
-    for entry in args.markSign:
-        mark, sign = entry.split('=')
-        if mark in mark_signs:
-            mark_signs[mark] = int(sign)
+    # mark roles (declared) and the mark signal on the scale of the presence threshold of the states
+    declared = resolve_mark_roles(list(marks), args.markSign, parse_mark_roles(args.markRoles))
+    scale = {p: 1.0 for p in paths}
+    if args.stateScale == 'genomeMean':
+        scale = {p: 1.0 / bigwig_genome_mean(p) for p in paths}
+    thresholds = sorted(set(args.stateThresholds) | {args.stateThreshold})
+    state_signals = {}
+    state_rows = []
+    for mark in marks:
+        values = []
+        for condition, tracks in ((name_a, tracks_a), (name_b, tracks_b)):
+            signal = np.mean([np.array([read[p][n] for n in node_list]) * scale[p] for p in tracks[mark]], axis=0)
+            values.append(dict(zip(node_list, signal.tolist())))
+            row = {'mark': mark, 'declared_role': declared[mark], 'condition': condition,
+                   'scale': ';'.join('{:.4g}'.format(scale[p]) for p in tracks[mark]), 'fragments': len(signal),
+                   'median': float(np.median(signal))}
+            for threshold in thresholds:
+                row['fraction_ge_{:g}'.format(threshold)] = float(np.mean(signal >= threshold))
+            state_rows.append(row)
+        state_signals[mark] = tuple(values)
+    write_table(pd.DataFrame(state_rows), prefix + '_state_marks.tsv')
 
     table = read_expression(args.expression)
     differential_ids = None
@@ -206,12 +256,64 @@ def main(args=None):
         differential_nodes = {n for n in features['node']
                               if set(str(graph.nodes[n].get(args.geneKey, '')).split(',')) & differential_ids}
     classified = features if differential_nodes is None else features[features['node'].isin(differential_nodes)]
+    # learned roles: association of every mark change with the expression change (step 0, step 1) and with the
+    # change of the promoter's own interactions, chromosome block-bootstrap intervals
+    learned_table = learn_mark_roles(features, list(marks), declared, args.chromatinThreshold, args.rnaThreshold,
+                                     n_boot=args.roleBootstrap, seed=args.seed)
+    write_table(learned_table, prefix + '_mark_roles.tsv')
+    learned = learned_roles(learned_table, declared)
+    log.info('mark roles declared %s, learned %s', declared, learned)
+    roles = learned if args.roles == 'learned' else declared
+    mark_signs = role_signs(roles)
     classes = classify_genes(classified, list(marks), mark_signs, args.rnaThreshold, args.chromatinThreshold,
                              proximity=proximity)
-    # explanation cascade: gene (marks and / or own interactions), then the first step with a concordant mark change
-    cascade = explanation_cascade(classes, list(marks), mark_signs, args.chromatinThreshold)
+    # learned states: recurring mark combinations and their transitions, rated by the expression changes
+    write_table(learned_state_transitions(features, graph, state_signals,
+                                          dict(zip(learned_table['mark'], learned_table['learned_sign'])),
+                                          args.stateThreshold, args.rnaThreshold, args.stateMinFragments,
+                                          n_boot=args.roleBootstrap, seed=args.seed),
+                prefix + '_state_transitions.tsv')
+
+    def cascade_with(roles, suffix):
+        """Explanation cascade with the states of `roles` (gene: marks / interactions, then bivalent promoter states;
+        step 1: marks, then poised states of contacting fragments; then the first step with a concordant mark
+        change); transitions and cascade counts at every presence threshold."""
+        signs = role_signs(roles)
+        callable_ = states_callable(roles)
+        log.info('roles %s: bivalent promoters %s, poised contacting fragments %s', roles,
+                 'callable' if callable_['promoter'] else 'not callable',
+                 'callable' if callable_['step1'] else 'not callable')
+        tables = {t: gene_states(classes, graph, state_signals, roles, t, args.stateMinChange, names=(name_a, name_b))
+                  for t in thresholds}
+        transitions_report, thresholds_report = [], []
+        for t in thresholds:
+            for level in ('promoter', 'step1'):
+                transitions_report.append(state_transition_table(classes, tables[t], level).assign(threshold=t))
+            variant = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=tables[t])
+            thresholds_report.append(cascade_table(variant, max_hops=args.maxHops, states_callable=callable_)
+                                     .assign(threshold=t))
+        for name, report in (('_bivalent_transitions', transitions_report), ('_state_thresholds', thresholds_report)):
+            report = pd.concat(report, ignore_index=True)
+            write_table(report[['threshold'] + [c for c in report if c != 'threshold']], prefix + name + suffix + '.tsv')
+        states = tables[args.stateThreshold]
+        cascade = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=states)
+        write_table(explanation_types(classes, cascade, list(marks), signs, args.chromatinThreshold, callable_),
+                    prefix + '_explanation_types' + suffix + '.tsv')
+        return cascade, states, callable_
+
+    cascade, states, callable_ = cascade_with(roles, '')
+    details = explanation_details(classes, cascade, graph, marks, mark_signs, args.chromatinThreshold, states=states)
     classes = classes.assign(explained_at=cascade['explained_at'].to_numpy(),
+                             explained_type=cascade['explained_type'].to_numpy(),
                              explained_by=cascade['explained_by'].to_numpy())
+    classes = classes.join(details, on='node').join(states, on='node')
+    if args.roles == 'both':
+        other, _, other_callable = cascade_with(learned, '_learned')
+        write_table(cascade_table(other, max_hops=args.maxHops, states_callable=other_callable),
+                    prefix + '_explanation_cascade_learned.tsv')
+        classes = classes.assign(explained_at_learned=other['explained_at'].to_numpy(),
+                                 explained_type_learned=other['explained_type'].to_numpy(),
+                                 explained_by_learned=other['explained_by'].to_numpy())
     write_table(classes, prefix + '_gene_classes.tsv')
     indirect_only = indirect_only_genes(graph, operators, mark_vectors, features, list(marks), mark_signs,
                                         args.rnaThreshold, args.chromatinThreshold, genes=differential_nodes,
@@ -223,7 +325,8 @@ def main(args=None):
         # the indirect level for every differential gene (as before), every level k >= 3 for the genes first
         # explained there; one set of permutations for all levels
         # and every cascade step for the genes first explained there (p-values do not depend on the tested set)
-        levels = {'direct': cascade.index[cascade['explained_at'] == 'step1'].tolist(), 'indirect': None}
+        by_marks = cascade['explained_type'] == 'marks'
+        levels = {'direct': cascade.index[(cascade['explained_at'] == 'step1') & by_marks].tolist(), 'indirect': None}
         for k in range(3, args.maxHops + 1):
             levels[level_name(k)] = sorted(set(classes.loc[classes['explanation'] == level_name(k), 'node']) |
                                            set(cascade.index[cascade['explained_at'] == 'step{}'.format(k)]))
@@ -241,7 +344,7 @@ def main(args=None):
                 write_table(test, prefix + '_{}_gene_test.tsv'.format(level))
         cascade_p = {}
         for k in range(1, args.maxHops + 1):
-            step = set(cascade.index[cascade['explained_at'] == 'step{}'.format(k)])
+            step = set(cascade.index[(cascade['explained_at'] == 'step{}'.format(k)) & by_marks])
             test = tests[level_name(k)]
             cascade_p.update({n: p for n, p in zip(test['node'], test[level_name(k) + '_p']) if n in step})
         if len(indirect_only):
@@ -260,8 +363,8 @@ def main(args=None):
         indirect_only = indirect_only[[c for c in indirect_only.columns if c not in new_columns] + new_columns]
     write_table(indirect_only, prefix + '_indirect_only_genes.tsv')
     names = dict(zip(classes['node'], classes['genes']))
-    write_table(cascade_table(cascade, names, cascade_p if args.genePermutations else None, proximity, args.maxHops),
-                prefix + '_explanation_cascade.tsv')
+    write_table(cascade_table(cascade, names, cascade_p if args.genePermutations else None, proximity, args.maxHops,
+                              callable_), prefix + '_explanation_cascade.tsv')
     informative_change = {n: change[n] for n in informative['node']}
     result = permutation_test(graph, marks, informative_change, mark_signs, n_permutations=args.permutations,
                               seed=args.seed,

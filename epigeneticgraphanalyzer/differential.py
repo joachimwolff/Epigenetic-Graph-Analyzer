@@ -599,7 +599,7 @@ def cascade_label(hops):
     return 'gene' if hops == 0 else 'step{}'.format(hops)
 
 
-def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, contact_threshold=None):
+def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, contact_threshold=None, states=None):
     """Where the expression change of every differentially expressed gene finds its first explanation.
 
     `classes` is the output of classify_genes (differential genes with their features and mirror features). Level
@@ -610,10 +610,20 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
     a mark changes concordantly (the rule of classify_genes); the rest stay unexplained. An explanation is the
     first concordant change given the measured layers, not a proof of regulation.
 
+    With `states` (gene_states, indexed by node) chromatin states enter at the gene and at step 1, each time after
+    the mark (and interaction) rules of that level, so that every gene explained by those rules keeps its
+    explanation: (1) marks / interactions, (2) a transition from or to the bivalent promoter (poised enhancer at a
+    contacting fragment) state concordant with the expression change, supported by the mark changes
+    (explained_type 'state'), (3) a promoter bivalent in both conditions (a contacting poised enhancer in both)
+    while the expression changes (explained_type 'poised unresolved': a poised state released or reinforced by a
+    trigger outside the measured layers). Only then does the gene move on to the next step.
+
     Returns a DataFrame (indexed by node) with explained_at ('gene', 'step1', ..., 'unexplained'), explained_hops
-    (0 at the gene), explained_by (at the gene: 'marks', 'interactions' or 'both'; at a step: the concordant marks),
-    beyond_mirror (at a step: not every explaining mark changes concordantly at the mirrored loci of that step; NA
-    without mirror features) and nodes_tested (1 at the gene, else the number of nodes at that step).
+    (0 at the gene), explained_type ('marks', 'interactions', 'both', 'state', 'poised unresolved'; '' when
+    unexplained), explained_by (at the gene: 'marks', 'interactions', 'both' or the state transition; at a step:
+    the concordant marks or the state transition), beyond_mirror (at a step explained by marks: not every
+    explaining mark changes concordantly at the mirrored loci of that step; NA without mirror features and for
+    state explanations) and nodes_tested (1 at the gene, else the number of nodes at that step).
     """
     if contact_threshold is None:
         contact_threshold = chromatin_threshold
@@ -635,6 +645,7 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
     at = np.array(['unexplained'] * len(classes), dtype=object)
     hops = np.full(len(classes), np.nan)
     explained_by = np.array([''] * len(classes), dtype=object)
+    explained_type = np.array([''] * len(classes), dtype=object)
     beyond = np.full(len(classes), np.nan)
     nodes = np.full(len(classes), np.nan)
     gene = by_marks | by_contact
@@ -644,6 +655,25 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
     explained_by[by_marks & by_contact] = 'both'
     explained_by[by_marks & ~by_contact] = 'marks'
     explained_by[~by_marks & by_contact] = 'interactions'
+    explained_type[gene] = explained_by[gene]
+    index = classes['node'].to_numpy() if 'node' in classes else classes.index.to_numpy()
+
+    def state_rules(prefix, label, k, size):
+        """state (2) and poised unresolved (3) rules of the gene (prefix 'promoter') or of step 1 ('step1')."""
+        if states is None:
+            return
+        table = states.reindex(index)
+        for column, kind in ((prefix + '_explains', 'state'), (prefix + '_unresolved', 'poised unresolved')):
+            if column not in table:
+                continue
+            hit = table[column].fillna(False).to_numpy(dtype=bool) & (at == 'unexplained')
+            at[hit] = label
+            hops[hit] = k
+            nodes[hit] = size[hit]
+            explained_type[hit] = kind
+            explained_by[hit] = table[prefix + '_transition'].to_numpy(dtype=object)[hit]
+
+    state_rules('promoter', 'gene', 0, np.ones(len(classes)))
     for level in levels:
         k = level_hops(level)
         open_ = at == 'unexplained'
@@ -653,8 +683,10 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
             hit |= values
         at[hit] = cascade_label(k)
         hops[hit] = k
-        if 'n_' + level in classes:
-            nodes[hit] = classes['n_' + level].to_numpy(dtype=float)[hit]
+        explained_type[hit] = 'marks'
+        size = classes['n_' + level].to_numpy(dtype=float) if 'n_' + level in classes else \
+            np.full(len(classes), np.nan)
+        nodes[hit] = size[hit]
         have_mirror = all('{}_{}_mirror'.format(m, level) in classes for m in marks)
         mirrored = {m: hit_marks[m] & concordant('{}_{}_mirror'.format(m, level), mark_signs.get(m, 1))
                     for m in marks} if have_mirror else {}
@@ -663,36 +695,49 @@ def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, con
             explained_by[i] = ','.join(explaining)
             if have_mirror:
                 beyond[i] = float(sum(mirrored[m][i] for m in explaining) < len(explaining))
+        if k == 1:
+            state_rules('step1', cascade_label(1), 1, size)
     return pd.DataFrame({'explained_at': at, 'explained_hops': pd.array([None if np.isnan(h) else int(h) for h in hops],
                                                                         dtype='Int64'),
+                         'explained_type': explained_type,
                          'explained_by': explained_by,
                          'beyond_mirror': pd.array([None if np.isnan(b) else bool(b) for b in beyond], dtype='boolean'),
                          'nodes_tested': pd.array([None if np.isnan(v) else int(v) for v in nodes], dtype='Int64')},
                         index=classes['node'].to_numpy() if 'node' in classes else classes.index)
 
 
-def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=None):
+def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=None, states_callable=None):
     """Counts of the explanation cascade (explanation_cascade), one row per level.
 
-    Rows: gene (with gene_marks_only, gene_interactions_only, gene_both), step1 .. step<max_hops>, unexplained.
+    Rows: gene (with gene_marks_only, gene_interactions_only, gene_both, gene_state, gene_poised_unresolved), step1
+    (with step1_marks, step1_state, step1_poised_unresolved), step2 .. step<max_hops>, unexplained.
     genes_reaching: genes not explained at an earlier level (all differential genes for the gene level);
     fraction_of_remaining = genes / genes_reaching. Per step: beyond_mirror, and with `pvalues` (node -> per-gene
     permutation P of the step at which the gene is first explained) p_lt_0.05, beyond_mirror_p_lt_0.05 and the
-    numbers at FDR < 0.1 and < 0.05 (Benjamini-Hochberg across the genes first explained at that step, names of
-    `genes` (node -> gene names) at FDR < 0.05 listed); proximity_support and proximity_ci of the step from a
-    read_proximity_support curve; median_nodes_tested.
+    numbers at FDR < 0.1 and < 0.05 (Benjamini-Hochberg across the genes first explained at that step by marks,
+    names of `genes` (node -> gene names) at FDR < 0.05 listed); proximity_support and proximity_ci of the step
+    from a read_proximity_support curve; median_nodes_tested. `states_callable` ({'promoter': bool, 'step1':
+    bool}) writes 'states not callable' into the note of the state rows of a level whose marks lack the state calls.
     """
     total = len(cascade)
     if max_hops is None:
         max_hops = int(cascade['explained_hops'].max()) if cascade['explained_hops'].notna().any() else 0
     rows = []
     reaching = total
+    kind = cascade['explained_type'].to_numpy() if 'explained_type' in cascade else \
+        np.where(cascade['explained_at'].to_numpy() == 'gene', cascade['explained_by'].to_numpy(),
+                 np.where(cascade['explained_at'].to_numpy() == 'unexplained', '', 'marks'))
 
     def row(level, mask, reaching_count):
         n = int(mask.sum())
         return {'level': level, 'genes': n, 'genes_reaching': reaching_count,
                 'fraction_of_differential': n / total if total else np.nan,
                 'fraction_of_remaining': n / reaching_count if reaching_count else np.nan}
+
+    def state_note(r, where):
+        if states_callable is not None and not states_callable.get(where, False):
+            r['note'] = 'states not callable'
+        return r
 
     at = cascade['explained_at'].to_numpy()
     gene = at == 'gene'
@@ -701,14 +746,17 @@ def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=No
         r.update(proximity_support=1.0, proximity_ci='NA')
     r['median_nodes_tested'] = 1.0
     rows.append(r)
-    for name, value in (('gene_marks_only', 'marks'), ('gene_interactions_only', 'interactions'), ('gene_both', 'both')):
-        r = row(name, gene & (cascade['explained_by'].to_numpy() == value), reaching)
-        rows.append(r)
+    for name, value in (('gene_marks_only', 'marks'), ('gene_interactions_only', 'interactions'), ('gene_both', 'both'),
+                        ('gene_state', 'state'), ('gene_poised_unresolved', 'poised unresolved')):
+        r = row(name, gene & (kind == value), reaching)
+        rows.append(state_note(r, 'promoter') if value in ('state', 'poised unresolved') else r)
     reaching -= int(gene.sum())
     for k in range(1, max_hops + 1):
         level = cascade_label(k)
         mask = at == level
-        part = cascade[mask]
+        # the per-gene permutation test and the mirror apply to the genes explained by marks
+        tested = mask & (kind == 'marks')
+        part = cascade[tested]
         r = row(level, mask, reaching)
         beyond = part['beyond_mirror'].fillna(False).to_numpy(dtype=bool)
         r['beyond_mirror'] = int(beyond.sum()) if part['beyond_mirror'].notna().any() or not len(part) else np.nan
@@ -724,15 +772,153 @@ def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=No
         if proximity is not None:
             values, intervals = proximity_columns([k], proximity)
             r['proximity_support'], r['proximity_ci'] = values[0], intervals[0]
-        r['median_nodes_tested'] = float(part['nodes_tested'].astype(float).median()) if len(part) else np.nan
+        r['median_nodes_tested'] = float(cascade.loc[mask, 'nodes_tested'].astype(float).median()) if mask.any() \
+            else np.nan
         rows.append(r)
+        if k == 1:
+            for name, value in (('step1_marks', 'marks'), ('step1_state', 'state'),
+                                ('step1_poised_unresolved', 'poised unresolved')):
+                r = row(name, mask & (kind == value), reaching)
+                rows.append(r if value == 'marks' else state_note(r, 'step1'))
         reaching -= int(mask.sum())
     rows.append(row('unexplained', at == 'unexplained', reaching))
     columns = ['level', 'genes', 'genes_reaching', 'fraction_of_differential', 'fraction_of_remaining',
                'beyond_mirror', 'p_lt_0.05', 'beyond_mirror_p_lt_0.05', 'q_lt_0.1', 'q_lt_0.05', 'proximity_support',
-               'proximity_ci', 'median_nodes_tested', 'genes_q_lt_0.05']
+               'proximity_ci', 'median_nodes_tested', 'genes_q_lt_0.05', 'note']
     table = pd.DataFrame(rows)
     return table[[c for c in columns if c in table]]
+
+
+def _mark_item(mark, value):
+    return '{}:{}:{:.2f}'.format(mark, '+' if value > 0 else '-', value)
+
+
+def explanation_details(classes, cascade, graph, mark_signals, mark_signs, chromatin_threshold=1.0,
+                        pseudo_count=1.0, states=None):
+    """Per differential gene: which layers and marks explain it at the gene (step 0) and at step 1, and how.
+
+    Columns: explaining_marks_step0 / explaining_marks_step1 ('mark:sign:log2' of the marks changing concordantly
+    at the promoter / summed over the direct partners, ';'-separated), interactions_gained / interactions_lost /
+    interactions_shared (the promoter's own union edges), step1_fragments (fragments in contact in either
+    condition), step1_concordant_fragments (of them, with a concordant change of at least one mark of at least
+    `chromatin_threshold`), step1_concordant_by_mark ('mark:n'), step1_strongest ('fragment mark log2' of the
+    largest concordant change) and explanation_detail, a sentence for genes explained at the gene or at step 1,
+    e.g. 'promoter: H3K27me3 lost (log2 -2.1), H3K4me3 gained (+1.4); own interactions +1.3 (4 gained, 1 lost)' or
+    'step 1: H3K4me1 gained (summed +1.6), concordant at 3 of 5 contacting fragments, strongest chr1:100-200 (+2.0)'.
+    """
+    marks = list(mark_signals)
+    direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
+    rows = []
+    at = cascade.reindex(classes['node'].to_numpy())
+    for i, (_, r) in enumerate(classes.iterrows()):
+        node = r['node']
+        step0 = [(m, float(r[m + '_promoter'])) for m in marks if m + '_promoter' in r and
+                 _concordant([r[m + '_promoter']], mark_signs.get(m, 1), direction[i], chromatin_threshold)[0]]
+        step1 = [(m, float(r[m + '_direct'])) for m in marks if m + '_direct' in r and
+                 _concordant([r[m + '_direct']], mark_signs.get(m, 1), direction[i], chromatin_threshold)[0]]
+        status = {'gained': 0, 'lost': 0, 'shared': 0}
+        partners = list(graph.neighbors(node)) if node in graph else []
+        for partner in partners:
+            status[graph.edges[node, partner].get('status', 'shared')] += 1
+        per_mark = {m: [] for m in marks}
+        for partner in partners:
+            for m in marks:
+                a, b = mark_signals[m][0].get(partner, 0.0), mark_signals[m][1].get(partner, 0.0)
+                change = np.log2((b + pseudo_count) / (a + pseudo_count))
+                if np.sign(change) * mark_signs.get(m, 1) == direction[i] and abs(change) >= chromatin_threshold:
+                    per_mark[m].append((partner, change))
+        concordant_fragments = {p for v in per_mark.values() for p, _ in v}
+        strongest = max(((p, m, c) for m, v in per_mark.items() for p, c in v), key=lambda x: abs(x[2]), default=None)
+        row = dict(node=node,
+                   explaining_marks_step0=';'.join(_mark_item(m, v) for m, v in step0),
+                   explaining_marks_step1=';'.join(_mark_item(m, v) for m, v in step1),
+                   interactions_gained=status['gained'], interactions_lost=status['lost'],
+                   interactions_shared=status['shared'], step1_fragments=len(partners),
+                   step1_concordant_fragments=len(concordant_fragments),
+                   step1_concordant_by_mark=';'.join('{}:{}'.format(m, len(v)) for m, v in per_mark.items() if v),
+                   step1_strongest='{} {} {:+.2f}'.format(*strongest) if strongest else '')
+        level, kind = at.loc[node, 'explained_at'], at.loc[node, 'explained_type'] if 'explained_type' in at else ''
+        detail = ''
+        if level == 'gene' and kind in ('marks', 'interactions', 'both'):
+            parts = []
+            if kind in ('marks', 'both'):
+                parts.append('promoter: ' + ', '.join('{} {} ({}{:+.1f})'.format(m, 'gained' if v > 0 else 'lost',
+                                                                                'log2 ' if k == 0 else '', v)
+                                                      for k, (m, v) in enumerate(step0)))
+            if kind in ('interactions', 'both'):
+                parts.append('own interactions {:+.1f} ({} gained, {} lost)'.format(float(r['contact_direct']),
+                                                                                    status['gained'], status['lost']))
+            detail = '; '.join(parts)
+        elif level == 'step1' and kind == 'marks':
+            parts = []
+            for m, v in step1:
+                best = max(per_mark[m], key=lambda x: abs(x[1]), default=None)
+                text = '{} {} (summed {:+.1f}), concordant at {} of {} contacting fragments'.format(
+                    m, 'gained' if v > 0 else 'lost', v, len(per_mark[m]), len(partners))
+                if best is not None:
+                    text += ', strongest {} ({:+.1f})'.format(best[0], best[1])
+                parts.append(text)
+            detail = 'step 1: ' + '; '.join(parts)
+        elif states is not None and kind in ('state', 'poised unresolved') and node in states.index:
+            column = 'promoter_state_summary' if level == 'gene' else 'step1_state_summary'
+            detail = ('' if level == 'gene' else 'step 1: ') + str(states.loc[node, column])
+        row['explanation_detail'] = detail
+        rows.append(row)
+    return pd.DataFrame(rows).set_index('node')
+
+
+def explanation_types(classes, cascade, marks, mark_signs, chromatin_threshold=1.0, states_callable=None):
+    """Breakdown of the gene level and of step 1 of the cascade by explanation type and by mark.
+
+    Rows (level gene / step1): category 'type' (marks only, interactions only, both, state, poised unresolved at
+    the gene; marks, state, poised unresolved at step 1) with genes, genes_up and genes_down (expression); category
+    'mark': per mark the genes explained at that level by marks in which the mark changes concordantly, with
+    mark_gained / mark_lost (direction of the mark change); category 'interactions' (gene level): genes explained
+    by their own interactions with summed strength gained / lost; category 'state': genes per state transition.
+    """
+    columns = ['explained_at', 'explained_type', 'explained_by']
+    data = classes.drop(columns=[c for c in columns if c in classes]).set_index('node').join(cascade[columns],
+                                                                                           how='left')
+    at = data['explained_at'].to_numpy()
+    kind = data['explained_type'].to_numpy()
+    rna = np.sign(data['rna_log2FC'].to_numpy(dtype=float))
+    rows = []
+
+    def add(level, category, name, mask, gained=None, lost=None, note=''):
+        row = dict(level=level, category=category, name=name, genes=int(mask.sum()),
+                   genes_up=int((mask & (rna > 0)).sum()), genes_down=int((mask & (rna < 0)).sum()))
+        if gained is not None:
+            row.update(mark_gained=int(gained.sum()), mark_lost=int(lost.sum()))
+        if note:
+            row['note'] = note
+        rows.append(row)
+
+    for level, types, column_level, where in (
+            ('gene', ('marks', 'interactions', 'both', 'state', 'poised unresolved'), 'promoter', 'promoter'),
+            ('step1', ('marks', 'state', 'poised unresolved'), 'direct', 'step1')):
+        here = at == level
+        callable_ = states_callable is None or states_callable.get(where, False)
+        for t in types:
+            name = {'marks': 'marks only' if level == 'gene' else 'marks', 'interactions': 'interactions only'}.get(t, t)
+            add(level, 'type', name, here & (kind == t),
+                note='' if callable_ or t not in ('state', 'poised unresolved') else 'states not callable')
+        by_marks = here & np.isin(kind, ['marks', 'both'])
+        for mark in marks:
+            column = '{}_{}'.format(mark, column_level)
+            if column not in data:
+                continue
+            values = np.nan_to_num(data[column].to_numpy(dtype=float))
+            hit = by_marks & _concordant(values, mark_signs.get(mark, 1), rna, chromatin_threshold)
+            add(level, 'mark', mark, hit, hit & (values > 0), hit & (values < 0))
+        if level == 'gene' and 'contact_direct' in data:
+            contact = np.nan_to_num(data['contact_direct'].to_numpy(dtype=float))
+            by_contact = here & np.isin(kind, ['interactions', 'both'])
+            add(level, 'interactions', 'own interactions', by_contact, by_contact & (contact > 0),
+                by_contact & (contact < 0))
+        state = here & np.isin(kind, ['state', 'poised unresolved'])
+        for label in pd.unique(data.loc[state, 'explained_by'].astype(str)):
+            add(level, 'state', label, state & (data['explained_by'].astype(str).to_numpy() == label))
+    return pd.DataFrame(rows)
 
 
 def _concordant(values, mark_sign, direction, threshold):

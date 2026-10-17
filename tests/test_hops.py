@@ -148,10 +148,11 @@ def test_explanation_cascade():
     support = {1: (0.66, 0.64, 0.68), 2: (0.58, 0.56, 0.60), 3: (0.54, 0.52, 0.56)}
     table = cascade_table(cascade, dict(zip(classes['node'], classes['genes'])),
                           {'i': 0.01, 'h': 0.001, 'm': 0.002}, support, max_hops=3).set_index('level')
-    assert list(table.index) == ['gene', 'gene_marks_only', 'gene_interactions_only', 'gene_both', 'step1', 'step2',
-                                 'step3', 'unexplained']
-    assert table['genes'].tolist() == [2, 0, 1, 1, 0, 1, 2, 1]
-    assert table['genes_reaching'].tolist() == [6, 6, 6, 6, 4, 4, 3, 1]
+    assert list(table.index) == ['gene', 'gene_marks_only', 'gene_interactions_only', 'gene_both', 'gene_state',
+                                 'gene_poised_unresolved', 'step1', 'step1_marks', 'step1_state',
+                                 'step1_poised_unresolved', 'step2', 'step3', 'unexplained']
+    assert table['genes'].tolist() == [2, 0, 1, 1, 0, 0, 0, 0, 0, 0, 1, 2, 1]
+    assert table['genes_reaching'].tolist() == [6, 6, 6, 6, 6, 6, 4, 4, 4, 4, 4, 3, 1]
     assert table.loc['step3', 'fraction_of_remaining'] == 2 / 3
     assert table.loc['step3', 'beyond_mirror'] == 1 and table.loc['step3', 'p_lt_0.05'] == 2
     assert table.loc['step3', 'beyond_mirror_p_lt_0.05'] == 1

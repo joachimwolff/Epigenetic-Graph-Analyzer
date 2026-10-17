@@ -134,6 +134,19 @@ def test_differential_cli(tmp_path):
     assert cascade.loc[cascade['level'].isin(['gene', 'step1', 'step2', 'step3', 'unexplained']), 'genes'].sum() == \
         len(classes)
     assert set(classes['explained_at']) <= {'gene', 'step1', 'step2', 'step3', 'unexplained'}
+    for name in ('_mark_roles.tsv', '_state_transitions.tsv', '_bivalent_transitions.tsv', '_explanation_types.tsv',
+                 '_state_thresholds.tsv', '_state_marks.tsv'):
+        assert os.path.exists(prefix + name)
+    # one active mark without a repressive one: no bivalent states
+    assert set(classes['promoter_transition']) == {'states not callable'}
+    # --markRoles gives the result of --markSign
+    other = os.path.join(d, 'out', 'roles')
+    egaDifferential.main(['--interactionsA'] + ibed_a + ['--interactionsB', ibed_b, '-f', 'ibed', '--chicdiff', chicdiff,
+                          '--names', 'A', 'B', '--tss', tss, '--tracksA', 'H3K27ac=' + bw_a, '--tracksB',
+                          'H3K27ac=' + bw_b, '--markSign', '--markRoles', 'H3K27ac=active',
+                          '--expression', expression_path, '--expressionColumns', 'A', 'B', '--geneKey', 'genes',
+                          '--permutations', '5', '--bootstrap', '20', '--roleBootstrap', '20', '-o', other])
+    pd.testing.assert_frame_equal(classes, pd.read_csv(other + '_gene_classes.tsv', sep='\t'))
     from epigeneticgraphanalyzer import egaPlotDifferential
     figure = os.path.join(d, 'out', 'differential.png')
     gene = 'GENE{}'.format(baits.index(next(b for b in baits if b[0] == sorted(gained)[0][0] and b[1] == sorted(gained)[0][1])))
