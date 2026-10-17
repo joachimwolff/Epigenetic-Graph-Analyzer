@@ -8,22 +8,28 @@ Edges
     each interaction (log2 fold change and adjusted p-value).
 
 Genes
-    For every bait gene the chromatin change around it is summarised on three
-    levels of the union graph, each weighting a node's mark signal by the edge
-    strength r in the respective condition:
+    For every bait gene the chromatin change around it is summarised on the
+    promoter and on k = 1 .. n hops of the union graph (n = max_hops, default
+    2), each weighting a node's mark signal by the edge strength r in the
+    respective condition:
 
-    * promoter: the mark at the bait fragment itself,
-    * direct:   sum over neighbours n of r(bait, n) * signal(n),
-    * indirect: sum over nodes m at exactly two hops of
-                sum over mediators n of r(bait, n) * r(n, m) * signal(m).
+    * promoter:          the mark at the bait fragment itself,
+    * direct (1 hop):    sum over neighbours n of r(bait, n) * signal(n),
+    * indirect (2 hops): sum over nodes m at exactly two hops of
+                         sum over mediators n of r(bait, n) * r(n, m) * signal(m),
+    * hop<k> (k hops):   sum over nodes m at exactly k hops (shortest-path
+                         distance k) of the sum over the shortest paths from the
+                         bait to m of the product of r along the path, times signal(m).
 
     The feature is log2(activity_B / activity_A). Expression changes are
-    related to these features by nested linear models and by a hierarchical
-    classification (promoter, direct, indirect, unexplained). The contribution
-    of the indirect level is assessed by permuting node signals.
+    related to these features by nested linear models (one level added at a
+    time) and by a hierarchical classification (promoter, 1 hop, 2 hops, ...,
+    n hops, unexplained). The contribution of the levels at k >= 2 hops is
+    assessed by permuting node signals.
 """
 
 import logging
+import re
 from collections import defaultdict
 
 import networkx as nx
@@ -159,16 +165,55 @@ def union_graph(edges, name_a='A', name_b='B', bait_nodes=None):
     return graph
 
 
-class ActivityOperators:
-    """Sparse operators mapping a node signal vector to direct and indirect activities of source nodes.
+def level_name(hops):
+    """Name of the level at `hops` graph steps: 1 'direct', 2 'indirect', k >= 3 'hop<k>'."""
+    if hops == 1:
+        return 'direct'
+    if hops == 2:
+        return 'indirect'
+    return 'hop{}'.format(hops)
 
-    direct_c = D_c @ signal_c and indirect_c = I_c @ signal_c with
-    D_c[s, n] = r_c(s, n) and I_c[s, m] = sum_n r_c(s, n) r_c(n, m) restricted to
-    nodes m at exactly two hops from s.
+
+def level_hops(level):
+    """Inverse of level_name; the promoter level has 0 hops."""
+    if level == 'promoter':
+        return 0
+    if level == 'direct':
+        return 1
+    if level == 'indirect':
+        return 2
+    return int(level[3:])
+
+
+def hop_levels(features, marks):
+    """Graph levels present in a feature table: direct, indirect and hop<k> in increasing order of k."""
+    found = set()
+    for column in features.columns:
+        for mark in marks:
+            match = re.fullmatch(re.escape(mark) + r'_hop(\d+)', column)
+            if match:
+                found.add(int(match.group(1)))
+    return ['direct', 'indirect'] + ['hop{}'.format(k) for k in sorted(found) if k >= 3]
+
+
+class ActivityOperators:
+    """Sparse operators mapping a node signal vector to the k-hop activities of source nodes, k = 1 .. max_hops.
+
+    The activity of source s at k hops in condition c is H_c^(k) @ signal_c with
+    H_c^(k)[s, m] = sum over the shortest paths s = n_0, n_1, ..., n_k = m of prod_i r_c(n_{i-1}, n_i),
+    restricted to nodes m at exactly k steps (shortest-path distance k in the union graph). It is computed as
+    H^(1) = W[sources] and H^(k) = (H^(k-1) @ W) masked to the nodes at distance k: a walk of k steps that ends at
+    distance k is a shortest path, and its first k-1 steps are a shortest path to a node at distance k-1, so the
+    recursion sums exactly the path products. direct_c = H_c^(1) and indirect_c = H_c^(2) (sum over mediators n of
+    r_c(s, n) r_c(n, m), m at exactly two hops) as before; hop_a[k], hop_b[k] and n_hop[k] hold every level.
     """
 
-    def __init__(self, graph, sources):
+    def __init__(self, graph, sources, max_hops=2):
         import scipy.sparse as sp
+        if max_hops < 2:
+            raise ValueError('max_hops must be at least 2')
+        self.max_hops = int(max_hops)
+        self.levels = [level_name(k) for k in range(1, self.max_hops + 1)]
         self.nodes = list(graph.nodes)
         self.index = {n: i for i, n in enumerate(self.nodes)}
         self.sources = [s for s in sources if s in self.index]
@@ -185,87 +230,107 @@ class ActivityOperators:
         A = sp.csr_matrix((np.ones(len(rows)), (rows, cols)), shape=(n, n))
         src = np.array([self.index[s] for s in self.sources], dtype=np.int64)
         A_s = A[src]
-        reach2 = (A_s @ A).tocsr()
-        reach2.data[:] = 1.0
-        # remove direct neighbours and the source itself from the two-hop set
         self_mask = sp.csr_matrix((np.ones(len(src)), (np.arange(len(src)), src)), shape=(len(src), n))
-        excluded = A_s + self_mask
-        excluded.data[:] = 1.0
-        mask = reach2 - reach2.multiply(excluded)
-        mask.eliminate_zeros()
-        self.direct_a = W_a[src]
-        self.direct_b = W_b[src]
-        self.indirect_a = (W_a[src] @ W_a).multiply(mask).tocsr()
-        self.indirect_b = (W_b[src] @ W_b).multiply(mask).tocsr()
+        # nodes at distance < k of every source (the source itself and its direct neighbours to start with)
+        visited = A_s + self_mask
+        visited.data[:] = 1.0
+        frontier = A_s
+        self.hop_a = {1: W_a[src]}
+        self.hop_b = {1: W_b[src]}
+        self.n_hop = {}
+        for k in range(2, self.max_hops + 1):
+            reach = (frontier @ A).tocsr()
+            reach.data[:] = 1.0
+            # nodes at exactly k steps: reachable in k steps and not at a smaller distance
+            mask = reach - reach.multiply(visited)
+            mask.eliminate_zeros()
+            self.hop_a[k] = (self.hop_a[k - 1] @ W_a).multiply(mask).tocsr()
+            self.hop_b[k] = (self.hop_b[k - 1] @ W_b).multiply(mask).tocsr()
+            self.n_hop[k] = np.asarray((mask > 0).sum(axis=1)).ravel()
+            if k < self.max_hops:
+                visited = visited + mask
+                visited.data[:] = 1.0
+                frontier = mask
+        self.direct_a = self.hop_a[1]
+        self.direct_b = self.hop_b[1]
+        self.indirect_a = self.hop_a[2]
+        self.indirect_b = self.hop_b[2]
         self.n_direct = np.asarray((self.direct_a > 0).sum(axis=1)).ravel()
-        self.n_indirect = np.asarray((mask > 0).sum(axis=1)).ravel()
+        self.n_hop[1] = self.n_direct
+        self.n_indirect = self.n_hop[2]
         self.source_index = src
+
+    def level(self, level):
+        """(H_a, H_b, number of nodes) of a level name (direct, indirect, hop<k>)."""
+        k = level_hops(level)
+        return self.hop_a[k], self.hop_b[k], self.n_hop[k]
 
     def vector(self, signal):
         return np.array([signal.get(n, 0.0) for n in self.nodes], dtype=float)
 
 
-def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=None, mark_vectors=None):
-    """Per bait node: expression change and promoter/direct/indirect log2 activity changes per mark.
+def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=None, mark_vectors=None, max_hops=2):
+    """Per bait node: expression change and promoter and k-hop log2 activity changes per mark, k = 1 .. max_hops.
 
     `marks` maps mark name -> (signal_a dict, signal_b dict);
     `expression_change` maps bait node -> RNA log2 fold change. Precomputed
-    `operators` and `mark_vectors` (name -> (vector_a, vector_b)) are used when given.
+    `operators` (which then set the number of hops) and `mark_vectors` (name -> (vector_a, vector_b)) are used
+    when given. Columns per level (direct, indirect, hop3, ...): n_<level> (nodes at that distance),
+    contact_<level> and <mark>_<level>.
     """
     if operators is None:
-        operators = ActivityOperators(graph, list(expression_change))
+        operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops)
     if mark_vectors is None:
         mark_vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
     sources = operators.sources
-    features = pd.DataFrame({
+    levels = operators.levels
+    columns = {
         'node': sources,
         'genes': [graph.nodes[n].get('genes', '') for n in sources],
         'rna_log2FC': [expression_change[n] for n in sources],
-        'n_direct': operators.n_direct,
-        'n_indirect': operators.n_indirect,
-    })
+    }
+    for level in levels:
+        columns['n_' + level] = operators.level(level)[2]
+    features = pd.DataFrame(columns)
     ones = np.ones(len(operators.nodes))
-    features['contact_direct'] = np.log2((operators.direct_b @ ones + pseudo_count) /
-                                         (operators.direct_a @ ones + pseudo_count))
-    features['contact_indirect'] = np.log2((operators.indirect_b @ ones + pseudo_count) /
-                                           (operators.indirect_a @ ones + pseudo_count))
+    for level in levels:
+        H_a, H_b, _ = operators.level(level)
+        features['contact_' + level] = np.log2((H_b @ ones + pseudo_count) / (H_a @ ones + pseudo_count))
     src = operators.source_index
     for mark, (vector_a, vector_b) in mark_vectors.items():
         features[mark + '_promoter'] = np.log2((vector_b[src] + pseudo_count) / (vector_a[src] + pseudo_count))
-        features[mark + '_direct'] = np.log2((operators.direct_b @ vector_b + pseudo_count) /
-                                             (operators.direct_a @ vector_a + pseudo_count))
-        features[mark + '_indirect'] = np.log2((operators.indirect_b @ vector_b + pseudo_count) /
-                                               (operators.indirect_a @ vector_a + pseudo_count))
+        for level in levels:
+            H_a, H_b, _ = operators.level(level)
+            features[mark + '_' + level] = np.log2((H_b @ vector_b + pseudo_count) / (H_a @ vector_a + pseudo_count))
     return features
 
 
 def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0):
-    """Linear-proximity control of the direct and indirect features.
+    """Linear-proximity control of the k-hop features (direct, indirect, hop3, ...).
 
-    Every neighbour m of a source s is replaced by the interval at the same
+    Every node m at k hops of a source s is replaced by the interval at the same
     distance on the opposite side of s (mirrored around the midpoint of s),
-    keeping the contact weights. The mark signal of the mirrored intervals is
+    keeping the contact (path-product) weights. The mark signal of the mirrored intervals is
     read from the bigWig files, so the control has the genomic distance profile
     of the real neighbourhood without its 3D topology.
     """
     from .annotation import bigwig_interval_signal
     src_nodes = operators.sources
+    node_start = np.array([graph.nodes[n]['start'] for n in operators.nodes], dtype=np.int64)
+    node_end = np.array([graph.nodes[n]['end'] for n in operators.nodes], dtype=np.int64)
+    source_chrom = np.array([graph.nodes[n]['chrom'] for n in src_nodes], dtype=object)
+    source_centre = np.array([graph.nodes[n]['start'] + graph.nodes[n]['end'] for n in src_nodes], dtype=np.int64)
     columns = {}
-    for level, (W_a, W_b) in (('direct', (operators.direct_a, operators.direct_b)),
-                              ('indirect', (operators.indirect_a, operators.indirect_b))):
+    for level in operators.levels:
+        W_a, W_b, _ = operators.level(level)
         coo_a = W_a.tocoo()
         coo_b = W_b.tocsr()
         rows, cols = coo_a.row, coo_a.col
         weight_a = coo_a.data
         weight_b = np.asarray(coo_b[rows, cols]).ravel()
-        chroms, starts, ends = [], [], []
-        for i, j in zip(rows, cols):
-            source = graph.nodes[src_nodes[i]]
-            node = graph.nodes[operators.nodes[j]]
-            centre = source['start'] + source['end']
-            chroms.append(source['chrom'])
-            starts.append(centre - node['end'])
-            ends.append(centre - node['start'])
+        chroms = list(source_chrom[rows])
+        starts = source_centre[rows] - node_end[cols]
+        ends = source_centre[rows] - node_start[cols]
         for mark in tracks_a:
             signal_a = np.mean([bigwig_interval_signal(p, chroms, starts, ends) for p in tracks_a[mark]], axis=0) \
                 if len(rows) else np.zeros(0)
@@ -287,9 +352,10 @@ def _ols_r2(y, X):
     return 1 - rss / tss if tss > 0 else 0.0, rss, X.shape[1]
 
 
-def nested_models(features, marks):
-    """R^2 of RNA change explained by promoter, + direct, + indirect features; partial F tests."""
-    levels = ['promoter', 'direct', 'indirect']
+def nested_models(features, marks, levels=None):
+    """R^2 of RNA change explained by promoter, + 1 hop (direct), + 2 hops (indirect), + 3 hops ... features;
+    partial F tests of every added level."""
+    levels = ['promoter'] + (levels if levels is not None else hop_levels(features, marks))
     columns = []
     data = features.dropna(subset=['rna_log2FC'])
     y = data['rna_log2FC'].to_numpy(dtype=float)
@@ -321,67 +387,70 @@ def model_r2(features, columns):
     return _ols_r2(y, X)[0]
 
 
-def mirror_comparison(features, marks, n_bootstrap=1000, seed=0):
-    """Variance in RNA change gained by graph neighbours versus their mirrored loci.
+def mirror_comparison(features, marks, n_bootstrap=1000, seed=0, levels=None):
+    """Variance in RNA change gained by graph neighbours versus their mirrored loci, per level.
 
-    Returns the R^2 of the nested models and the gains of the direct and the
-    indirect level over their baselines for the graph and the mirror features,
-    with paired bootstrap intervals (over genes) of graph minus mirror.
+    Returns the R^2 of the nested models (promoter, + direct, + indirect, + hop3 ...) and the gain of every level
+    over the model of the closer levels, for the graph features and for the mirror features of that level, with
+    paired bootstrap intervals (over genes) of graph minus mirror.
     """
+    levels = levels if levels is not None else hop_levels(features, marks)
     promoter = [m + '_promoter' for m in marks]
-    direct = [m + '_direct' for m in marks]
-    indirect = [m + '_indirect' for m in marks]
-    direct_m = [m + '_direct_mirror' for m in marks]
-    indirect_m = [m + '_indirect_mirror' for m in marks]
 
     def gains(df):
-        r_p = model_r2(df, promoter)
-        r_pd = model_r2(df, promoter + direct)
-        r_pdi = model_r2(df, promoter + direct + indirect)
-        r_pdm = model_r2(df, promoter + direct_m)
-        r_pdii = model_r2(df, promoter + direct + indirect_m)
-        return {'r2_promoter': r_p, 'r2_promoter_direct': r_pd, 'r2_promoter_direct_indirect': r_pdi,
-                'gain_direct_graph': r_pd - r_p, 'gain_direct_mirror': r_pdm - r_p,
-                'gain_indirect_graph': r_pdi - r_pd, 'gain_indirect_mirror': r_pdii - r_pd}
+        r2 = {'r2_promoter': model_r2(df, promoter)}
+        out_gains = {}
+        columns, name, previous = list(promoter), 'r2_promoter', r2['r2_promoter']
+        for level in levels:
+            mirror = model_r2(df, columns + [m + '_' + level + '_mirror' for m in marks])
+            columns = columns + [m + '_' + level for m in marks]
+            name = name + '_' + level
+            r2[name] = model_r2(df, columns)
+            out_gains['gain_{}_graph'.format(level)] = r2[name] - previous
+            out_gains['gain_{}_mirror'.format(level)] = mirror - previous
+            previous = r2[name]
+        r2.update(out_gains)
+        return r2
 
     observed = gains(features)
     rng = np.random.default_rng(seed)
-    boot_direct, boot_indirect = [], []
+    boot = {level: [] for level in levels}
     for _ in range(n_bootstrap):
         sample = features.iloc[rng.integers(0, len(features), len(features))]
         g = gains(sample)
-        boot_direct.append(g['gain_direct_graph'] - g['gain_direct_mirror'])
-        boot_indirect.append(g['gain_indirect_graph'] - g['gain_indirect_mirror'])
-    boot_direct = np.array(boot_direct)
-    boot_indirect = np.array(boot_indirect)
-    observed.update({
-        'n_genes': len(features),
-        'direct_graph_minus_mirror': observed['gain_direct_graph'] - observed['gain_direct_mirror'],
-        'direct_ci_low': float(np.quantile(boot_direct, 0.025)), 'direct_ci_high': float(np.quantile(boot_direct, 0.975)),
-        'direct_fraction_bootstrap_above_0': float(np.mean(boot_direct > 0)),
-        'indirect_graph_minus_mirror': observed['gain_indirect_graph'] - observed['gain_indirect_mirror'],
-        'indirect_ci_low': float(np.quantile(boot_indirect, 0.025)),
-        'indirect_ci_high': float(np.quantile(boot_indirect, 0.975)),
-        'indirect_fraction_bootstrap_above_0': float(np.mean(boot_indirect > 0)),
-        'n_bootstrap': n_bootstrap,
-    })
+        for level in levels:
+            boot[level].append(g['gain_{}_graph'.format(level)] - g['gain_{}_mirror'.format(level)])
+    observed['n_genes'] = len(features)
+    for level in levels:
+        values = np.array(boot[level])
+        observed.update({
+            '{}_graph_minus_mirror'.format(level): observed['gain_{}_graph'.format(level)] -
+            observed['gain_{}_mirror'.format(level)],
+            '{}_ci_low'.format(level): float(np.quantile(values, 0.025)),
+            '{}_ci_high'.format(level): float(np.quantile(values, 0.975)),
+            '{}_fraction_bootstrap_above_0'.format(level): float(np.mean(values > 0)),
+        })
+    observed['n_bootstrap'] = n_bootstrap
     return observed
 
 
 def feature_correlations(features, marks):
     rows = []
-    levels = ['promoter', 'direct', 'indirect']
+    graph_levels = hop_levels(features, marks)
+    levels = ['promoter'] + graph_levels
     if any(m + '_direct_mirror' in features for m in marks):
-        levels += ['direct_mirror', 'indirect_mirror']
+        levels += [level + '_mirror' for level in graph_levels]
     for level in levels:
         for mark in marks:
             column = mark + '_' + level
+            if column not in features:
+                continue
             data = features[['rna_log2FC', column]].dropna()
             if len(data) < 3:
                 continue
             rho, p = stats.spearmanr(data['rna_log2FC'], data[column])
             rows.append({'mark': mark, 'level': level, 'n': len(data), 'spearman_rho': rho, 'pvalue': p})
-    for level in ('direct', 'indirect'):
+    for level in graph_levels:
         column = 'contact_' + level
         if column in features:
             data = features[['rna_log2FC', column]].dropna()
@@ -391,18 +460,64 @@ def feature_correlations(features, marks):
     return pd.DataFrame(rows)
 
 
-def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_threshold=1.0):
-    """Hierarchical explanation of expression changes: promoter > direct > indirect > unexplained.
+def read_proximity_support(path):
+    """Step curve of analysis/hop_distance.py (columns steps, concordance, ci_low, ci_high) as
+    {steps: (concordance, ci_low, ci_high)}: the probability that graph neighbours at that many steps are closer in
+    the nucleus than distance-matched pairs (0.5 without relation)."""
+    table = pd.read_csv(path, sep='\t')
+    missing = {'steps', 'concordance', 'ci_low', 'ci_high'} - set(table.columns)
+    if missing:
+        raise ValueError('{} lacks the columns {}'.format(path, sorted(missing)))
+    return {int(r.steps): (float(r.concordance), float(r.ci_low), float(r.ci_high)) for r in table.itertuples()}
+
+
+def proximity_columns(hops, support):
+    """proximity_support and proximity_support_ci of explaining levels (0 hops = promoter: 1.0 and 'NA'; levels
+    outside the step curve and unexplained genes: NaN and '')."""
+    values, intervals = [], []
+    for h in hops:
+        if pd.isna(h):
+            values.append(np.nan)
+            intervals.append('')
+        elif int(h) == 0:
+            values.append(1.0)
+            intervals.append('NA')
+        elif int(h) in support:
+            value, low, high = support[int(h)]
+            values.append(value)
+            intervals.append('{:.2f}-{:.2f}'.format(low, high))
+        else:
+            values.append(np.nan)
+            intervals.append('')
+    return values, intervals
+
+
+def _level_size(row, level):
+    """Number of nodes tested at a level (the bait itself for the promoter)."""
+    if level == 'promoter':
+        return 1
+    value = row.get('n_' + level, np.nan)
+    return np.nan if pd.isna(value) else int(value)
+
+
+def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_threshold=1.0, proximity=None):
+    """Hierarchical explanation of expression changes: promoter > 1 hop (direct) > 2 hops (indirect) > 3 hops (hop3)
+    > ... > unexplained.
 
     A level explains a gene if at least one mark changes by at least
     `chromatin_threshold` (log2) on that level in the direction expected from
-    the mark sign (+1 activating, -1 repressive) and the RNA change.
+    the mark sign (+1 activating, -1 repressive) and the RNA change; the gene takes the first such level.
+    explaining_hops is its distance (0 at the promoter) and n_hop_nodes_tested the number of nodes at that level:
+    more hops reach more nodes and so more chances of a concordant change by chance, which the per-level
+    permutation test (gene_level_hop_test) accounts for. With `proximity` (read_proximity_support) every explained
+    gene gets the 3D support of its level (proximity_support, proximity_support_ci).
     """
+    levels = ['promoter'] + hop_levels(features, marks)
     de = features[features['rna_log2FC'].abs() >= rna_threshold].copy()
     direction = np.sign(de['rna_log2FC'].to_numpy())
     explanation = np.array(['unexplained'] * len(de), dtype=object)
     explaining_marks = [''] * len(de)
-    for level in ('indirect', 'direct', 'promoter'):
+    for level in reversed(levels):
         hit = np.zeros(len(de), dtype=bool)
         level_marks = [[] for _ in range(len(de))]
         for mark in marks:
@@ -417,6 +532,12 @@ def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_thr
             explaining_marks[i] = ','.join(level_marks[i])
     de['explanation'] = explanation
     de['explaining_marks'] = explaining_marks
+    de['explaining_hops'] = pd.array([None if e == 'unexplained' else level_hops(e) for e in explanation],
+                                     dtype='Int64')
+    de['n_hop_nodes_tested'] = pd.array([None if e == 'unexplained' else _level_size(r, e)
+                                         for e, (_, r) in zip(explanation, de.iterrows())], dtype='Int64')
+    if proximity is not None:
+        de['proximity_support'], de['proximity_support_ci'] = proximity_columns(de['explaining_hops'], proximity)
     return de
 
 
@@ -425,40 +546,58 @@ def _concordant(values, mark_sign, direction, threshold):
     return (np.sign(values) * mark_sign == direction) & (np.abs(values) >= threshold)
 
 
+def _path_mediators(graph, source, target, hops, max_paths=3):
+    """Intermediate nodes of up to `max_paths` shortest paths, labelled by their genes, as 'a>b' chains."""
+    chains = []
+    for path in nx.all_shortest_paths(graph, source, target):
+        if len(path) != hops + 1:
+            break
+        chains.append('>'.join(graph.nodes[m].get('genes', '') or m for m in path[1:-1]))
+        if len(chains) >= max_paths:
+            break
+    return '+'.join(sorted(set(chains)))
+
+
 def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
-                        chromatin_threshold=1.0, genes=None, top=3):
-    """Differential genes explained at indirect neighbours only.
+                        chromatin_threshold=1.0, genes=None, top=3, proximity=None):
+    """Differential genes first explained at k >= 2 hops (indirect neighbours or further).
 
     A gene qualifies if its expression changes at least `rna_threshold`
-    (log2), no mark changes concordantly at its promoter or its direct
-    neighbours, and at least one mark changes concordantly on the indirect
-    level. `beyond_mirror` marks genes whose explaining marks show no
-    concordant change at the mirrored loci. For each explaining mark the
-    two-hop nodes with the largest concordant contribution are listed with
-    their annotated genes and the mediators that connect them to the gene.
+    (log2), no mark changes concordantly at its promoter or at any level closer than k, and at least one mark
+    changes concordantly at k hops; explaining_hops holds k and n_hop_nodes_tested the number of nodes at k hops.
+    `beyond_mirror` marks genes whose explaining marks show no concordant change at the mirrored loci of that level.
+    For each explaining mark the k-hop nodes with the largest concordant contribution are listed with their
+    annotated genes and the mediators that connect them to the gene (for k = 2 the shared neighbours, for k >= 3
+    up to three shortest paths, intermediate nodes joined by '>').
     """
+    levels = ['promoter'] + hop_levels(features, marks)
+    extra_levels = [level for level in levels if level_hops(level) >= 3]
     data = features if genes is None else features[features['node'].isin(genes)]
     data = data[data['rna_log2FC'].abs() >= rna_threshold]
     row_of = {node: i for i, node in enumerate(operators.sources)}
     rows = []
     for _, gene in data.iterrows():
         direction = np.sign(gene['rna_log2FC'])
-        promoter = any(_concordant(gene[m + '_promoter'], mark_signs.get(m, 1), direction, chromatin_threshold)
-                       for m in marks)
-        direct = any(_concordant(gene[m + '_direct'], mark_signs.get(m, 1), direction, chromatin_threshold)
-                     for m in marks)
-        explaining = [m for m in marks
-                      if _concordant(gene[m + '_indirect'], mark_signs.get(m, 1), direction, chromatin_threshold)]
-        if promoter or direct or not explaining:
+        first, explaining = None, []
+        for level in levels:
+            explaining = [m for m in marks
+                          if _concordant(gene[m + '_' + level], mark_signs.get(m, 1), direction, chromatin_threshold)]
+            if explaining:
+                first = level
+                break
+        if first is None or level_hops(first) < 2:
             continue
-        mirrored = [m for m in explaining if m + '_indirect_mirror' in gene and
-                    _concordant(gene[m + '_indirect_mirror'], mark_signs.get(m, 1), direction, chromatin_threshold)]
+        hops = level_hops(first)
+        mirrored = [m for m in explaining if m + '_' + first + '_mirror' in gene and
+                    _concordant(gene[m + '_' + first + '_mirror'], mark_signs.get(m, 1), direction,
+                                chromatin_threshold)]
         i = row_of[gene['node']]
+        H_a, H_b, _ = operators.level(first)
         drivers = []
         for mark in explaining:
             vector_a, vector_b = mark_vectors[mark]
-            row_a = operators.indirect_a.getrow(i)
-            row_b = operators.indirect_b.getrow(i)
+            row_a = H_a.getrow(i)
+            row_b = H_b.getrow(i)
             columns = np.union1d(row_a.indices, row_b.indices)
             weight_a = np.asarray(row_a[:, columns].todense()).ravel()
             weight_b = np.asarray(row_b[:, columns].todense()).ravel()
@@ -467,19 +606,31 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
                 if contribution[k] <= 0:
                     break
                 node = operators.nodes[columns[k]]
-                mediators = set(graph.neighbors(gene['node'])) & set(graph.neighbors(node))
+                if hops == 2:
+                    mediators = set(graph.neighbors(gene['node'])) & set(graph.neighbors(node))
+                    via = '+'.join(sorted(graph.nodes[m].get('genes', '') or m for m in mediators))
+                else:
+                    via = _path_mediators(graph, gene['node'], node, hops)
                 drivers.append('{}:{}[{}] via {}'.format(
                     mark, node, graph.nodes[node].get('genes', '') or ('promoter' if graph.nodes[node].get('bait') else 'OE'),
-                    '+'.join(sorted(graph.nodes[m].get('genes', '') or m for m in mediators))))
+                    via))
         row = {'node': gene['node'], 'genes': gene['genes'], 'rna_log2FC': gene['rna_log2FC'],
                'n_direct': gene['n_direct'], 'n_indirect': gene['n_indirect'],
                'explaining_marks': ','.join(explaining), 'mirror_concordant_marks': ','.join(mirrored),
                'beyond_mirror': len(mirrored) < len(explaining), 'drivers': '; '.join(drivers)}
         for mark in marks:
-            for level in ('promoter', 'direct', 'indirect', 'indirect_mirror'):
+            for level in ['promoter', 'direct', 'indirect', 'indirect_mirror'] + \
+                    [name for extra in extra_levels for name in (extra, extra + '_mirror')]:
                 column = '{}_{}'.format(mark, level)
                 if column in gene:
                     row[column] = gene[column]
+        row['explaining_hops'] = hops
+        row['n_hop_nodes_tested'] = _level_size(gene, first)
+        for level in extra_levels:
+            row['n_' + level] = gene['n_' + level]
+        if proximity is not None:
+            support, interval = proximity_columns([hops], proximity)
+            row['proximity_support'], row['proximity_support_ci'] = support[0], interval[0]
         rows.append(row)
     result = pd.DataFrame(rows)
     if len(result):
@@ -489,25 +640,32 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
 
 
 def permutation_test(graph, marks, expression_change, mark_signs, n_permutations=100, seed=0,
-                     rna_threshold=1.0, chromatin_threshold=1.0):
-    """Null distribution of the indirect level's contribution.
+                     rna_threshold=1.0, chromatin_threshold=1.0, max_hops=2):
+    """Null distribution of the contribution of every level at k >= 2 hops.
 
     Mark signals of all non-source nodes are permuted jointly (A and B values of
     a node move together, so the distribution of changes is preserved) while the
-    graph and the signals at the source promoters stay fixed.
+    graph and the signals at the source promoters stay fixed. The indirect (2-hop) level keeps its keys
+    (observed_indirect_delta_r2, observed_fraction_indirect, ...); levels at k >= 3 hops add the same statistics as
+    observed_hop<k>_delta_r2, observed_fraction_hop<k>, ...
     """
     rng = np.random.default_rng(seed)
-    operators = ActivityOperators(graph, list(expression_change))
+    operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops)
+    levels = operators.levels
+    tested = levels[1:]   # indirect, hop3, ...
+    position = {level: levels.index(level) + 1 for level in tested}   # row of the level in nested_models
     vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
     observed = gene_features(graph, marks, expression_change, operators=operators, mark_vectors=vectors)
     observed_models = nested_models(observed, list(marks))
     observed_class = classify_genes(observed, list(marks), mark_signs, rna_threshold, chromatin_threshold)
-    obs_delta = float(observed_models['delta_r2'].iloc[-1])
-    obs_fraction = float((observed_class['explanation'] == 'indirect').mean()) if len(observed_class) else np.nan
+    obs_delta = {level: float(observed_models['delta_r2'].iloc[position[level]]) for level in tested}
+    obs_fraction = {level: float((observed_class['explanation'] == level).mean()) if len(observed_class) else np.nan
+                    for level in tested}
     is_source = np.zeros(len(operators.nodes), dtype=bool)
     is_source[operators.source_index] = True
     others = np.nonzero(~is_source)[0]
-    null_delta, null_fraction = [], []
+    null_delta = {level: [] for level in tested}
+    null_fraction = {level: [] for level in tested}
     for _ in range(n_permutations):
         donors = others[rng.permutation(len(others))]
         permuted = {}
@@ -518,70 +676,113 @@ def permutation_test(graph, marks, expression_change, mark_signs, n_permutations
             new_b[others] = vector_b[donors]
             permuted[mark] = (new_a, new_b)
         features = gene_features(graph, marks, expression_change, operators=operators, mark_vectors=permuted)
-        null_delta.append(float(nested_models(features, list(marks))['delta_r2'].iloc[-1]))
+        models = nested_models(features, list(marks))
         classes = classify_genes(features, list(marks), mark_signs, rna_threshold, chromatin_threshold)
-        null_fraction.append(float((classes['explanation'] == 'indirect').mean()) if len(classes) else np.nan)
-    null_delta = np.array(null_delta)
-    null_fraction = np.array(null_fraction)
-    return {
-        'n_genes': int(len(observed)),
-        'n_differential_genes': int(len(observed_class)),
-        'observed_indirect_delta_r2': obs_delta,
-        'null_indirect_delta_r2_mean': float(np.mean(null_delta)),
-        'null_indirect_delta_r2_sd': float(np.std(null_delta)),
-        'empirical_p_delta_r2': float((np.sum(null_delta >= obs_delta) + 1) / (len(null_delta) + 1)),
-        'observed_fraction_indirect': obs_fraction,
-        'null_fraction_indirect_mean': float(np.nanmean(null_fraction)),
-        'null_fraction_indirect_sd': float(np.nanstd(null_fraction)),
-        'empirical_p_fraction': float((np.sum(null_fraction >= obs_fraction) + 1) / (len(null_fraction) + 1)),
-        'n_permutations': int(n_permutations),
-    }
+        for level in tested:
+            null_delta[level].append(float(models['delta_r2'].iloc[position[level]]))
+            null_fraction[level].append(float((classes['explanation'] == level).mean()) if len(classes) else np.nan)
+    result = {'n_genes': int(len(observed)), 'n_differential_genes': int(len(observed_class))}
+    for level in tested:
+        delta = np.array(null_delta[level])
+        fraction = np.array(null_fraction[level])
+        summary = {
+            'observed_indirect_delta_r2': obs_delta[level],
+            'null_indirect_delta_r2_mean': float(np.mean(delta)),
+            'null_indirect_delta_r2_sd': float(np.std(delta)),
+            'empirical_p_delta_r2': float((np.sum(delta >= obs_delta[level]) + 1) / (len(delta) + 1)),
+            'observed_fraction_indirect': obs_fraction[level],
+            'null_fraction_indirect_mean': float(np.nanmean(fraction)),
+            'null_fraction_indirect_sd': float(np.nanstd(fraction)),
+            'empirical_p_fraction': float((np.sum(fraction >= obs_fraction[level]) + 1) / (len(fraction) + 1)),
+        }
+        if level == 'indirect':
+            result.update(summary)
+            result['n_permutations'] = int(n_permutations)
+        else:
+            for key, value in summary.items():
+                key = key.replace('indirect', level)
+                if key.startswith('empirical_p_'):
+                    key = key + '_' + level
+                result[key] = value
+    return result
 
 
-def gene_level_indirect_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
-                             n_permutations=1000, seed=0, pseudo_count=1.0):
-    """Per-gene test of the indirect level for differential genes.
+def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
+                        n_permutations=1000, seed=0, pseudo_count=1.0, genes=None):
+    """Per-gene permutation test of the levels at k >= 2 hops for differential genes.
 
-    The statistic of a gene is the largest concordant indirect change over the marks,
-    max_m sign_m * sign(RNA) * indirect_m (log2 B/A). Its null distribution comes from permuting the mark signals
-    of all non-source nodes jointly (as in permutation_test), which keeps the graph and the distribution of
-    changes but breaks which nodes carry them. Returns node, statistic, empirical p-value and BH q-value.
+    `genes` maps a level name (indirect, hop3, ...) to the nodes tested at that level (None: every differential
+    gene); without it the indirect level is tested for every differential gene. The statistic of a gene at level
+    k is the largest concordant k-hop change over the marks, max_m sign_m * sign(RNA) * <mark>_<level>
+    (log2 B/A). Its null distribution comes from permuting the mark signals of all non-source nodes jointly (as in
+    permutation_test), which keeps the graph and the distribution of changes but breaks which nodes carry them; all
+    levels share the same permutations. The test conditions on the nodes of the gene at that level: more hops reach
+    more nodes and so give more chances of a large concordant change by chance, and the permuted statistic is
+    computed over the same nodes and path weights, so the P-value accounts for the number of nodes tested. BH
+    q-values are computed across the genes tested at each level. Returns {level: DataFrame with node,
+    <level>_statistic, <level>_p, <level>_q}.
     """
+    if genes is None:
+        genes = {'indirect': None}
     de = features[features['rna_log2FC'].abs() >= rna_threshold]
     row_of = {node: i for i, node in enumerate(operators.sources)}
-    rows = np.array([row_of[n] for n in de['node']], dtype=np.int64)
-    direction = np.sign(de['rna_log2FC'].to_numpy())
-    ind_a = operators.indirect_a[rows]
-    ind_b = operators.indirect_b[rows]
+    tests = {}
+    for level, nodes in genes.items():
+        subset = de if nodes is None else de[de['node'].isin(set(nodes))]
+        rows = np.array([row_of[n] for n in subset['node']], dtype=np.int64)
+        H_a, H_b, n_level = operators.level(level)
+        tests[level] = dict(nodes=subset['node'].to_numpy(), rows=rows,
+                            direction=np.sign(subset['rna_log2FC'].to_numpy()), H_a=H_a[rows], H_b=H_b[rows],
+                            n=n_level[rows])
 
-    def statistic(vectors):
-        best = np.full(len(rows), -np.inf)
+    def statistic(vectors, test):
+        best = np.full(len(test['rows']), -np.inf)
         for mark in marks:
             vector_a, vector_b = vectors[mark]
-            change = np.log2((ind_b @ vector_b + pseudo_count) / (ind_a @ vector_a + pseudo_count))
-            best = np.maximum(best, change * mark_signs.get(mark, 1) * direction)
+            change = np.log2((test['H_b'] @ vector_b + pseudo_count) / (test['H_a'] @ vector_a + pseudo_count))
+            best = np.maximum(best, change * mark_signs.get(mark, 1) * test['direction'])
         return best
 
-    observed = statistic(mark_vectors)
+    observed = {level: statistic(mark_vectors, test) for level, test in tests.items()}
     rng = np.random.default_rng(seed)
     is_source = np.zeros(len(operators.nodes), dtype=bool)
     is_source[operators.source_index] = True
     others = np.nonzero(~is_source)[0]
-    exceed = np.zeros(len(rows))
+    exceed = {level: np.zeros(len(test['rows'])) for level, test in tests.items()}
+    active = [level for level, test in tests.items() if len(test['rows'])]
     for _ in range(n_permutations):
         donors = others[rng.permutation(len(others))]
+        if not active:
+            continue
         permuted = {}
         for mark, (vector_a, vector_b) in mark_vectors.items():
             new_a, new_b = vector_a.copy(), vector_b.copy()
             new_a[others] = vector_a[donors]
             new_b[others] = vector_b[donors]
             permuted[mark] = (new_a, new_b)
-        exceed += statistic(permuted) >= observed
-    pvalues = (exceed + 1) / (n_permutations + 1)
-    # genes without two-hop neighbours carry no indirect information
-    pvalues[operators.n_indirect[rows] == 0] = 1.0
-    return pd.DataFrame({'node': de['node'].to_numpy(), 'indirect_statistic': observed,
-                         'indirect_p': pvalues, 'indirect_q': _benjamini_hochberg(pvalues)})
+        for level in active:
+            exceed[level] += statistic(permuted, tests[level]) >= observed[level]
+    result = {}
+    for level, test in tests.items():
+        pvalues = (exceed[level] + 1) / (n_permutations + 1)
+        # genes without nodes at this distance carry no information on the level
+        pvalues[test['n'] == 0] = 1.0
+        result[level] = pd.DataFrame({'node': test['nodes'], level + '_statistic': observed[level],
+                                      level + '_p': pvalues, level + '_q': _benjamini_hochberg(pvalues)})
+    return result
+
+
+def gene_level_indirect_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
+                             n_permutations=1000, seed=0, pseudo_count=1.0):
+    """Per-gene test of the indirect (2-hop) level for every differential gene (gene_level_hop_test).
+
+    The statistic of a gene is the largest concordant indirect change over the marks,
+    max_m sign_m * sign(RNA) * indirect_m (log2 B/A). Its null distribution comes from permuting the mark signals
+    of all non-source nodes jointly (as in permutation_test), which keeps the graph and the distribution of
+    changes but breaks which nodes carry them. Returns node, statistic, empirical p-value and BH q-value.
+    """
+    return gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold, n_permutations,
+                               seed, pseudo_count, genes={'indirect': None})['indirect']
 
 
 def _benjamini_hochberg(pvalues):

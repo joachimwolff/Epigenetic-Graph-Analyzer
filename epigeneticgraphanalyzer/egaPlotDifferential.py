@@ -5,7 +5,8 @@ or of the neighbourhood of a gene as arcs along the chromosome, gained interacti
 interactions below and shared interactions in grey, with line widths by edge strength. The lower panel draws the same
 nodes as a promoter-centred graph: edges coloured by status, other ends coloured by the change of a chromatin mark,
 promoters by the expression change of their genes, and candidates for regulation through indirect contacts
-(egaDifferential <prefix>_indirect_only_genes.tsv) outlined. With --sideBySide the graph is drawn for condition A,
+(egaDifferential <prefix>_indirect_only_genes.tsv: genes first explained at k >= 2 hops) outlined together with the
+nodes at their explaining level that drive them. With --sideBySide the graph is drawn for condition A,
 condition B and their union on one layout.
 """
 
@@ -44,13 +45,17 @@ def parse_arguments(args=None):
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument('--region', help='chrom:start-end')
     selection.add_argument('--gene', help='Gene name; draws its neighbourhood up to --steps')
-    parser.add_argument('--steps', type=int, default=2, help='Neighbourhood size around --gene (graph steps)')
+    parser.add_argument('--steps', type=int, default=2,
+                        help='Neighbourhood size around --gene (graph steps); to show the nodes that explain a '
+                             'candidate, at least its explaining level (explaining_hops of --candidates; a warning '
+                             'is logged otherwise)')
     parser.add_argument('--names', nargs=2, default=None, help='Condition names A B (default: from the graph)')
     parser.add_argument('--mark', nargs='+', default=None,
                         help='Chromatin marks whose log2 change colours the other ends, one panel each (default: all '
                              'marks of the graph; the combined figure uses the first)')
     parser.add_argument('--candidates', help='<prefix>_indirect_only_genes.tsv of egaDifferential; outlines the '
-                                             'candidates and the nodes that explain them')
+                                             'candidates and the nodes at their explaining level (2, 3, ... hops) '
+                                             'that explain them')
     parser.add_argument('--sideBySide', action='store_true', help='Also draw condition A and condition B')
     parser.add_argument('--separatePanels', action='store_true',
                         help='Write every panel as its own file (<out>_arcs, _A, _B, _edges, _nodes with the extension of '
@@ -115,7 +120,8 @@ def gene_label(data):
 
 
 def candidate_nodes(path, nodes):
-    """Candidate promoters and, per chromatin mark, the two-step nodes named as their drivers."""
+    """Candidate promoters and, per chromatin mark, the nodes at their explaining level (k >= 2 hops) named as their
+    drivers."""
     if not path:
         return set(), {}
     table = pd.read_csv(path, sep='\t')
@@ -129,6 +135,18 @@ def candidate_nodes(path, nodes):
                 if node in nodes:
                     drivers.setdefault(parts[0], set()).add(node)
     return candidates, drivers
+
+
+def explaining_steps(path, graph, gene):
+    """Largest explaining level (hops) of the candidate promoters of `gene` in a candidates table (0 if none)."""
+    if not path:
+        return 0
+    table = pd.read_csv(path, sep='\t')
+    if 'explaining_hops' not in table:
+        return 0
+    seeds = {n for n, d in graph.nodes(data=True) if gene in str(d.get('genes', '')).split(',')}
+    hops = table.loc[table['node'].isin(seeds), 'explaining_hops'].dropna()
+    return int(hops.max()) if len(hops) else 0
 
 
 def spread_layout(sub, aspect=1.6, seed=0, iterations=400):
@@ -440,6 +458,10 @@ def main(args=None):
     if args.region:
         sub = region_subgraph(graph, parse_region(args.region))
     else:
+        needed = explaining_steps(args.candidates, graph, args.gene)
+        if needed > args.steps:
+            log.warning('%s is explained at %d hops; --steps %d does not reach its explaining nodes', args.gene,
+                        needed, args.steps)
         sub, _ = neighbourhood(graph, args.gene, args.steps)
     sub = ordered_subgraph(sub, [n for n in sub.nodes if sub.degree[n] > 0])
     if sub.number_of_edges() == 0:

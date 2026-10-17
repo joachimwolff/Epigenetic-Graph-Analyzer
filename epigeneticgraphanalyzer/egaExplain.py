@@ -10,9 +10,11 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             without relation; Mann-Whitney P). Active marks are expected to rise at gained and to fall
                             at lost interactions, repressive marks (--repressive) the opposite.
   <out>_genes.tsv           per differentially expressed gene: expression change, interactions of its promoter
-                            gained / lost / shared, community fate, the level (promoter, direct, indirect neighbours)
-                            and the marks that explain the change, the nodes that explain it through indirect
-                            contacts, and a one-line summary.
+                            gained / lost / shared, community fate, the level (promoter, direct neighbours, nodes at
+                            2, 3, ... hops) and the marks that explain the change, the nodes that explain it through
+                            indirect contacts, and a one-line summary. With egaDifferential --proximitySupport the
+                            summary states how often graph neighbours at the explaining level are close in the
+                            nucleus (support decreases with the number of hops).
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -24,6 +26,7 @@ import pandas as pd
 from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging
+from .differential import level_hops
 from .graph import read_graph
 
 log = logging.getLogger(__name__)
@@ -130,6 +133,31 @@ def describe_marks(values, marks, level, explaining=None):
     return ', '.join(parts)
 
 
+STEP_WORDS = {2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine', 10: 'ten'}
+
+
+def level_location(level):
+    """Where a level lies, as in 'H3K27ac +1.2 at partners three steps away'."""
+    hops = level_hops(level)
+    if hops == 0:
+        return 'at the promoter'
+    if hops == 1:
+        return 'at direct partners'
+    return 'at partners {} steps away'.format(STEP_WORDS.get(hops, hops))
+
+
+def proximity_sentence(hops, support, interval):
+    """'explained at 3 hops, where graph neighbours are close in the nucleus with probability 0.54 (0.52-0.56)
+    against 0.5 for matched pairs'; empty without a support value."""
+    if pd.isna(support) or pd.isna(hops) or int(hops) == 0:
+        return ''
+    text = 'explained at {} hop{}, where graph neighbours are close in the nucleus with probability {:.2f}'.format(
+        int(hops), '' if int(hops) == 1 else 's', float(support))
+    if isinstance(interval, str) and interval and interval != 'NA':
+        text += ' ({})'.format(interval)
+    return text + ' against 0.5 for matched pairs'
+
+
 def gene_report(graph, prefix, names, marks, edges):
     classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t')
     try:
@@ -164,23 +192,34 @@ def gene_report(graph, prefix, names, marks, edges):
                 if target and '{} at {}'.format(mark, target) not in items:
                     items.append('{} at {}'.format(mark, target))
             drivers = '; '.join(items[:6])
-        if level in ('promoter', 'direct', 'indirect'):
+        explained = isinstance(level, str) and level not in ('', 'unexplained')
+        proximity = ''
+        if explained:
             change = describe_marks(r, marks, level, str(r.get('explaining_marks', '')).split(','))
-            where = {'promoter': 'at the promoter', 'direct': 'at direct partners',
-                     'indirect': 'at partners two steps away'}[level]
-            explanation = '{} {}'.format(change or r.get('explaining_marks', ''), where)
-            if level == 'indirect' and drivers:
+            explanation = '{} {}'.format(change or r.get('explaining_marks', ''), level_location(level))
+            if level_hops(level) >= 2 and drivers:
                 explanation += ' ({})'.format(drivers)
+            if 'proximity_support' in r:
+                proximity = proximity_sentence(level_hops(level), r['proximity_support'],
+                                               r.get('proximity_support_ci', ''))
+                if proximity:
+                    explanation += '; ' + proximity
         else:
             explanation = 'no concordant chromatin change'
         summary = '{} {}{:.1f}; interactions {} lost, {} gained, {} shared{}; {}'.format(
             gene, '+' if r['rna_log2FC'] > 0 else '', r['rna_log2FC'], counts['lost'], counts['gained'],
             counts['shared'], '; community {}'.format(transition) if transition else '', explanation)
-        rows.append(dict(node=node, gene=gene, rna_log2FC=r['rna_log2FC'], interactions_lost=counts['lost'],
-                         interactions_gained=counts['gained'], interactions_shared=counts['shared'],
-                         community_status=fate, community_transition=transition, explanation_level=level,
-                         explaining_marks=r.get('explaining_marks', ''), indirect_drivers=drivers,
-                         summary=summary))
+        row = dict(node=node, gene=gene, rna_log2FC=r['rna_log2FC'], interactions_lost=counts['lost'],
+                   interactions_gained=counts['gained'], interactions_shared=counts['shared'],
+                   community_status=fate, community_transition=transition, explanation_level=level,
+                   explaining_marks=r.get('explaining_marks', ''), indirect_drivers=drivers,
+                   summary=summary)
+        if 'explaining_hops' in r:
+            row['explaining_hops'] = level_hops(level) if explained else np.nan
+        if 'proximity_support' in r:
+            row['proximity_support'] = r['proximity_support']
+            row['proximity_support_ci'] = r.get('proximity_support_ci', '')
+        rows.append(row)
     return pd.DataFrame(rows).sort_values('rna_log2FC', key=np.abs, ascending=False)
 
 

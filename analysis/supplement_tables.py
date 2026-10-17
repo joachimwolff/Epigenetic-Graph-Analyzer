@@ -291,13 +291,27 @@ COMPARISONS = (('hESC / hNEC', 'differential/hESC_vs_hNEC'), ('Md / PA2', 'kessl
                ('AML t(8;21) / FLT3-ITD', 'aml_assi/t821_vs_FLT3ITD'))
 
 
+def extra_hops(prefixes):
+    """Levels k >= 3 (hop<k>) present in the nested models of the comparisons; [] for outputs with two levels."""
+    found = set()
+    for prefix in prefixes:
+        models = pd.read_csv(path(prefix + '_nested_models.tsv'), sep='\t')['model']
+        found |= {int(m[3:]) for model in models for m in model.split('+') if re.fullmatch(r'hop\d+', m)}
+    return sorted(found)
+
+
+def nested_name(k):
+    return '+'.join(['promoter', 'direct', 'indirect'] + ['hop{}'.format(j) for j in range(3, k + 1)])
+
+
 def s6():
     rows = []
+    hops = extra_hops([p for _, p in COMPARISONS])
     for label, prefix in COMPARISONS:
         nested = pd.read_csv(path(prefix + '_nested_models.tsv'), sep='\t').set_index('model')
         perm = json.load(open(path(prefix + '_permutation.json')))
         m = perm['mirror_comparison']
-        rows.append(' & '.join([
+        cells = [
             label, integer(nested.loc['promoter', 'n_genes']), num(nested.loc['promoter', 'r2'], 4),
             num(nested.loc['promoter+direct', 'delta_r2'], 4), pval(nested.loc['promoter+direct', 'f_pvalue']),
             num(nested.loc['promoter+direct+indirect', 'delta_r2'], 4),
@@ -305,47 +319,106 @@ def s6():
             num(m['gain_direct_mirror'], 4), num(m['gain_indirect_mirror'], 4),
             '{} [{}, {}]'.format(num(m['indirect_graph_minus_mirror'], 4), num(m['indirect_ci_low'], 4),
                                  num(m['indirect_ci_high'], 4)),
-            '{:.0f}'.format(100 * m['indirect_fraction_bootstrap_above_0'])]) + r' \\')
-    table('table_s6.tex', 'lrrrrrrrrrlr',
-          'Comparison & Genes & $R^2$ promoter & $\\Delta R^2$ direct & $P$ & $\\Delta R^2$ indirect & $P$ & '
-          '$P$ perm. & Mirror direct & Mirror indirect & Indirect graph $-$ mirror [95\\% CI] & Above 0 (\\%)', rows,
-          'Variance of RNA $\\log_2$ fold changes explained by chromatin changes at the promoter, and the '
-          'additional variance explained by contact-weighted changes at direct and at indirect neighbours (nested '
-          'linear models, $F$ test). $P$ perm.: indirect level against 200 permutations of the node signals. '
-          'Mirror: the same gains for loci at the mirrored genomic offsets; the difference between graph and '
-          'mirrored loci for the indirect level with its 95\\% bootstrap interval and the fraction of 1,000 '
-          'bootstrap resamples above zero.', 'tab:s6', size=r'\scriptsize\setlength{\tabcolsep}{4pt}')
+            '{:.0f}'.format(100 * m['indirect_fraction_bootstrap_above_0'])]
+        for k in hops:
+            level = 'hop{}'.format(k)
+            if nested_name(k) in nested.index:
+                cells += [num(nested.loc[nested_name(k), 'delta_r2'], 4), pval(nested.loc[nested_name(k), 'f_pvalue']),
+                          pval(perm.get('empirical_p_delta_r2_' + level, float('nan'))),
+                          num(m['gain_{}_mirror'.format(level)], 4),
+                          '{} [{}, {}]'.format(num(m['{}_graph_minus_mirror'.format(level)], 4),
+                                               num(m['{}_ci_low'.format(level)], 4),
+                                               num(m['{}_ci_high'.format(level)], 4))]
+            else:
+                cells += ['--'] * 5
+        rows.append(' & '.join(cells) + r' \\')
+    header = ('Comparison & Genes & $R^2$ promoter & $\\Delta R^2$ direct & $P$ & $\\Delta R^2$ indirect & $P$ & '
+              '$P$ perm. & Mirror direct & Mirror indirect & Indirect graph $-$ mirror [95\\% CI] & Above 0 (\\%)')
+    for k in hops:
+        header += (' & $\\Delta R^2$ {0} hops & $P$ & $P$ perm. & Mirror {0} hops & {0} hops graph $-$ mirror '
+                   '[95\\% CI]').format(k)
+    caption = ('Variance of RNA $\\log_2$ fold changes explained by chromatin changes at the promoter, and the '
+               'additional variance explained by contact-weighted changes at direct and at indirect neighbours (nested '
+               'linear models, $F$ test). $P$ perm.: indirect level against 200 permutations of the node signals. '
+               'Mirror: the same gains for loci at the mirrored genomic offsets; the difference between graph and '
+               'mirrored loci for the indirect level with its 95\\% bootstrap interval and the fraction of 1,000 '
+               'bootstrap resamples above zero.')
+    if hops:
+        caption += (' Levels at {} hops: nodes at exactly that graph distance, added one level at a time to the '
+                    'nested models, with the same permutation and mirror controls.'.format(
+                        ', '.join(str(k) for k in hops)))
+    table('table_s6.tex', 'lrrrrrrrrrlr' + 'rrrrl' * len(hops), header, rows, caption, 'tab:s6',
+          size=r'\scriptsize\setlength{\tabcolsep}{4pt}')
 
 
 def s7():
     rows = []
+    hops = extra_hops([p for _, p in COMPARISONS])
     for label, prefix in COMPARISONS:
         perm = json.load(open(path(prefix + '_permutation.json')))
         counts = perm['class_counts']
         test = pd.read_csv(path(prefix + '_indirect_gene_test.tsv'), sep='\t')
-        rows.append(' & '.join([label, integer(perm['n_differential_genes']), integer(sum(counts.values()))]
-                               + [integer(counts.get(k, 0)) for k in ('promoter', 'direct', 'indirect', 'unexplained')]
-                               + ['{:.1f} ({:.1f} $\\pm$ {:.1f})'.format(100 * perm['observed_fraction_indirect'],
-                                                                         100 * perm['null_fraction_indirect_mean'],
-                                                                         100 * perm['null_fraction_indirect_sd']),
-                                  '{} / {}'.format(int((test['indirect_p'] < 0.05).sum()), len(test)),
-                                  str(int((test['indirect_q'] < 0.1).sum()))]) + r' \\')
-    table('table_s7.tex', 'lrrrrrrlrr',
-          'Comparison & DE genes & DE promoter fragments & Promoter & Direct & Indirect only & Unexplained & '
-          'Indirect only, \\% (null) & '
-          '$P<0.05$ & $q<0.1$', rows,
-          'Hierarchical classification of the baited promoter fragments of differentially expressed genes (several genes can share a fragment) by the first level (promoter, direct '
-          'neighbours, indirect neighbours) with a concordant chromatin change, the fraction explained at the '
-          'indirect level only against 200 permutations of the node signals (mean $\\pm$ s.d.), and the per-gene '
-          'permutation test of the concordant change at indirect neighbours (1,000 permutations, '
-          'Benjamini-Hochberg). Candidates are listed in Table~S8.', 'tab:s7')
+        cells = ([label, integer(perm['n_differential_genes']), integer(sum(counts.values()))]
+                 + [integer(counts.get(k, 0)) for k in ['promoter', 'direct', 'indirect']
+                    + ['hop{}'.format(j) for j in hops] + ['unexplained']]
+                 + ['{:.1f} ({:.1f} $\\pm$ {:.1f})'.format(100 * perm['observed_fraction_indirect'],
+                                                           100 * perm['null_fraction_indirect_mean'],
+                                                           100 * perm['null_fraction_indirect_sd']),
+                    '{} / {}'.format(int((test['indirect_p'] < 0.05).sum()), len(test)),
+                    str(int((test['indirect_q'] < 0.1).sum()))])
+        for k in hops:
+            level = 'hop{}'.format(k)
+            if 'observed_fraction_' + level in perm:
+                cells.append('{:.1f} ({:.1f} $\\pm$ {:.1f})'.format(100 * perm['observed_fraction_' + level],
+                                                                   100 * perm['null_fraction_{}_mean'.format(level)],
+                                                                   100 * perm['null_fraction_{}_sd'.format(level)]))
+            else:
+                cells.append('--')
+            target = path('{}_{}_gene_test.tsv'.format(prefix, level))
+            if os.path.exists(target):
+                level_test = pd.read_csv(target, sep='\t')
+                cells += ['{} / {}'.format(int((level_test[level + '_p'] < 0.05).sum()), len(level_test)),
+                          str(int((level_test[level + '_q'] < 0.1).sum()))]
+            else:
+                cells += ['--', '--']
+        rows.append(' & '.join(cells) + r' \\')
+    if hops:
+        header = ('Comparison & DE genes & DE promoter fragments & Promoter & 1 hop & 2 hops & '
+                  + ' & '.join('{} hops'.format(k) for k in hops) + ' & Unexplained & '
+                  '2 hops, \\% (null) & $P<0.05$ & $q<0.1$'
+                  + ''.join(' & {} hops, \\% (null) & $P<0.05$ & $q<0.1$'.format(k) for k in hops))
+        caption = ('Hierarchical classification of the baited promoter fragments of differentially expressed genes '
+                   '(several genes can share a fragment) by the first level (promoter, direct neighbours, nodes at '
+                   '2, ..., {} hops) with a concordant chromatin change, the fraction first explained at each level '
+                   'from 2 hops on against 200 permutations of the node signals (mean $\\pm$ s.d.), and the per-gene '
+                   'permutation test of the concordant change at that level (2 hops: all differential genes; '
+                   '$k \\geq 3$ hops: the genes first explained at $k$ hops; Benjamini-Hochberg across the tested '
+                   'genes). Candidates are listed in Table~S8.'.format(max(hops)))
+        columns = 'lrr' + 'r' * (4 + len(hops)) + 'lrr' + 'lrr' * len(hops)
+    else:
+        header = ('Comparison & DE genes & DE promoter fragments & Promoter & Direct & Indirect only & Unexplained & '
+                  'Indirect only, \\% (null) & '
+                  '$P<0.05$ & $q<0.1$')
+        caption = ('Hierarchical classification of the baited promoter fragments of differentially expressed genes (several genes can share a fragment) by the first level (promoter, direct '
+                   'neighbours, indirect neighbours) with a concordant chromatin change, the fraction explained at the '
+                   'indirect level only against 200 permutations of the node signals (mean $\\pm$ s.d.), and the per-gene '
+                   'permutation test of the concordant change at indirect neighbours (1,000 permutations, '
+                   'Benjamini-Hochberg). Candidates are listed in Table~S8.')
+        columns = 'lrrrrrrlrr'
+    table('table_s7.tex', columns, header, rows, caption, 'tab:s7')
 
 
 def s8():
     rows = []
+    with_hops = False
     for label, prefix in COMPARISONS:
         t = pd.read_csv(path(prefix + '_indirect_only_genes.tsv'), sep='\t')
-        t = t[t['beyond_mirror'].astype(bool) & (t['indirect_p'] < 0.05)]
+        # outputs with levels at k >= 3 hops: P and q of the explaining level (q across the genes first explained
+        # there); outputs with two levels keep the indirect test across all differential genes
+        hops = 'explaining_hops' in t and 'hops_p' in t and bool(extra_hops([prefix]))
+        with_hops |= hops
+        p_column, q_column = ('hops_p', 'hops_q') if hops else ('indirect_p', 'indirect_q')
+        t = t[t['beyond_mirror'].astype(bool) & (t[p_column] < 0.05)]
         t = t.reindex(t['rna_log2FC'].abs().sort_values(ascending=False).index)
         for _, r in t.iterrows():
             genes = [g for g in str(r['genes']).split(',') if g != 'nan'][:3]
@@ -354,22 +427,38 @@ def s8():
                 gene = item.split('[')[-1].split(']')[0] if '[' in item else ''
                 if gene and gene not in drivers:
                     drivers.append(gene)
-            rows.append(' & '.join([label, '\\textit{' + tex(', '.join(genes)) + '}', num(r['rna_log2FC'], 2),
-                                    str(int(r['n_direct'])), str(int(r['n_indirect'])), tex(str(r['explaining_marks']).replace(',', ', ')),
-                                    pval(r['indirect_p']), num(r['indirect_q'], 2),
-                                    tex(', '.join(dict.fromkeys(g.strip() for d in drivers[:5] for g in d.split(','))))]) + r' \\')
+            cells = [label, '\\textit{' + tex(', '.join(genes)) + '}', num(r['rna_log2FC'], 2), str(int(r['n_direct'])),
+                     str(int(r['n_hop_nodes_tested'] if hops else r['n_indirect']))]
+            if hops:
+                cells.append(str(int(r['explaining_hops'])))
+            cells += [tex(str(r['explaining_marks']).replace(',', ', ')), pval(r[p_column]), num(r[q_column], 2),
+                      tex(', '.join(dict.fromkeys(g.strip() for d in drivers[:5] for g in d.split(','))))]
+            rows.append(' & '.join(cells) + r' \\')
         rows.append(r'\midrule')
-    table('table_s8.tex', 'p{1.5cm}>{\\raggedright\\arraybackslash}p{2.1cm}rrr>{\\raggedright\\arraybackslash}p{1.7cm}rr'
-          '>{\\raggedright\\arraybackslash}p{3.5cm}',
-          'Comparison & Gene & RNA $\\log_2$FC & Direct & Indirect & Marks & $P$ & $q$ & Explaining two-step nodes',
-          rows[:-1],
-          'Candidates for regulation through indirect contacts: differentially expressed genes explained only at '
-          'indirect neighbours, without a concordant change of the explaining marks at the mirrored loci and with '
-          'a per-gene permutation $P<0.05$. With the measured marks, a change two steps away is the best '
-          'available explanation of the expression change of these genes; perturbation experiments are required '
-          'to establish regulation. Direct and indirect: numbers of direct and two-step neighbours; explaining '
-          'two-step nodes: annotated genes of the nodes with the largest concordant contribution (OE, other end).',
-          'tab:s8', size=r'\scriptsize', long=True, colsep='3pt')
+    if with_hops:
+        columns = ('p{1.5cm}>{\\raggedright\\arraybackslash}p{2.1cm}rrrr>{\\raggedright\\arraybackslash}p{1.7cm}rr'
+                   '>{\\raggedright\\arraybackslash}p{3.5cm}')
+        header = 'Comparison & Gene & RNA $\\log_2$FC & Direct & Nodes & Hops & Marks & $P$ & $q$ & Explaining nodes'
+        caption = ('Candidates for regulation through indirect contacts: differentially expressed genes first explained '
+                   'at $k \\geq 2$ hops (no concordant change at the promoter or at fewer hops), without a concordant '
+                   'change of the explaining marks at the mirrored loci of that level and with a per-gene permutation '
+                   '$P<0.05$ at that level ($q$: Benjamini-Hochberg across the genes first explained at the same '
+                   'level). With the measured marks, a change $k$ steps away is the best available explanation of '
+                   'the expression change of these genes; perturbation experiments are required to establish '
+                   'regulation, and graph neighbours are less often close in the nucleus the more steps they are '
+                   'apart. Direct: number of direct neighbours; nodes: number of nodes at $k$ hops; explaining nodes: '
+                   'annotated genes of the nodes at $k$ hops with the largest concordant contribution (OE, other end).')
+    else:
+        columns = ('p{1.5cm}>{\\raggedright\\arraybackslash}p{2.1cm}rrr>{\\raggedright\\arraybackslash}p{1.7cm}rr'
+                   '>{\\raggedright\\arraybackslash}p{3.5cm}')
+        header = 'Comparison & Gene & RNA $\\log_2$FC & Direct & Indirect & Marks & $P$ & $q$ & Explaining two-step nodes'
+        caption = ('Candidates for regulation through indirect contacts: differentially expressed genes explained only at '
+                   'indirect neighbours, without a concordant change of the explaining marks at the mirrored loci and with '
+                   'a per-gene permutation $P<0.05$. With the measured marks, a change two steps away is the best '
+                   'available explanation of the expression change of these genes; perturbation experiments are required '
+                   'to establish regulation. Direct and indirect: numbers of direct and two-step neighbours; explaining '
+                   'two-step nodes: annotated genes of the nodes with the largest concordant contribution (OE, other end).')
+    table('table_s8.tex', columns, header, rows[:-1], caption, 'tab:s8', size=r'\scriptsize', long=True, colsep='3pt')
 
 
 def s9():

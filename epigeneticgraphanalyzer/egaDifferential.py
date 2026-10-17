@@ -9,12 +9,12 @@ from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging, write_table
 from .annotation import bigwig_node_signal, gene_values_to_nodes, parse_track_arguments
-from .differential import (REPLICATE_MODES, ActivityOperators, annotate_chicdiff, classify_genes, consensus_scores,
-                           differential_edges_from_scores, feature_correlations, gene_features,
-                           community_expression_changes, community_transitions, gene_community_changes,
-                           gene_level_indirect_test,
-                           indirect_only_genes, match_communities, mirror_comparison, mirrored_features,
-                           nested_models, permutation_test, union_graph)
+from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochberg, annotate_chicdiff,
+                           classify_genes, consensus_scores, differential_edges_from_scores, feature_correlations,
+                           gene_features, community_expression_changes, community_transitions,
+                           gene_community_changes, gene_level_hop_test, indirect_only_genes, level_name,
+                           match_communities, mirror_comparison, mirrored_features, nested_models, permutation_test,
+                           read_proximity_support, union_graph)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -25,7 +25,8 @@ log = logging.getLogger(__name__)
 def parse_arguments(args=None):
     parser = base_parser('Compare the interaction graphs of two conditions: gained, lost and shared interactions '
                          '(optionally tested by Chicdiff), contact-weighted chromatin changes at promoter, direct '
-                         'and indirect (two-hop) level, and their relation to expression changes.')
+                         'and indirect (two-hop) level and up to --maxHops graph steps, and their relation to '
+                         'expression changes.')
     parser.add_argument('--interactionsA', nargs='+', required=True,
                         help='Called interactions of condition A, one file per replicate (e.g. CHiCAGO ibed)')
     parser.add_argument('--interactionsB', nargs='+', required=True,
@@ -73,6 +74,14 @@ def parse_arguments(args=None):
                         help='Random gene sets per community size for the coherence test of community expression')
     parser.add_argument('--genePermutations', type=int, default=1000,
                         help='Permutations of the per-gene test of the indirect level (0 skips it)')
+    parser.add_argument('--maxHops', type=int, default=3,
+                        help='Graph levels explaining a gene: promoter, 1 hop (direct), 2 hops (indirect), ... up to '
+                             'this many hops (at least 2; level k >= 3 writes columns <mark>_hop<k>, n_hop<k>, ...)')
+    parser.add_argument('--proximitySupport',
+                        help='Step curve of analysis/hop_distance.py (TSV with steps, concordance, ci_low, ci_high): '
+                             'adds to every explained gene the probability that graph neighbours at its explaining '
+                             'level are closer in the nucleus than distance-matched pairs (proximity_support, '
+                             'proximity_support_ci; 1.0 / NA at the promoter)')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
     parser.add_argument('--resolution', type=float, default=1.0, help='Community resolution parameter')
     parser.add_argument('--seed', type=int, default=0)
@@ -158,13 +167,19 @@ def main(args=None):
         graph.nodes[node]['rna_log2FC'] = value
     log.info('%d bait nodes with expression change', len(change))
 
-    operators = ActivityOperators(graph, list(change))
+    if args.maxHops < 2:
+        raise ValueError('--maxHops must be at least 2')
+    proximity = read_proximity_support(args.proximitySupport) if args.proximitySupport else None
+    operators = ActivityOperators(graph, list(change), max_hops=args.maxHops)
+    log.info('nodes per level (median over genes): %s',
+             {level: float(np.median(operators.level(level)[2])) for level in operators.levels})
     mark_vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
     features = gene_features(graph, marks, change, operators=operators, mark_vectors=mark_vectors)
     mirror = mirrored_features(graph, operators, tracks_a, tracks_b)
     features = features.join(mirror, on='node')
     write_table(features, prefix + '_gene_features.tsv')
-    # genes with direct and indirect neighbours carry information on every level
+    # genes with direct and indirect neighbours carry information on the promoter, direct and indirect levels (the
+    # same genes for every --maxHops; genes without nodes at k >= 3 hops have a k-hop change of 0)
     informative = features[(features['n_direct'] > 0) & (features['n_indirect'] > 0)].reset_index(drop=True)
     write_table(feature_correlations(informative, list(marks)), prefix + '_correlations.tsv')
     write_table(nested_models(informative, list(marks)), prefix + '_nested_models.tsv')
@@ -174,22 +189,48 @@ def main(args=None):
         differential_nodes = {n for n in features['node']
                               if set(str(graph.nodes[n].get(args.geneKey, '')).split(',')) & differential_ids}
     classified = features if differential_nodes is None else features[features['node'].isin(differential_nodes)]
-    classes = classify_genes(classified, list(marks), mark_signs, args.rnaThreshold, args.chromatinThreshold)
+    classes = classify_genes(classified, list(marks), mark_signs, args.rnaThreshold, args.chromatinThreshold,
+                             proximity=proximity)
     write_table(classes, prefix + '_gene_classes.tsv')
     indirect_only = indirect_only_genes(graph, operators, mark_vectors, features, list(marks), mark_signs,
-                                        args.rnaThreshold, args.chromatinThreshold, genes=differential_nodes)
+                                        args.rnaThreshold, args.chromatinThreshold, genes=differential_nodes,
+                                        proximity=proximity)
+    new_columns = [c for c in indirect_only.columns
+                   if c in ('explaining_hops', 'n_hop_nodes_tested', 'proximity_support', 'proximity_support_ci')]
     if args.genePermutations:
         tested = classified if differential_nodes is not None else features
-        gene_test = gene_level_indirect_test(operators, mark_vectors, tested, list(marks), mark_signs,
-                                             args.rnaThreshold, args.genePermutations, args.seed)
+        # the indirect level for every differential gene (as before), every level k >= 3 for the genes first
+        # explained there; one set of permutations for all levels
+        levels = {'indirect': None}
+        for k in range(3, args.maxHops + 1):
+            levels[level_name(k)] = classes.loc[classes['explanation'] == level_name(k), 'node'].tolist()
+        tests = gene_level_hop_test(operators, mark_vectors, tested, list(marks), mark_signs, args.rnaThreshold,
+                                    args.genePermutations, args.seed, genes=levels)
+        gene_test = tests['indirect']
         write_table(gene_test, prefix + '_indirect_gene_test.tsv')
+        for level, test in tests.items():
+            if level != 'indirect':
+                write_table(test, prefix + '_{}_gene_test.tsv'.format(level))
         if len(indirect_only):
             indirect_only = indirect_only.merge(gene_test, on='node', how='left')
+            # per explaining level: statistic, P and BH q across the genes first explained at that level
+            parts = []
+            for hops, part in indirect_only.groupby('explaining_hops', sort=False):
+                level = level_name(int(hops))
+                values = tests[level].set_index('node').loc[part['node']]
+                part = part.assign(hops_statistic=values[level + '_statistic'].to_numpy(),
+                                   hops_p=values[level + '_p'].to_numpy())
+                parts.append(part.assign(hops_q=_benjamini_hochberg(part['hops_p'].to_numpy())))
+            indirect_only = pd.concat(parts).loc[indirect_only.index]
+            new_columns += ['hops_statistic', 'hops_p', 'hops_q']
+    if len(indirect_only):
+        indirect_only = indirect_only[[c for c in indirect_only.columns if c not in new_columns] + new_columns]
     write_table(indirect_only, prefix + '_indirect_only_genes.tsv')
     informative_change = {n: change[n] for n in informative['node']}
     result = permutation_test(graph, marks, informative_change, mark_signs, n_permutations=args.permutations,
                               seed=args.seed,
-                              rna_threshold=args.rnaThreshold, chromatin_threshold=args.chromatinThreshold)
+                              rna_threshold=args.rnaThreshold, chromatin_threshold=args.chromatinThreshold,
+                              max_hops=args.maxHops)
     result['class_counts'] = classes['explanation'].value_counts().to_dict()
     result['informative_genes'] = int(len(informative))
     result['mirror_comparison'] = comparison
