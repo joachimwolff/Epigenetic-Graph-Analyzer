@@ -368,7 +368,8 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
     that condition and contacts of the promoter across the junction there: at least `min_junction_pairs` read pairs
     (with `contacts`) or at least one called interaction (with `called`); without either, the first two suffice.
     Partner genes: with `tss` (chrom, tss, gene_name of the annotation) the genes with a transcription start site
-    within the window of the partner breakend, nearest first; otherwise the genes of the graph nodes there.
+    within the window of the partner breakend, protein-coding genes first, nearest first; otherwise the genes of
+    the graph nodes there.
 
     Returns (genes, levels): genes is one row per gene and nearby join (every bait with an expression value, also
     non-differential: sv_genes.tsv); levels is indexed by node with sv_explains, sv_result, sv_detail, sv_by,
@@ -412,7 +413,10 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
                 row['partner_nodes'] = len(partner)
                 if tss is not None:
                     near_tss = tss[(tss['chrom'] == partner_chrom) & ((tss['tss'] - partner_pos).abs() <= window)]
-                    near_tss = near_tss.assign(d=(near_tss['tss'] - partner_pos).abs()).sort_values('d')
+                    # protein-coding genes first (when the annotation has gene types), each nearest first
+                    coding = near_tss['gene_type'] != 'protein_coding' if 'gene_type' in near_tss else False
+                    near_tss = near_tss.assign(d=(near_tss['tss'] - partner_pos).abs(), other=coding) \
+                        .sort_values(['other', 'd'])
                     genes = [str(g) for g in near_tss['gene_name'] if isinstance(g, str) and g]
                 else:
                     genes = [g for g in partner['genes'] if g]

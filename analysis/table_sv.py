@@ -21,6 +21,18 @@ import pandas as pd
 COMPARISONS = (('siMM_vs_siRE', 'Kasumi-1 siMM vs siRE', ('siMM', 'siRE')),
                ('t821_vs_FLT3ITD', 't(8;21) vs FLT3-ITD', ('t821', 'FLT3ITD')))
 FOCUS = ('RUNX1', 'RUNX1T1')
+SHORT_STATUS = {'present in both': 'both', 'similar support in both': 'similar'}
+SHORT_RESULT = {'no active partner element': 'no active partner', 'present in both': 'in both',
+                'not differential': 'not DE', 'junction contacts discordant': 'junction discordant',
+                'no breakpoint nearby': '--'}
+
+
+def gene_name(genes):
+    """The first annotated name that is not a clone-based identifier (AC012345.1), else the first."""
+    names = [g for g in str(genes).split(',') if g]
+    named = [g for g in names if not (g[:2].isalpha() and g[:2].isupper() and '.' in g and g[2:].split('.')[0]
+                                      .isdigit())]
+    return (named or names or [''])[0]
 
 
 def tex(text):
@@ -39,8 +51,8 @@ def position(chrom, start):
     return '{}:{:.1f}'.format(chrom, (start + 50000) / 1e6)
 
 
-def longtable(columns, header, rows, caption, label):
-    lines = [r'{\footnotesize', r'\begin{longtable}{@{}' + columns + '@{}}', r'\caption{' + caption + r'}\label{'
+def longtable(columns, header, rows, caption, label, size=r'\footnotesize', colsep=None):
+    lines = [r'{' + size + (r'\setlength{\tabcolsep}{%s}' % colsep if colsep else ''),r'\begin{longtable}{@{}' + columns + '@{}}', r'\caption{' + caption + r'}\label{'
              + label + r'}\\', r'\toprule', header + r' \\', r'\midrule', r'\endfirsthead', r'\toprule',
              header + r' \\', r'\midrule', r'\endhead']
     return lines + rows + [r'\bottomrule', r'\end{longtable}}']
@@ -49,6 +61,10 @@ def longtable(columns, header, rows, caption, label):
 def read(directory, comparison, suffix):
     path = os.path.join(directory, comparison + suffix)
     return pd.read_csv(path, sep='\t') if os.path.exists(path) else None
+
+
+def section(label, columns):
+    return r'\multicolumn{%d}{@{}l}{\textit{%s}} \\' % (columns, label)
 
 
 def part_a(directory, top):
@@ -62,23 +78,27 @@ def part_a(directory, top):
         show = pd.concat([focus, joins.sort_values('score', ascending=False)]).drop_duplicates('sv_id').head(top)
         if rows:
             rows.append(r'\midrule')
-        for i, r in enumerate(show.itertuples()):
+        rows.append(section(label, 5))
+        for r in show.itertuples():
             r = r._asdict()
-            rows.append(' & '.join([label if i == 0 else '', tex(r['name']), position(r['chrom1'], r['start1']),
-                                    position(r['chrom2'], r['start2']), integer(r['pairs_' + a]),
-                                    integer(r['pairs_' + b]), num(r['obs_exp_' + a], 0), num(r['obs_exp_' + b], 0),
+            rows.append(' & '.join([tex(r['name']), '{} / {}'.format(position(r['chrom1'], r['start1']),
+                                                                     position(r['chrom2'], r['start2'])),
+                                    '{} / {}'.format(integer(r['pairs_' + a]), integer(r['pairs_' + b])),
+                                    '{} / {}'.format(num(r['obs_exp_' + a], 0), num(r['obs_exp_' + b], 0)),
                                     tex(r['status'])]) + r' \\')
-    header = 'Comparison & Join & Breakend 1 (Mb) & Breakend 2 (Mb) & Pairs A & Pairs B & O/E A & O/E B & Change'
+    header = 'Join & Breakends (Mb) & Pairs A / B & O/E A / B & Change'
     caption = ('Joins detected in the capture Hi-C read pairs of the two AML comparisons: inter-chromosomal and '
                'intra-chromosomal ($\\geq$5\\,Mb) 1\\,Mb bin pairs with at least 50 read pairs and an observed over '
                'expected of at least 20 in a condition, bin pairs within 2\\,Mb merged, breakends at 100\\,kb (the bin '
-               'with the largest share of its inter-chromosomal coverage in pairs with the other side; resolution '
-               'about 0.5\\,Mb). Pairs and O/E (observed / expected) summed over the 1\\,Mb bin pairs of the join; A / '
-               'B: siMM / siRE (Kasumi-1, two libraries each) and t(8;21) / FLT3-ITD (first 30\\,M read pairs of one '
-               'library per patient). Change: gained / lost (called in one condition, support changing at least '
-               'twofold), present in both, similar support in both (called in one condition by the thresholds '
-               'only). The t(8;21) first, then the joins with most read pairs.')
-    return longtable('llllrrrrl', header, rows, caption, 'tab:s32')
+               'with the largest share of its inter-chromosomal coverage in pairs with 1\\,Mb around the other '
+               'breakend; resolution about 0.1 to 1\\,Mb). Pairs and O/E (observed / expected) summed over the 1\\,Mb '
+               'bin pairs of the join; A / B: siMM / siRE (Kasumi-1, two libraries each) and t(8;21) / FLT3-ITD '
+               '(first 30\\,M read pairs of one library per patient). Change: gained / lost (called in one condition, '
+               'support changing at least twofold), present in both, similar support in both (called in one '
+               'condition by the thresholds only). The t(8;21) first, then the joins with most read pairs. Joins '
+               'between subtelomeric or pericentromeric regions (e.g. chr16:0--1\\,Mb, chr22:10--11\\,Mb, the '
+               'pseudoautosomal chrX / chrY) may reflect repeated sequence rather than rearrangements.')
+    return longtable('lllll', header, rows, caption, 'tab:s32')
 
 
 def part_b(directory):
@@ -90,25 +110,25 @@ def part_b(directory):
             continue
         counts = counts[(counts['roles'] == 'declared') & (counts['presence'] == 'mean')].set_index('level')
 
-        def value(level, column):
-            return integer(counts.loc[level, column]) if level in counts.index else '--'
+        def value(level):
+            if level not in counts.index:
+                return '--'
+            return '{} / {}'.format(integer(counts.loc[level, 'genes_any']), integer(counts.loc[level, 'genes_first']))
         differential = genes[genes['differential'].astype(bool)]
         rows.append(' & '.join([label, integer(genes['node'].nunique()), integer(differential['node'].nunique()),
                                 integer(genes.loc[genes['hijacking_candidate'].astype(bool), 'node'].nunique()),
-                                integer(counts['differential_genes'].iloc[0]),
-                                value('structural_variant', 'genes_any'), value('structural_variant', 'genes_first'),
-                                value('copy_number', 'genes_any'), value('copy_number', 'genes_first')]) + r' \\')
-    header = ('Comparison & Near breakend & Differential & Hijacking cand. & Differential genes & SV any & SV first & '
-              'CN any & CN first')
-    caption = ('Structural variant (SV) and copy number (CN) levels. Near breakend: promoter fragments with an '
-               'expression value within 1\\,Mb of a breakend; differential among them; enhancer-hijacking '
-               'candidates (join present in a condition, an active element on the partner side and contacts of the '
-               'promoter across the junction). Differential genes of the comparison and those explained by the SV '
-               'level (join gained with the expression rising or lost with it falling, an active partner element in '
-               'the condition with the join and the junction contacts changing in the same direction) and by the CN '
-               'level (relative copy number at the promoter changing by at least log2 0.5 with the expression), at '
-               'any level and as the first level of the cascade (declared roles).')
-    return longtable('lrrrrrrrr', header, rows, caption, 'tab:s32b')
+                                integer(counts['differential_genes'].iloc[0]), value('structural_variant'),
+                                value('copy_number')]) + r' \\')
+    header = 'Comparison & Near & Differential & Candidates & DE genes & SV any / first & CN any / first'
+    caption = ('Structural variant (SV) and copy number (CN) levels. Near: promoter fragments with an expression '
+               'value within 1\\,Mb of a breakend; differential among them; candidates: enhancer-hijacking candidates '
+               '(join present in a condition, an active element on the partner side and contacts of the promoter '
+               'across the junction there). DE genes: differential genes of the comparison; explained by the SV level '
+               '(join gained with the expression rising or lost with it falling, an active partner element in the '
+               'condition with the join, the junction contacts changing in the same direction) and by the CN level '
+               '(relative copy number at the promoter changing by at least log2 0.5 with the expression), at any '
+               'level and as the first level of the cascade (declared roles).')
+    return longtable('lrrrrrr', header, rows, caption, 'tab:s32b')
 
 
 def part_c(directory, top=25):
@@ -122,32 +142,37 @@ def part_c(directory, top=25):
         names = genes['genes'].fillna('').astype(str)
         focus = genes[(genes['sv_name'] == 't(8;21)') & names.map(lambda g: bool(set(g.split(',')) & set(FOCUS)))]
         differential = genes[genes['differential'].astype(bool)].assign(order=lambda d: -d['rna_log2FC'].abs())
-        show = pd.concat([focus, differential.sort_values('order').drop(columns='order')]).drop_duplicates(
-            ['node', 'sv_id']).head(top)
+        # one row per gene and join: its promoter fragment nearest to the breakend
+        show = pd.concat([focus.sort_values('distance'),
+                          differential.sort_values(['order', 'distance']).drop(columns='order')])
+        show = show.drop_duplicates(['genes', 'sv_id']).head(top)
         if rows:
             rows.append(r'\midrule')
-        for i, r in enumerate(show.itertuples()):
+        rows.append(section(label, 9))
+        for r in show.itertuples():
             r = r._asdict()
-            gene = ','.join(str(r['genes']).split(',')[:2])
+            gene = gene_name(r['genes'])
             result = results.get(r['node'], '') if r['differential'] else 'not differential'
             junction = '{} / {}'.format(integer(r.get('junction_pairs_' + a)), integer(r.get('junction_pairs_' + b)))
-            rows.append(' & '.join([label if i == 0 else '', tex(gene), num(r['rna_log2FC'], 1), tex(r['sv_name']),
-                                    num(r['distance'] / 1e6, 2), tex(r['sv_status']),
-                                    tex(','.join(str(r['partner_genes']).split(',')[:2])
+            rows.append(' & '.join([tex(gene), num(r['rna_log2FC'], 1), tex(r['sv_name']),
+                                    num(r['distance'] / 1e6, 2), tex(SHORT_STATUS.get(r['sv_status'], r['sv_status'])),
+                                    tex(str(r['partner_genes']).split(',')[0]
                                         if isinstance(r['partner_genes'], str) else ''),
-                                    '{} / {} of {}'.format(int(r['partner_active_' + a]), int(r['partner_active_' + b]),
-                                                           int(r['partner_nodes'])),
-                                    junction, 'yes' if r['hijacking_candidate'] else 'no',
-                                    tex(result if isinstance(result, str) else '')]) + r' \\')
-    header = ('Comparison & Gene & log2FC & Join & Distance (Mb) & Change & Partner genes & Active partner nodes A / '
-              'B & Junction pairs A / B & Hijacking & SV level')
+                                    '{} / {} ({})'.format(int(r['partner_active_' + a]), int(r['partner_active_' + b]),
+                                                          int(r['partner_nodes'])),
+                                    junction, tex(SHORT_RESULT.get(result, result) if isinstance(result, str) else '') +
+                                    ('$^c$' if r['hijacking_candidate'] else '')]) + r' \\')
+    header = 'Gene & log2FC & Join & Mb & Change & Partner & Active A / B & Junction A / B & SV level'
     caption = ('Genes near the breakends: RUNX1 and RUNX1T1 at the t(8;21), then the differential genes near any '
-               'breakend by absolute expression change (at most 25 per comparison). Distance from the promoter '
-               'fragment to the breakend; partner genes: genes of the graph nodes within 1\\,Mb of the other '
-               'breakend; active partner nodes: nodes there with an active element class (DNase present) in A / B; '
-               'junction pairs: read pairs of the promoter fragment with the partner side in A / B; SV level: result '
-               'of the structural variant level for the differential genes.')
-    return longtable('llrlrllllll', header, rows, caption, 'tab:s32c')
+               'breakend by absolute expression change (at most 25 per comparison; one row per gene and join, the '
+               'promoter fragment nearest to the breakend). Mb: distance from the promoter fragment to the breakend; '
+               'change: gained, lost, both (present in both), similar (similar support in both); partner: the nearest '
+               'protein-coding gene with a TSS within 1\\,Mb of the other breakend; '
+               'active A / B: graph nodes there with an active element class (DNase present) in A / B (nodes in '
+               'total); junction A / B: read pairs of the promoter fragment with the partner side; SV level: result '
+               'of the structural variant level for the differential genes (in both: join present in both '
+               'conditions; not DE: gene not differential); $^c$ enhancer-hijacking candidate.')
+    return longtable('lrlrlllll', header, rows, caption, 'tab:s32c', size=r'\scriptsize', colsep='3pt')
 
 
 def main(argv):

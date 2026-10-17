@@ -28,8 +28,10 @@ h="$kasumi/hicup"
     --baits "$kasumi/design/kasumi1_hg38_promoters.baitmap" --chromSizes "$sizes" --samtools "$samtools" \
     --threads "$threads" -o "$out/kasumi1" > "$out/kasumi1.log" 2>&1
 sub="$assi/chic_subset"
-index=$data/genomes/hg38/bowtie2/hg38
-digest=$(ls "$data"/genomes/hg38/hicup_digest/Digest_hg38_HindIII*.txt* | head -1)
+# bowtie2 index and HiCUP digest of hg38 as for Kasumi-1 (kasumi_map_runs.sh)
+genomes=${GENOMES:-$HOME/data/genomes}
+index=$genomes/hg38/bowtie2/hg38
+digest=$(ls "$genomes"/hg38/hicup_digest/Digest_hg38_HindIII*.txt* | head -1)
 for run in SRR6392078 SRR6392077; do
     if [[ ! -s "$sub/${run}_1_30M.fastq.gz" ]]; then
         for mate in 1 2; do
