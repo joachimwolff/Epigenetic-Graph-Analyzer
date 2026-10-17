@@ -54,7 +54,7 @@ from matplotlib.patches import Arc  # noqa: E402
 
 from ._cli import base_parser, setup_logging  # noqa: E402
 from ._version import __version__  # noqa: E402
-from .egaPlotDifferential import (EDGE_MAX_LOG2, IGNORED_GENE_PREFIXES, INK, ONLY_DASH, STATUS_COLORS,  # noqa: E402
+from .egaPlotDifferential import (IGNORED_GENE_PREFIXES, INK, STATUS_COLORS,  # noqa: E402
                                   draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, mark_change,
                                   place_labels, shape_handles, spread_layout, status_handles, width_handles)
 from .egaPlotRegion import ordered_subgraph  # noqa: E402
@@ -741,7 +741,8 @@ class Document:
         formats = formats or {}
         frame = frame if max_rows is None else frame.head(max_rows)
         nowrap = set(nowrap) | {c for c in ('level', 'mark', 'category', 'gene', 'kind', 'side') if c in frame.columns}
-        head = ''.join('<th class="{}">{}</th>'.format('num' if c in numeric else '', esc(str(c).replace('_', ' ')))
+        head = ''.join('<th class="{}">{}</th>'.format('num' if c in numeric else '',
+                                                      esc(str(c).replace('_lt_', ' < ').replace('_', ' ')))
                        for c in frame.columns)
         body = []
         for _, row in frame.iterrows():

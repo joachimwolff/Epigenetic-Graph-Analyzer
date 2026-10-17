@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from epigeneticgraphanalyzer import egaDifferential, egaExplain, egaReport
-from synthetic import fragments, simulate_capture, write_bigwig, write_tss_bed
+from synthetic import simulate_capture, write_bigwig, write_tss_bed
 
 
 @pytest.fixture(scope='module')
