@@ -51,6 +51,7 @@ egaSwitching = "epigeneticgraphanalyzer.switching:main"
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
 egaTriggers = "epigeneticgraphanalyzer.egaTriggers:main"
 egaCompartments = "epigeneticgraphanalyzer.egaCompartments:main"
+egaDesign = "epigeneticgraphanalyzer.egaDesign:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "epigeneticgraphanalyzer._version.__version__"}
