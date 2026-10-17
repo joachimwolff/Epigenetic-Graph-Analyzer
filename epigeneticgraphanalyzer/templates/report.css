@@ -134,7 +134,7 @@ td.frag { overflow-wrap: anywhere; min-width: 7rem; }
             break-after: page; page-break-after: always; font-size: 10pt; }
   nav.toc li.sub { font-size: 9pt; }
   main { max-width: none; padding: 0; }
-  h2 { break-before: page; page-break-before: always; border-top: none; margin-top: 0; }
+  h2 { break-before: auto; page-break-before: auto; margin-top: 1.6rem; }
   h2, h3, h4 { break-after: avoid; page-break-after: avoid; }
   figure, .stat, tr { break-inside: avoid; page-break-inside: avoid; }
   .finding { break-before: auto; }

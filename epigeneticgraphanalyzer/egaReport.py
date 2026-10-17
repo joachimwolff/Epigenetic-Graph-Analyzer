@@ -2093,7 +2093,11 @@ class Report:
         if level_nodes:
             self.gene_finding(doc, gene, level_nodes, figures=False, hub=False)
             declared = '; '.join('{} {}'.format(m, r) for m, r in run.declared_roles().items())
-            evidence_table(doc, run.levels[run.levels['node'].isin(level_nodes)], gene, run.names, declared)
+            for node in level_nodes:
+                # one table per promoter fragment, so that the ranks of different fragments are not mixed
+                genes_here = run.graph.nodes[node].get('genes', '') if node in run.graph else ''
+                label = '{} (fragment {}{})'.format(gene, node, ', ' + genes_here if genes_here else '')
+                evidence_table(doc, run.levels[run.levels['node'] == node], label, run.names, declared)
             extra = run.levels[run.levels['node'].isin(level_nodes)]['extra'] if 'extra' in run.levels else []
             keys = sorted({k for e in extra if isinstance(e, dict) for k in e})
             if keys:
