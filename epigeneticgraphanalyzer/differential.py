@@ -29,6 +29,8 @@ Genes
 """
 
 import logging
+import multiprocessing
+import os
 import re
 from collections import defaultdict
 
@@ -305,16 +307,62 @@ def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=N
     return features
 
 
-def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0):
+def default_threads(cap=32):
+    """Cores available to this process (os.sched_getaffinity), at most `cap`."""
+    try:
+        available = len(os.sched_getaffinity(0))
+    except AttributeError:
+        available = os.cpu_count() or 1
+    return max(1, min(cap, available))
+
+
+_SHARED = {}
+
+
+def _pool_map(func, items, threads, shared):
+    """map(func, items) over `threads` forked worker processes. `shared` is visible to the workers as the module
+    global _SHARED (set before the pool starts, so it is inherited read-only and not pickled); results come back in
+    the order of `items`."""
+    global _SHARED
+    items = list(items)
+    _SHARED = shared
+    try:
+        if threads <= 1 or len(items) <= 1:
+            return [func(item) for item in items]
+        context = multiprocessing.get_context('fork')
+        with context.Pool(min(threads, len(items))) as pool:
+            return pool.map(func, items, chunksize=1)
+    finally:
+        _SHARED = {}
+
+
+def _bigwig_chunk(task):
+    from .annotation import bigwig_interval_signal
+    path, start, end = task
+    s = _SHARED
+    return bigwig_interval_signal(path, s['chroms'][start:end], s['starts'][start:end], s['ends'][start:end])
+
+
+def _interval_signals(paths, chroms, starts, ends, threads, chunk=20000):
+    """{bigWig path: mean signal of every interval}, read in parallel over files and chunks of intervals (the values
+    are those of annotation.bigwig_interval_signal on all intervals at once)."""
+    tasks = [(p, i, min(i + chunk, len(starts))) for p in paths for i in range(0, len(starts), chunk)]
+    parts = _pool_map(_bigwig_chunk, tasks, threads, dict(chroms=chroms, starts=starts, ends=ends))
+    signals = {p: [] for p in paths}
+    for (p, _, _), values in zip(tasks, parts):
+        signals[p].append(values)
+    return {p: np.concatenate(v) if v else np.zeros(0) for p, v in signals.items()}
+
+
+def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0, threads=1):
     """Linear-proximity control of the k-hop features (direct, indirect, hop3, ...).
 
     Every node m at k hops of a source s is replaced by the interval at the same
     distance on the opposite side of s (mirrored around the midpoint of s),
     keeping the contact (path-product) weights. The mark signal of the mirrored intervals is
-    read from the bigWig files, so the control has the genomic distance profile
-    of the real neighbourhood without its 3D topology.
+    read from the bigWig files (in parallel over `threads` processes), so the control has the genomic distance
+    profile of the real neighbourhood without its 3D topology.
     """
-    from .annotation import bigwig_interval_signal
     src_nodes = operators.sources
     node_start = np.array([graph.nodes[n]['start'] for n in operators.nodes], dtype=np.int64)
     node_end = np.array([graph.nodes[n]['end'] for n in operators.nodes], dtype=np.int64)
@@ -331,11 +379,11 @@ def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0):
         chroms = list(source_chrom[rows])
         starts = source_centre[rows] - node_end[cols]
         ends = source_centre[rows] - node_start[cols]
+        paths = list(dict.fromkeys(p for tracks in (tracks_a, tracks_b) for mark in tracks for p in tracks[mark]))
+        read = _interval_signals(paths, chroms, starts, ends, threads) if len(rows) else {}
         for mark in tracks_a:
-            signal_a = np.mean([bigwig_interval_signal(p, chroms, starts, ends) for p in tracks_a[mark]], axis=0) \
-                if len(rows) else np.zeros(0)
-            signal_b = np.mean([bigwig_interval_signal(p, chroms, starts, ends) for p in tracks_b[mark]], axis=0) \
-                if len(rows) else np.zeros(0)
+            signal_a = np.mean([read[p] for p in tracks_a[mark]], axis=0) if len(rows) else np.zeros(0)
+            signal_b = np.mean([read[p] for p in tracks_b[mark]], axis=0) if len(rows) else np.zeros(0)
             activity_a = np.bincount(rows, weights=weight_a * signal_a, minlength=len(src_nodes))
             activity_b = np.bincount(rows, weights=weight_b * signal_b, minlength=len(src_nodes))
             columns['{}_{}_mirror'.format(mark, level)] = np.log2((activity_b + pseudo_count) /
@@ -534,8 +582,13 @@ def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_thr
     de['explaining_marks'] = explaining_marks
     de['explaining_hops'] = pd.array([None if e == 'unexplained' else level_hops(e) for e in explanation],
                                      dtype='Int64')
-    de['n_hop_nodes_tested'] = pd.array([None if e == 'unexplained' else _level_size(r, e)
-                                         for e, (_, r) in zip(explanation, de.iterrows())], dtype='Int64')
+    sizes = np.full(len(de), np.nan)
+    sizes[explanation == 'promoter'] = 1
+    for level in levels[1:]:
+        if 'n_' + level in de:
+            hit = explanation == level
+            sizes[hit] = de['n_' + level].to_numpy(dtype=float)[hit]
+    de['n_hop_nodes_tested'] = pd.array([None if np.isnan(v) else int(v) for v in sizes], dtype='Int64')
     if proximity is not None:
         de['proximity_support'], de['proximity_support_ci'] = proximity_columns(de['explaining_hops'], proximity)
     return de
@@ -707,8 +760,50 @@ def permutation_test(graph, marks, expression_change, mark_signs, n_permutations
     return result
 
 
+PERMUTATION_BLOCK = 1000
+BLOCK_MEMORY = 256e6   # bytes of permuted mark values (and their node indices) per worker
+
+
+def _hop_statistics(state, index):
+    """Statistic of every tested gene and level for the permuted signals given by `index` (used nodes x
+    permutations: the node whose signal each used node carries). One sparse-dense product per mark and level."""
+    best = {level: np.full((len(test['rows']), index.shape[1]), -np.inf) for level, test in state['tests'].items()}
+    for mark in state['marks']:
+        vector_a, vector_b = state['vectors'][mark]
+        values_a = vector_a[index]
+        values_b = vector_b[index]
+        sign = state['signs'].get(mark, 1)
+        for level, test in state['tests'].items():
+            change = np.log2((test['H_b'] @ values_b + state['pseudo_count']) /
+                             (test['H_a'] @ values_a + state['pseudo_count']))
+            np.maximum(best[level], change * (sign * test['direction'])[:, None], out=best[level])
+    return best
+
+
+def _hop_block(block):
+    """Exceedance counts of one block of permutations, drawn from its own generator (seed, block)."""
+    state = _SHARED
+    start = block * PERMUTATION_BLOCK
+    size = min(PERMUTATION_BLOCK, state['n_permutations'] - start)
+    rng = np.random.default_rng(np.random.SeedSequence([state['seed'], block]))
+    others, used, position = state['others'], state['used'], state['position']
+    in_others = position >= 0
+    exceed = {level: np.zeros(len(test['rows'])) for level, test in state['tests'].items()}
+    chunk = state['chunk']
+    for offset in range(0, size, chunk):
+        width = min(chunk, size - offset)
+        index = np.repeat(used[:, None], width, axis=1)
+        for j in range(width):
+            donors = others[rng.permutation(len(others))]
+            index[in_others, j] = donors[position[in_others]]
+        best = _hop_statistics(state, index)
+        for level in exceed:
+            exceed[level] += (best[level] >= state['observed'][level][:, None]).sum(axis=1)
+    return exceed
+
+
 def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
-                        n_permutations=1000, seed=0, pseudo_count=1.0, genes=None):
+                        n_permutations=1000, seed=0, pseudo_count=1.0, genes=None, threads=1):
     """Per-gene permutation test of the levels at k >= 2 hops for differential genes.
 
     `genes` maps a level name (indirect, hop3, ...) to the nodes tested at that level (None: every differential
@@ -721,6 +816,11 @@ def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rn
     computed over the same nodes and path weights, so the P-value accounts for the number of nodes tested. BH
     q-values are computed across the genes tested at each level. Returns {level: DataFrame with node,
     <level>_statistic, <level>_p, <level>_q}.
+
+    The permutations come in blocks of PERMUTATION_BLOCK; block b draws from
+    np.random.default_rng(np.random.SeedSequence([seed, b])), so the result does not depend on `threads` (worker
+    processes over blocks). Within a block the permuted signals form a matrix (nodes x permutations) and every mark
+    and level takes one sparse-dense product.
     """
     if genes is None:
         genes = {'indirect': None}
@@ -731,49 +831,44 @@ def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rn
         subset = de if nodes is None else de[de['node'].isin(set(nodes))]
         rows = np.array([row_of[n] for n in subset['node']], dtype=np.int64)
         H_a, H_b, n_level = operators.level(level)
-        tests[level] = dict(nodes=subset['node'].to_numpy(), rows=rows,
-                            direction=np.sign(subset['rna_log2FC'].to_numpy()), H_a=H_a[rows], H_b=H_b[rows],
+        tests[level] = dict(nodes=subset['node'].to_numpy(), rows=rows, H_a=H_a[rows].tocsr(),
+                            H_b=H_b[rows].tocsr(), direction=np.sign(subset['rna_log2FC'].to_numpy()),
                             n=n_level[rows])
-
-    def statistic(vectors, test):
-        best = np.full(len(test['rows']), -np.inf)
-        for mark in marks:
-            vector_a, vector_b = vectors[mark]
-            change = np.log2((test['H_b'] @ vector_b + pseudo_count) / (test['H_a'] @ vector_a + pseudo_count))
-            best = np.maximum(best, change * mark_signs.get(mark, 1) * test['direction'])
-        return best
-
-    observed = {level: statistic(mark_vectors, test) for level, test in tests.items()}
-    rng = np.random.default_rng(seed)
+    # nodes with a weight for any tested gene; the operators are restricted to them
+    used = np.unique(np.concatenate([np.concatenate([t['H_a'].indices, t['H_b'].indices]) for t in tests.values()]
+                                    + [np.zeros(0, dtype=np.int64)])).astype(np.int64)
+    for test in tests.values():
+        test['H_a'] = test['H_a'][:, used].tocsr()
+        test['H_b'] = test['H_b'][:, used].tocsr()
     is_source = np.zeros(len(operators.nodes), dtype=bool)
     is_source[operators.source_index] = True
     others = np.nonzero(~is_source)[0]
+    position = np.full(len(operators.nodes), -1, dtype=np.int64)
+    position[others] = np.arange(len(others))
+    state = dict(tests=tests, marks=list(marks), signs=mark_signs, vectors=mark_vectors, pseudo_count=pseudo_count,
+                 used=used, position=position[used], others=others, seed=seed, n_permutations=n_permutations)
+    observed = _hop_statistics(state, used[:, None])
+    state['observed'] = {level: values[:, 0] for level, values in observed.items()}
+    # index plus two value matrices of used nodes x permutations per chunk
+    state['chunk'] = int(max(1, min(PERMUTATION_BLOCK, BLOCK_MEMORY // (24 * max(1, len(used))))))
+    blocks = range((n_permutations + PERMUTATION_BLOCK - 1) // PERMUTATION_BLOCK)
     exceed = {level: np.zeros(len(test['rows'])) for level, test in tests.items()}
-    active = [level for level, test in tests.items() if len(test['rows'])]
-    for _ in range(n_permutations):
-        donors = others[rng.permutation(len(others))]
-        if not active:
-            continue
-        permuted = {}
-        for mark, (vector_a, vector_b) in mark_vectors.items():
-            new_a, new_b = vector_a.copy(), vector_b.copy()
-            new_a[others] = vector_a[donors]
-            new_b[others] = vector_b[donors]
-            permuted[mark] = (new_a, new_b)
-        for level in active:
-            exceed[level] += statistic(permuted, tests[level]) >= observed[level]
+    if any(len(test['rows']) for test in tests.values()):
+        for counts in _pool_map(_hop_block, blocks, threads, state):
+            for level in exceed:
+                exceed[level] += counts[level]
     result = {}
     for level, test in tests.items():
         pvalues = (exceed[level] + 1) / (n_permutations + 1)
         # genes without nodes at this distance carry no information on the level
         pvalues[test['n'] == 0] = 1.0
-        result[level] = pd.DataFrame({'node': test['nodes'], level + '_statistic': observed[level],
+        result[level] = pd.DataFrame({'node': test['nodes'], level + '_statistic': state['observed'][level],
                                       level + '_p': pvalues, level + '_q': _benjamini_hochberg(pvalues)})
     return result
 
 
 def gene_level_indirect_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold=1.0,
-                             n_permutations=1000, seed=0, pseudo_count=1.0):
+                             n_permutations=1000, seed=0, pseudo_count=1.0, threads=1):
     """Per-gene test of the indirect (2-hop) level for every differential gene (gene_level_hop_test).
 
     The statistic of a gene is the largest concordant indirect change over the marks,
@@ -782,7 +877,7 @@ def gene_level_indirect_test(operators, mark_vectors, features, marks, mark_sign
     changes but breaks which nodes carry them. Returns node, statistic, empirical p-value and BH q-value.
     """
     return gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rna_threshold, n_permutations,
-                               seed, pseudo_count, genes={'indirect': None})['indirect']
+                               seed, pseudo_count, genes={'indirect': None}, threads=threads)['indirect']
 
 
 def _benjamini_hochberg(pvalues):
@@ -924,17 +1019,45 @@ def gene_community_changes(communities_a, communities_b, transitions, node_genes
     return table, test
 
 
+def _sample_without_replacement(rng, n, k, rows):
+    """`rows` x `k` indices into range(n), each row without repeats: rows with a repeat are drawn again (vectorised
+    rejection); for k > n / 4 the k smallest of n random keys per row."""
+    if k > n / 4:
+        return np.argpartition(rng.random((rows, n)), k - 1, axis=1)[:, :k]
+    index = rng.integers(0, n, (rows, k))
+    while True:
+        ordered = np.sort(index, axis=1)
+        repeat = (ordered[:, 1:] == ordered[:, :-1]).any(axis=1)
+        if not repeat.any():
+            return index
+        index[repeat] = rng.integers(0, n, (int(repeat.sum()), k))
+
+
+def _community_null(k):
+    """Mean expression change of n_permutations random gene sets of size k, from generator (seed, k)."""
+    state = _SHARED
+    values, n_permutations = state['values'], state['n_permutations']
+    rng = np.random.default_rng(np.random.SeedSequence([state['seed'], k]))
+    rows = max(1, int(32e6 // (8 * (len(values) if k > len(values) / 4 else k))))
+    means = []
+    for start in range(0, n_permutations, rows):
+        index = _sample_without_replacement(rng, len(values), k, min(rows, n_permutations - start))
+        means.append(values[index].mean(axis=1))
+    return np.concatenate(means) if means else np.zeros(0)
+
+
 def community_expression_changes(communities_a, communities_b, main, transitions, edges, expression, min_genes=3,
-                                 n_permutations=1000, seed=0):
+                                 n_permutations=1000, seed=0, threads=1):
     """Per community of A and its main B community: contact rewiring and coordinated expression change.
 
     Rewiring counts the union-graph edges inside the pair (both ends in the A community or both in its main B
     community) by status. The expression change of a community is the mean RNA log2FC of its bait genes (A and B
     members); its coherence is tested against random sets of the same number of genes drawn from all genes with an
     expression change (two-sided, empirical p, BH q). Communities with fewer than `min_genes` genes are skipped; A
-    communities that continue in the same B community are tested once (column communities_a lists them).
+    communities that continue in the same B community are tested once (column communities_a lists them). The null of
+    each gene-set size k is drawn from its own generator (seed, k), so sizes are computed in parallel over `threads`
+    processes with a result independent of their number.
     """
-    rng = np.random.default_rng(seed)
     values = np.array(list(expression.values()), dtype=float)
     of_a = {n: i for i, members in enumerate(communities_a) for n in members}
     of_b = {n: i for i, members in enumerate(communities_b) for n in members}
@@ -953,21 +1076,22 @@ def community_expression_changes(communities_a, communities_b, main, transitions
     transition_of = dict(zip(transitions.loc[transitions['side'] == 'A', 'community_a'],
                              transitions.loc[transitions['side'] == 'A', 'transition']))
     rows = []
-    null_cache = {}
+    selected = []
     for index_a, members_a in enumerate(communities_a):
         index_b = main.get(index_a, -1)
         members_b = communities_b[index_b] if index_b >= 0 else set()
-        nodes = members_a | members_b
-        genes = [n for n in nodes if n in expression]
-        if len(genes) < min_genes:
-            continue
+        genes = sorted(n for n in members_a | members_b if n in expression)
+        if len(genes) >= min_genes:
+            selected.append((index_a, index_b, genes))
+    sizes = sorted({len(genes) for _, _, genes in selected})
+    nulls = dict(zip(sizes, _pool_map(_community_null, sizes, threads,
+                                      dict(values=values, n_permutations=n_permutations, seed=seed))))
+    for index_a, index_b, genes in selected:
         counts = edge_counts[index_a]
         total = sum(counts.values())
         mean_change = float(np.mean([expression[n] for n in genes]))
         k = len(genes)
-        if k not in null_cache:
-            null_cache[k] = np.array([rng.choice(values, k, replace=False).mean() for _ in range(n_permutations)])
-        null = null_cache[k]
+        null = nulls[k]
         p = (np.sum(np.abs(null) >= abs(mean_change)) + 1) / (n_permutations + 1)
         rows.append({'community_a': index_a, 'community_b': index_b, 'transition': transition_of.get(index_a, ''),
                      'n_genes': k, 'edges_shared': counts['shared'], 'edges_lost': counts['lost'],

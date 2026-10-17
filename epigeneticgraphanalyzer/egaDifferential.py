@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 
 import numpy as np
 import pandas as pd
@@ -14,7 +15,7 @@ from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochbe
                            gene_features, community_expression_changes, community_transitions,
                            gene_community_changes, gene_level_hop_test, indirect_only_genes, level_name,
                            match_communities, mirror_comparison, mirrored_features, nested_models, permutation_test,
-                           read_proximity_support, union_graph)
+                           default_threads, read_proximity_support, union_graph)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -85,6 +86,10 @@ def parse_arguments(args=None):
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
     parser.add_argument('--resolution', type=float, default=1.0, help='Community resolution parameter')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--threads', type=int, default=default_threads(),
+                        help='Worker processes for the bigWig reads of the mirrored loci, the per-gene permutation '
+                             'test and the community coherence test (default: the available cores, at most 32); '
+                             'results do not depend on it')
     parser.add_argument('--outputPrefix', '-o', required=True)
     return parser.parse_args(args)
 
@@ -175,7 +180,9 @@ def main(args=None):
              {level: float(np.median(operators.level(level)[2])) for level in operators.levels})
     mark_vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
     features = gene_features(graph, marks, change, operators=operators, mark_vectors=mark_vectors)
-    mirror = mirrored_features(graph, operators, tracks_a, tracks_b)
+    started = time.time()
+    mirror = mirrored_features(graph, operators, tracks_a, tracks_b, threads=args.threads)
+    log.info('mirrored loci: %.0f s with %d threads', time.time() - started, args.threads)
     features = features.join(mirror, on='node')
     write_table(features, prefix + '_gene_features.tsv')
     # genes with direct and indirect neighbours carry information on the promoter, direct and indirect levels (the
@@ -204,8 +211,10 @@ def main(args=None):
         levels = {'indirect': None}
         for k in range(3, args.maxHops + 1):
             levels[level_name(k)] = classes.loc[classes['explanation'] == level_name(k), 'node'].tolist()
+        started = time.time()
         tests = gene_level_hop_test(operators, mark_vectors, tested, list(marks), mark_signs, args.rnaThreshold,
-                                    args.genePermutations, args.seed, genes=levels)
+                                    args.genePermutations, args.seed, genes=levels, threads=args.threads)
+        log.info('per-gene test (%s): %.0f s with %d threads', ', '.join(levels), time.time() - started, args.threads)
         gene_test = tests['indirect']
         write_table(gene_test, prefix + '_indirect_gene_test.tsv')
         for level, test in tests.items():
@@ -253,7 +262,8 @@ def main(args=None):
                                                        expression=change, differential=de_nodes)
     write_table(gene_changes, prefix + '_gene_community_changes.tsv')
     community_changes = community_expression_changes(communities_a, communities_b, main_b, transitions, edges, change,
-                                                     n_permutations=args.communityPermutations, seed=args.seed)
+                                                     n_permutations=args.communityPermutations, seed=args.seed,
+                                                     threads=args.threads)
     write_table(community_changes, prefix + '_community_expression.tsv')
     summary = {'transitions': transitions['transition'].value_counts().to_dict(),
                'gene_status': gene_changes['status'].value_counts().to_dict() if len(gene_changes) else {},

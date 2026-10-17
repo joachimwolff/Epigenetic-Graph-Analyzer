@@ -189,3 +189,74 @@ def test_mirror_comparison_levels():
     assert result['gain_hop3_graph'] > 0.5 and result['hop3_ci_low'] > 0
     assert set(k for k in result if k.startswith('r2_')) == {
         'r2_promoter', 'r2_promoter_direct', 'r2_promoter_direct_indirect', 'r2_promoter_direct_indirect_hop3'}
+
+
+def test_parallel_blocks_and_vectorised_statistic(monkeypatch):
+    from epigeneticgraphanalyzer import differential
+    graph, marks, change, units = chain_design(n_units=30, n_planted=20)
+    operators = ActivityOperators(graph, list(change), max_hops=3)
+    vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
+    features = gene_features(graph, marks, change, operators=operators, mark_vectors=vectors)
+    signs = {'H3K27ac': 1}
+    levels = {'indirect': None, 'hop3': list(features['node'][:12])}
+    # 2,500 permutations = three blocks; the result does not depend on the number of worker processes
+    one = gene_level_hop_test(operators, vectors, features, ['H3K27ac'], signs, rna_threshold=0.5,
+                              n_permutations=2500, seed=3, genes=levels, threads=1)
+    four = gene_level_hop_test(operators, vectors, features, ['H3K27ac'], signs, rna_threshold=0.5,
+                               n_permutations=2500, seed=3, genes=levels, threads=4)
+    for level in levels:
+        pd.testing.assert_frame_equal(one[level], four[level])
+    # nor on the chunk size within a block
+    monkeypatch.setattr(differential, 'BLOCK_MEMORY', 24 * 200 * 7)
+    small = gene_level_hop_test(operators, vectors, features, ['H3K27ac'], signs, rna_threshold=0.5,
+                                n_permutations=2500, seed=3, genes=levels, threads=2)
+    for level in levels:
+        pd.testing.assert_frame_equal(one[level], small[level])
+    # the vectorised statistic equals the per-permutation loop over the same permutations (block 0)
+    n = 300
+    result = gene_level_hop_test(operators, vectors, features, ['H3K27ac'], signs, rna_threshold=0.5,
+                                 n_permutations=n, seed=5, genes={'hop3': None})['hop3']
+    de = features[features['rna_log2FC'].abs() >= 0.5]
+    rows = np.array([operators.sources.index(x) for x in de['node']])
+    direction = np.sign(de['rna_log2FC'].to_numpy())
+    H_a, H_b = operators.hop_a[3][rows], operators.hop_b[3][rows]
+    vector_a, vector_b = vectors['H3K27ac']
+
+    def statistic(a, b):
+        return np.log2((H_b @ b + 1.0) / (H_a @ a + 1.0)) * direction
+
+    observed = statistic(vector_a, vector_b)
+    assert np.allclose(result['hop3_statistic'], observed, rtol=0, atol=1e-12)
+    is_source = np.zeros(len(operators.nodes), dtype=bool)
+    is_source[operators.source_index] = True
+    others = np.nonzero(~is_source)[0]
+    rng = np.random.default_rng(np.random.SeedSequence([5, 0]))
+    exceed = np.zeros(len(rows))
+    for _ in range(n):
+        donors = others[rng.permutation(len(others))]
+        a, b = vector_a.copy(), vector_b.copy()
+        a[others], b[others] = vector_a[donors], vector_b[donors]
+        exceed += statistic(a, b) >= observed
+    assert np.array_equal(result['hop3_p'].to_numpy(), (exceed + 1) / (n + 1))
+
+
+def test_community_null_threads_and_sampling():
+    from epigeneticgraphanalyzer.differential import _sample_without_replacement, community_expression_changes
+    rng = np.random.default_rng(0)
+    for k in (3, 30, 90):
+        index = _sample_without_replacement(rng, 100, k, 500)
+        assert index.shape == (500, k) and index.min() >= 0 and index.max() < 100
+        assert all(len(set(r)) == k for r in index)
+    nodes = ['n{}'.format(i) for i in range(400)]
+    expression = dict(zip(nodes, np.random.default_rng(1).normal(0, 1, 400)))
+    communities_a = [set(nodes[i:i + s]) for i, s in ((0, 5), (10, 12), (40, 30), (100, 7))]
+    communities_b = [set(c) for c in communities_a]
+    transitions = pd.DataFrame({'side': ['A'] * 4, 'community_a': [0, 1, 2, 3], 'transition': ['stable'] * 4})
+    edges = pd.DataFrame({'node_a': [], 'node_b': [], 'status': []})
+    main = {i: i for i in range(4)}
+    one = community_expression_changes(communities_a, communities_b, main, transitions, edges, expression,
+                                       n_permutations=3000, threads=1)
+    four = community_expression_changes(communities_a, communities_b, main, transitions, edges, expression,
+                                        n_permutations=3000, threads=4)
+    pd.testing.assert_frame_equal(one, four)
+    assert len(one) == 4 and one['coherence_p'].between(1 / 3001, 1).all()
