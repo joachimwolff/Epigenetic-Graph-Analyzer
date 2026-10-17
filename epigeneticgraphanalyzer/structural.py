@@ -212,10 +212,10 @@ def read_structural_variants(items, names, min_pairs=50, min_obs_exp=20.0):
     return svs
 
 
-def sv_status(svs, names, threshold=1.0):
+def sv_status(svs, names, threshold=1.0, min_pairs=10):
     """Change of every join from A to B: ('gained', +1), ('lost', -1), ('stronger in B', +1), ('weaker in B', -1),
     ('present in both', 0), ('similar support in both', 0: called in one condition only with a support change below
-    `threshold`) or ('absent', 0), with the log2 change of the support (obs/exp + 1, else pairs + 1; NaN without
+    `threshold`, both conditions with at least `min_pairs` read pairs when pairs are given) or ('absent', 0), with the log2 change of the support (obs/exp + 1, else pairs + 1; NaN without
     values in both)."""
     a, b = names
     out = []
@@ -227,7 +227,10 @@ def sv_status(svs, names, threshold=1.0):
             if not pd.isna(va) and not pd.isna(vb):
                 change = float(np.log2((vb + 1.0) / (va + 1.0)))
                 break
-        if pa != pb and not pd.isna(change) and abs(change) < threshold:
+        weak = [r.get('pairs_' + c, np.nan) for c in (a, b)]
+        # the support of the condition without the call rests on at least `min_pairs` pairs
+        enough = all(pd.isna(v) or v >= min_pairs for v in weak)
+        if pa != pb and not pd.isna(change) and abs(change) < threshold and enough:
             # called in one condition only, by the calling thresholds, with a similar support in both
             out.append(('similar support in both', 0, change))
         elif pa and not pb:
@@ -352,7 +355,7 @@ def _support_text(r, names):
 
 def structural_genes(graph, change, svs, names, window=1000000, elements=None, marks=None, contacts=None,
                      copy_number=None, differential=None, sv_threshold=1.0, cn_threshold=0.5, element_column=None,
-                     pseudo_count=1.0, called=None, min_junction_pairs=10):
+                     pseudo_count=1.0, called=None, min_junction_pairs=10, tss=None):
     """Genes whose promoter fragment lies within `window` of a breakend, and the copy number at every promoter.
 
     `change`: node -> RNA log2 B/A of the bait nodes; `svs` of read_structural_variants; `elements` the element
@@ -364,6 +367,8 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
     An enhancer-hijacking candidate has the join present in a condition, an active element on the partner side in
     that condition and contacts of the promoter across the junction there: at least `min_junction_pairs` read pairs
     (with `contacts`) or at least one called interaction (with `called`); without either, the first two suffice.
+    Partner genes: with `tss` (chrom, tss, gene_name of the annotation) the genes with a transcription start site
+    within the window of the partner breakend, nearest first; otherwise the genes of the graph nodes there.
 
     Returns (genes, levels): genes is one row per gene and nearby join (every bait with an expression value, also
     non-differential: sv_genes.tsv); levels is indexed by node with sv_explains, sv_result, sv_detail, sv_by,
@@ -405,7 +410,12 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
                     row['pairs_' + c] = r.get('pairs_' + c, np.nan)
                     row['obs_exp_' + c] = r.get('obs_exp_' + c, np.nan)
                 row['partner_nodes'] = len(partner)
-                genes = [g for g in partner['genes'] if g]
+                if tss is not None:
+                    near_tss = tss[(tss['chrom'] == partner_chrom) & ((tss['tss'] - partner_pos).abs() <= window)]
+                    near_tss = near_tss.assign(d=(near_tss['tss'] - partner_pos).abs()).sort_values('d')
+                    genes = [str(g) for g in near_tss['gene_name'] if isinstance(g, str) and g]
+                else:
+                    genes = [g for g in partner['genes'] if g]
                 names_near = []
                 for g in genes:
                     for x in g.split(','):

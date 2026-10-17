@@ -2,7 +2,7 @@
 (egaDifferential --structuralVariants / --svContacts / --copyNumber, analysis/22_structural_variants.sh).
 
 Part A: per comparison the strongest joins detected in the capture Hi-C read pairs (capture_sv_calls.py; at most
---joins per comparison by the largest observed / expected of a 1 Mb bin pair), with the breakends (100 kb bins), read
+ten per comparison by read pairs, after the t(8;21)), with the breakends (100 kb bins), read
 pairs and observed / expected per condition and the change between the conditions. Part B: the levels per
 comparison: genes with the promoter within the window of a breakend (all, differential, enhancer-hijacking
 candidates) and the differential genes explained by the structural variant and copy number levels (any level and
@@ -57,7 +57,7 @@ def part_a(directory, top):
         joins = read(directory, comparison, '_sv_breakpoints.tsv')
         if joins is None:
             continue
-        joins = joins.assign(score=joins[['obs_exp_' + a, 'obs_exp_' + b]].max(axis=1))
+        joins = joins.assign(score=joins[['pairs_' + a, 'pairs_' + b]].max(axis=1))
         focus = joins[joins['name'] == 't(8;21)']
         show = pd.concat([focus, joins.sort_values('score', ascending=False)]).drop_duplicates('sv_id').head(top)
         if rows:
@@ -77,7 +77,7 @@ def part_a(directory, top):
                'B: siMM / siRE (Kasumi-1, two libraries each) and t(8;21) / FLT3-ITD (first 30\\,M read pairs of one '
                'library per patient). Change: gained / lost (called in one condition, support changing at least '
                'twofold), present in both, similar support in both (called in one condition by the thresholds '
-               'only). The t(8;21) first, then the strongest joins by O/E.')
+               'only). The t(8;21) first, then the joins with most read pairs.')
     return longtable('llllrrrrl', header, rows, caption, 'tab:s32')
 
 

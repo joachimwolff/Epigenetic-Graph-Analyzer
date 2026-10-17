@@ -2115,7 +2115,9 @@ class GeneStory:
             value = extra.get('copy_number_log2', np.nan)
             if not isnan(va) and not isnan(vb):
                 verdict = 'in line with the expression change' if cn['explains'] else \
-                    'against the expression change' if cn.get('result') == 'discordant' else 'a small change'
+                    'against the expression change' if cn.get('result') == 'discordant' else \
+                    ('practically unchanged' if not isnan(value) and abs(value) < 0.1 else
+                     'a change below the threshold')
                 out.append('The relative copy number of the promoter region is {} in {} and {} in {} (log2 {}), '
                            '{}.'.format(sig(va, 2), esc(a), sig(vb, 2), esc(b), fmt_log2(value), verdict))
         return out

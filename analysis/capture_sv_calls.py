@@ -10,8 +10,9 @@ at least --minIntra bp apart on one chromosome. Per condition (the libraries of 
                  same distance, scaled by the coverages of the two bins. A bin pair with at least --minPairs pairs and
                  an observed / expected of at least --minObsExp in a condition is a candidate; candidates of all
                  conditions within 2 Mb of each other on both sides form one join. Its breakend on each side is the
-                 100 kb bin with the largest share of its inter-chromosomal coverage in pairs with the other side of
-                 the join (pooled over the conditions, so that the enrichment of baited bins cancels). The join is present in a condition when its
+                 100 kb bin (within 2 Mb of the strongest 1 Mb bin pair) with the largest share of its
+                 inter-chromosomal coverage in pairs with the 1 Mb around the other breakend (so that the enrichment
+                 of baited bins cancels; conditions in which the join is present; one refinement). The join is present in a condition when its
                  strongest 1 Mb bin pair passes both thresholds there.
   contacts       for every baited fragment within --window of a breakend: the pairs to the 100 kb bins within
                  --window of the partner breakend, per condition (the promoter's own contacts across the junction).
@@ -257,12 +258,20 @@ def main(args=None):
     fine_index = {name: (fine.index(p[:, 0], p[:, 1]), fine.index(p[:, 2], p[:, 3])) for name, p in pooled.items()}
     coarse_index = {name: coarse.index(p[:, 0], p[:, 1]) * coarse.total + coarse.index(p[:, 2], p[:, 3])
                     for name, p in pooled.items()}
-    # inter-chromosomal coverage of every 100 kb bin, pooled over the conditions
-    fine_coverage = np.zeros(fine.total)
+    # inter-chromosomal coverage of every 100 kb bin per condition
+    fine_coverage = {}
     for name, p in pooled.items():
         trans = p[:, 0] != p[:, 2]
         fi, fj = fine_index[name]
-        fine_coverage += np.bincount(fi[trans], minlength=fine.total) + np.bincount(fj[trans], minlength=fine.total)
+        fine_coverage[name] = np.bincount(fi[trans], minlength=fine.total) + \
+            np.bincount(fj[trans], minlength=fine.total)
+    # pairs grouped by chromosome pair (ends are ordered, chromosome of end 1 <= chromosome of end 2)
+    groups = {}
+    for name, pairs in pooled.items():
+        key = pairs[:, 0] * len(CHROMS) + pairs[:, 2]
+        order = np.argsort(key, kind='stable')
+        bounds = np.searchsorted(key[order], np.arange(len(CHROMS) ** 2 + 1))
+        groups[name] = (order, bounds)
     joins = []
     for (c1, c2), keys in sorted(by_pair.items()):
         for group in cluster(keys):
@@ -285,20 +294,43 @@ def main(args=None):
                                                       (part['obs_exp'].fillna(0) >= args.minObsExp)).any())))
                 peak_score[name] = float(best.max()) if len(best) else 0.0
             # breakpoint: on each side the 100 kb bin with the largest share of its inter-chromosomal coverage in
-            # pairs with the other side of the join (pooled over the conditions; the capture enrichment of baited
-            # bins cancels), bins with at least 5 such pairs
-            members = np.array([i * coarse.total + j for i, j in group], dtype=np.int64)
-            side1 = np.zeros(fine.total)
-            side2 = np.zeros(fine.total)
-            for name in pooled:
-                fi, fj = fine_index[name]
-                inside = np.isin(coarse_index[name], members)
-                side1 += np.bincount(fi[inside], minlength=fine.total)
-                side2 += np.bincount(fj[inside], minlength=fine.total)
-            ends = []
-            for side in (side1, side2):
-                ratio = np.where((side >= 5) & (fine_coverage > 0), side / np.maximum(fine_coverage, 1), -1.0)
-                ends.append(int(np.argmax(ratio)) if ratio.max() > 0 else int(np.argmax(side)))
+            # pairs with the other side (the capture enrichment of baited bins cancels; bins with at least 5 such
+            # pairs), in the conditions where the join is present (all when present in none). The other side is
+            # first the window of 1 Mb around the strongest 1 Mb bin pair of the join (largest observed / expected
+            # among those with at least --minPairs pairs), then 1 Mb around the breakend found there (one refinement)
+            used = [n for n in pooled if record[n]['present']] or list(pooled)
+            best, best_key = -1.0, group[0]
+            for name in used:
+                part = tables[name].reindex(group)
+                ok = part['pairs'].fillna(0) >= args.minPairs
+                if ok.any():
+                    k = int(np.argmax(np.where(ok, part['obs_exp'].fillna(0), -1)))
+                    if part['obs_exp'].iloc[k] > best:
+                        best, best_key = float(part['obs_exp'].iloc[k]), group[k]
+            positions = {}
+            for name in used:
+                pairs = pooled[name]
+                order, bounds = groups[name]
+                k = c1 * len(CHROMS) + c2
+                sub = pairs[order[bounds[k]:bounds[k + 1]]]
+                positions[name] = np.ones(len(sub), dtype=bool), sub[:, 1], sub[:, 3]
+            coverage = sum(fine_coverage[n] for n in used)
+            centre = [coarse.start_of[best_key[0]] + BIN // 2, coarse.start_of[best_key[1]] + BIN // 2]
+            for _ in range(2):
+                ends = []
+                for side in (0, 1):
+                    counts = np.zeros(fine.total)
+                    for name in used:
+                        on_pair, pos1, pos2 = positions[name]
+                        own, other = (pos1, pos2) if side == 0 else (pos2, pos1)
+                        chrom = c1 if side == 0 else c2
+                        sel = on_pair & (np.abs(other - centre[1 - side]) <= BIN) & \
+                            (np.abs(own - centre[side]) <= 2 * BIN)
+                        counts += np.bincount(fine.index(np.full(int(sel.sum()), chrom), own[sel]),
+                                              minlength=fine.total)
+                    ratio = np.where((counts >= 5) & (coverage > 0), counts / np.maximum(coverage, 1), -1.0)
+                    ends.append(int(np.argmax(ratio)) if ratio.max() > 0 else int(np.argmax(counts)))
+                centre = [int(fine.start_of[ends[0]]) + FINE // 2, int(fine.start_of[ends[1]]) + FINE // 2]
             bx, by = ends
             start1, start2 = int(fine.start_of[bx]), int(fine.start_of[by])
             kind = 'inter' if c1 != c2 else 'intra'
@@ -329,13 +361,6 @@ def main(args=None):
     # contacts of the baits near every breakend with the partner side
     contact_rows = []
     window = args.window
-    # pairs grouped by chromosome pair (ends are ordered, chromosome of end 1 <= chromosome of end 2)
-    groups = {}
-    for name, pairs in pooled.items():
-        key = pairs[:, 0] * len(CHROMS) + pairs[:, 2]
-        order = np.argsort(key, kind='stable')
-        bounds = np.searchsorted(key[order], np.arange(len(CHROMS) ** 2 + 1))
-        groups[name] = (order, bounds)
     for _, call in calls.iterrows():
         sides = [(call['chrom1'], call['start1'] + FINE // 2, call['chrom2'], call['start2'] + FINE // 2),
                  (call['chrom2'], call['start2'] + FINE // 2, call['chrom1'], call['start1'] + FINE // 2)]

@@ -419,7 +419,7 @@ def main(args=None):
         sv_genes, structural = structural_genes(
             graph, change, svs, (name_a, name_b), window, elements=elements, marks=marks, contacts=contacts,
             copy_number=copy_number, differential=set(classes['node']), sv_threshold=args.svThreshold,
-            cn_threshold=args.copyNumberThreshold, called=called)
+            cn_threshold=args.copyNumberThreshold, called=called, tss=tss)
         if not args.structuralVariants:
             structural = structural.drop(columns=[c for c in structural if c.startswith('sv_')])
         if args.structuralVariants:
