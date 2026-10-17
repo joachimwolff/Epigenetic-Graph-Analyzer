@@ -55,7 +55,7 @@ from matplotlib.patches import Arc  # noqa: E402
 from ._cli import base_parser, setup_logging  # noqa: E402
 from ._version import __version__  # noqa: E402
 from .egaPlotDifferential import (IGNORED_GENE_PREFIXES, INK, STATUS_COLORS,  # noqa: E402
-                                  draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, mark_change,
+                                  draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, mark_change, separate,
                                   place_labels, shape_handles, spread_layout, status_handles, width_handles)
 from .egaPlotRegion import ordered_subgraph  # noqa: E402
 from .graph import read_graph  # noqa: E402
@@ -69,7 +69,11 @@ MARK_COLORS = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#56B4E9', '#D55E00',
 BAR_COLOR = '#3d6f99'
 EXPLAINING = '#6a3d9a'
 FADED = '#d6d5cf'
+# membership changes of hubs and communities: colour and line style differ (colour-blind safe on the red-blue fill)
+LEFT_COLOR = '#E69F00'
+JOINED_COLOR = '#009E73'
 ROLE_SIGN = {'active': 1, 'enhancer': 1, 'repressive': -1}
+FRAGMENT_COLUMNS = ('fragment', 'promoter fragment', 'node', 'path', 'genes')
 CHROMIUM_CANDIDATES = ('/snap/bin/chromium', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable')
 
 matplotlib.rcParams.update({'svg.fonttype': 'none', 'font.family': 'sans-serif', 'font.sans-serif': FONT_FAMILY,
@@ -760,7 +764,11 @@ class Run:
 
     def level_combinations(self):
         if self.combinations is not None and len(self.combinations):
-            return self.variant_rows(self.combinations), True
+            table = self.variant_rows(self.combinations)
+            if 'combination' in table:
+                table['combination'] = table['combination'].map(
+                    lambda c: ' + '.join(level_short(normalise_level(x)) for x in str(c).split(';')))
+            return table, True
         explains = self.levels[self.levels['explains']]
         combos = explains.groupby('node')['cascade_level'].agg(
             lambda c: ' + '.join(sorted(set(c), key=lambda x: (x != 'gene', level_hops(x)))))
@@ -848,7 +856,8 @@ class Document:
                 value = row[c]
                 text = formats[c](value) if c in formats else ('' if isnan(value) else str(value))
                 text = esc(text) if escape else text
-                cls = 'num' if c in numeric else ('long' if c in long else ('key' if c in nowrap else ''))
+                cls = 'num' if c in numeric else ('long' if c in long else ('key' if c in nowrap else
+                                                                          ('frag' if c in FRAGMENT_COLUMNS else '')))
                 cells.append('<td class="{}">{}</td>'.format(cls, text))
             body.append('<tr>{}</tr>'.format(''.join(cells)))
         self.parts.append('<div class="table-wrap" id="table-{n}"><div class="table-scroll"><table><thead><tr>{h}</tr>'
@@ -1108,8 +1117,8 @@ def neighbourhood_figures(run, sub, seeds, explaining, mark, max_log2):
 def hub_figures(run, sub, positions, members_a, members_b, focus, title_a, title_b, max_log2, members_label='hub',
                 max_labels=18):
     """A hub or community in condition A and condition B side by side on one layout: interactions of each condition
-    (widths by strength), promoters coloured by the expression change, members that left (blue outline) or joined
-    (red outline) between the conditions, members of the other condition only faded."""
+    (widths by strength), promoters coloured by the expression change, members that left (orange dotted outline) or
+    joined (green outline) between the conditions, members of the other condition only faded."""
     names = run.names
     left = members_a - members_b
     joined = members_b - members_a
@@ -1134,15 +1143,15 @@ def hub_figures(run, sub, positions, members_a, members_b, focus, title_a, title
                 face = cmap(norm(np.clip(float(value), -max_log2, max_log2)))
             else:
                 face = '#ffffff'
-            edge, width = INK, 0.5
+            edge, width, style = INK, 0.5, '-'
             if n in left:
-                edge, width = STATUS_COLORS['lost'], 1.8
+                edge, width, style = LEFT_COLOR, 1.9, (0, (1.6, 1.0))
             elif n in joined:
-                edge, width = STATUS_COLORS['gained'], 1.8
+                edge, width = JOINED_COLOR, 1.9
             if n in focus:
-                edge, width = '#000000', 2.0
-            ax.scatter(*positions[n], marker='s' if bait else 'o', s=70 if bait else 16, color=face, edgecolor=edge,
-                       lw=width, alpha=1.0 if inside else 0.35, zorder=3 if bait else 2)
+                edge, width, style = '#000000', 2.0, '-'
+            ax.scatter(*positions[n], marker='s' if bait else 'o', s=48 if bait else 12, color=face, edgecolor=edge,
+                       lw=width, linestyle=style, alpha=1.0 if inside else 0.35, zorder=3 if bait else 2)
             if bait:
                 label = first_gene(data.get('genes', ''))
                 if label and label not in seen and (n in members_a | members_b):
@@ -1170,10 +1179,10 @@ def hub_figures(run, sub, positions, members_a, members_b, focus, title_a, title
                               label='baited promoter'),
                    plt.Line2D([0], [0], marker='o', ls='', color='#ffffff', markeredgecolor=INK, ms=4,
                               label='other end (OE)'),
-                   plt.Line2D([0], [0], marker='s', ls='', color='#ffffff', markeredgecolor=STATUS_COLORS['lost'],
-                              markeredgewidth=1.8, ms=6, label='left the {} in {}'.format(members_label, names[1])),
-                   plt.Line2D([0], [0], marker='s', ls='', color='#ffffff', markeredgecolor=STATUS_COLORS['gained'],
-                              markeredgewidth=1.8, ms=6, label='joined the {} in {}'.format(members_label, names[1])),
+                   ax.scatter([], [], marker='s', s=40, facecolor='#ffffff', edgecolor=LEFT_COLOR, lw=1.9,
+                              linestyle=(0, (1.6, 1.0)), label='left the {} in {}'.format(members_label, names[1])),
+                   ax.scatter([], [], marker='s', s=40, facecolor='#ffffff', edgecolor=JOINED_COLOR, lw=1.9,
+                              label='joined the {} in {}'.format(members_label, names[1])),
                    plt.Line2D([0], [0], marker='s', ls='', color='#ffffff', markeredgecolor='#000000',
                               markeredgewidth=2.0, ms=6, label='gene of the report'),
                    plt.Line2D([0], [0], marker='s', ls='', color='#ffffff', markeredgecolor=INK, alpha=0.35, ms=6,
@@ -1468,15 +1477,15 @@ class Report:
         sub = ordered_subgraph(sub, [n for n in sub.nodes if sub.degree[n] > 0])
         if sub.number_of_edges() == 0:
             return
-        positions = spread_layout(sub, aspect=1.2)
+        positions = separate(spread_layout(sub, aspect=1.2), sub, min_distance=0.06)
         figures = hub_figures(run, sub, positions, (promoters_a | partners_a | set(seeds)) & set(sub.nodes),
                               (promoters_b | partners_b | set(seeds)) & set(sub.nodes), set(seeds),
                               '{}: hub of {}'.format(run.names[0], gene), '{}: hub of {}'.format(run.names[1], gene),
                               self.args.maxLog2)
         doc.figure(figures, 'Hub of {g} in {a} (left) and {b} (right) on one layout: the promoter of {g} (black '
                             'outline), its partners and the other promoters contacting them. Promoters coloured by the '
-                            'expression change {b} / {a}; blue outline: left the hub in {b}; red outline: joined the '
-                            'hub in {b}; faded: present only in the other condition.{r}'.format(
+                            'expression change {b} / {a}; orange dotted outline: left the hub in {b}; green outline: '
+                            'joined the hub in {b}; faded: present only in the other condition.{r}'.format(
                                 g=gene_span(gene), a=esc(run.names[0]), b=esc(run.names[1]),
                                 r=' Reduced to the members named above and their partners.' if
                                 sub.number_of_nodes() >= self.args.maxNodes else ''), cols=2)
@@ -1580,7 +1589,7 @@ class Report:
         if sub.number_of_edges() == 0:
             doc.p('The promoters of the community share no interacting fragment in the union graph.', cls='note')
             return
-        positions = spread_layout(sub, aspect=1.2)
+        positions = separate(spread_layout(sub, aspect=1.2), sub, min_distance=0.06)
         figures = hub_figures(run, sub, positions, (members_a | set(n for n in sub if not sub.nodes[n].get('bait')))
                               & set(sub.nodes), (members_b | set(n for n in sub if not sub.nodes[n].get('bait')))
                               & set(sub.nodes), set(focus),
@@ -1589,9 +1598,9 @@ class Report:
                               self.args.maxLog2, members_label='community')
         doc.figure(figures, 'Community in {a} (left) and its counterpart in {b} (right) on one layout: member promoters '
                             '(squares, coloured by the expression change {b} / {a}) and the other ends shared by at '
-                            'least two of them, with the interactions of each condition. Blue outline: promoters that '
-                            'left the community in {b}; red outline: promoters that joined; faded: member in the other '
-                            'condition only.{r}'.format(
+                            'least two of them, with the interactions of each condition. Orange dotted outline: '
+                            'promoters that left the community in {b}; green outline: promoters that joined; faded: '
+                            'member in the other condition only.{r}'.format(
                                 a=esc(run.names[0]), b=esc(run.names[1]),
                                 r=' Reduced to the named members and their shared other ends.'
                                 if len(baits) > self.args.maxNodes else ''), cols=2)
@@ -1606,9 +1615,12 @@ class Report:
             return None
         r = rows.iloc[0]
 
-        def genes(value):
+        def genes(value, limit=30):
             names = [g for g in str(value).split(',') if g and g != 'nan']
-            return ', '.join(gene_span(g) for g in names) if names else 'none'
+            if not names:
+                return 'none'
+            text = ', '.join(gene_span(g) for g in names[:limit])
+            return text + (' and {} more'.format(len(names) - limit) if len(names) > limit else '')
 
         doc.p('Community of {g}: {s} (community {ca} of {na}, {sa} promoters; community {cb} of {nb}, {sb} promoters; '
               'member Jaccard {j}; transition of the {na} community: {t}). Genes that joined its community in {nb}: '
@@ -1631,7 +1643,8 @@ class Report:
             genes = part['genes'].iloc[0]
             first = run.first_level().get(node, '')
             label = 'promoter fragment <span class="mono">{}</span> ({})'.format(esc(node), esc(genes))
-            doc.html('<p>{}: expression log2 fold change {} / {} {}; first explaining level {}. {} level{} explain{}.'
+            doc.html('<p>{}: expression log2 fold change {} / {} {}; first level of the cascade: {}. {} level{} '
+                     'explain{}.'
                      '</p>'.format(label, esc(run.names[1]), esc(run.names[0]),
                                    fmt_num(part['rna_log2FC'].iloc[0], signed=True), esc(first or 'none'),
                                    int(part['explains'].sum()), '' if int(part['explains'].sum()) == 1 else 's',
