@@ -127,6 +127,7 @@ def transition_rows(values, index, scope, threshold, stable):
 def figure(values, path):
     fig, ax = plt.subplots(figsize=(3.6, 2.4))
     width = 0.36
+    counts = {c: [] for c in ORDER}
     for k, condition in enumerate(CONDITIONS):
         call = calls(values, condition, 2.0)
         data = [np.maximum(values[(condition, 'reChIP')][call == c], 0.05) for c in ORDER]
@@ -136,15 +137,16 @@ def figure(values, path):
                            capprops=dict(color=MUTED, lw=0.6), boxprops=dict(lw=0))
         for box in parts['boxes']:
             box.set_facecolor(COLOURS[condition])
-        for x, d in zip(positions, data):
-            ax.text(x, 0.06, '{:,}'.format(len(d)), ha='center', va='bottom', fontsize=5, color=MUTED, rotation=90)
+        for c, d in zip(ORDER, data):
+            counts[c].append('{:,}'.format(len(d)))
     ax.axhline(2, color=MUTED, lw=0.6, ls='--')
     ax.set_yscale('log')
     ax.set_ylim(0.05, None)
     ax.set_xticks(range(len(ORDER)))
-    ax.set_xticklabels(ORDER, fontsize=7)
+    ax.set_xticklabels(['{}\n{}'.format(c.replace(' only', '\nonly') if ' ' in c else c + '\n', ' / '.join(counts[c]))
+                        for c in ORDER], fontsize=6)
     ax.set_ylabel('re-ChIP fold enrichment', fontsize=7)
-    ax.set_xlabel('EGA call of the promoter fragment (FE $\\geq$ 2)', fontsize=7)
+    ax.set_xlabel('EGA call of the promoter fragment (FE $\\geq$ 2; fragments Md / PA2)', fontsize=7)
     ax.tick_params(axis='y', labelsize=6)
     ax.grid(axis='y', color=GRID, lw=0.4)
     ax.set_axisbelow(True)
