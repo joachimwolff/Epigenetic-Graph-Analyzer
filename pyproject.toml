@@ -45,11 +45,8 @@ egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
 egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
 egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
 egaReport = "epigeneticgraphanalyzer.egaReport:main"
-<<<<<<< HEAD
 egaSwitching = "epigeneticgraphanalyzer.switching:main"
-=======
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
->>>>>>> worktree-agent-a2d5ea22851dc6c38
 
 [tool.setuptools.dynamic]
 version = {attr = "epigeneticgraphanalyzer._version.__version__"}
