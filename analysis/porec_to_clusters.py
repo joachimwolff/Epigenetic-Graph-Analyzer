@@ -9,7 +9,9 @@ chunk of the input sorted by read id, so the input should be sorted or grouped b
 
 Usage: python porec_to_clusters.py <input> <output.txt.gz> --read COL --chrom COL --start COL [--end COL]
                                    [--chrom2 COL --start2 COL [--end2 COL]] [--chain hg38ToHg19.over.chain.gz]
-                                   [--minMapq N --mapq COL] [--sep TAB]
+                                   [--minMapq N --mapq COL] [--keep COL=VALUE] [--sep TAB]
+
+--keep keeps only rows whose column has the given value, e.g. --keep pass_filter=True for pore-c-py tables.
 """
 
 import argparse
@@ -53,6 +55,7 @@ def main():
     parser.add_argument('--mapq')
     parser.add_argument('--minMapq', type=int, default=0)
     parser.add_argument('--chain')
+    parser.add_argument('--keep', help='COL=VALUE: keep only rows with this value in COL')
     parser.add_argument('--sep', default='\t')
     args = parser.parse_args()
     lift = None
@@ -62,7 +65,9 @@ def main():
     ends = [(args.chrom, args.start, args.end)]
     if args.chrom2:
         ends.append((args.chrom2, args.start2, args.end2))
-    columns = [args.read] + [c for end in ends for c in end if c] + ([args.mapq] if args.mapq else [])
+    keep_col, keep_value = args.keep.split('=', 1) if args.keep else (None, None)
+    columns = [args.read] + [c for end in ends for c in end if c] + ([args.mapq] if args.mapq else []) \
+        + ([keep_col] if keep_col else [])
     pending = {}
     reads = written = dropped = 0
 
@@ -79,6 +84,8 @@ def main():
             if args.mapq:
                 # non-numeric values are repeated header lines inside concatenated CSV exports
                 chunk = chunk[pd.to_numeric(chunk[args.mapq], errors='coerce') >= args.minMapq]
+            if keep_col:
+                chunk = chunk[chunk[keep_col].astype(str) == keep_value]
             for chrom_col, start_col, end_col in ends:
                 starts = chunk[start_col].astype('int64')
                 middle = (starts + chunk[end_col].astype('int64')) // 2 if end_col else starts

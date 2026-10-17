@@ -712,12 +712,13 @@ def s22():
 
 
 def s23():
-    runs = [('GM12878 (CHiCAGO)', 'GM12878', 'GM_chicago_hiporec'), ('K562 (DMSO)', 'K562', 'K562_hiporec')]
+    runs = [('GM12878 (CHiCAGO)', 'HiPore-C GM12878', 'GM_chicago_hiporec'),
+            ('GM12878 (CHiCAGO)', 'Pore-C GM12878', 'GM_chicago_porec'), ('K562 (DMSO)', 'HiPore-C K562', 'K562_hiporec')]
     rows = [r'\multicolumn{7}{@{}l}{\textit{By graph distance (95\% confidence interval)}} \\',
             r' & & 1 step & 2 steps & 3 steps & 4 steps & 5 steps \\', r'\midrule']
     for graph, cell, run in runs:
         t = pd.read_csv(path('porec', run + '_hops.tsv'), sep='\t').set_index('steps')
-        rows.append(' & '.join([graph, 'HiPore-C ' + cell] + [
+        rows.append(' & '.join([graph, cell] + [
             '{} ({}--{})'.format(num(t.loc[k, 'concordance']), num(t.loc[k, 'ci_low']), num(t.loc[k, 'ci_high']))
             for k in range(1, 6)]) + r' \\')
     rows += [r'\midrule', r'\multicolumn{7}{@{}l}{\textit{By item}} \\',
@@ -729,7 +730,7 @@ def s23():
         def get(s, cls, metric):
             hit = t[(t['set'] == s) & (t['pair_class'] == cls) & (t['metric'] == metric)]
             return hit['fraction_above_control'].iloc[0] if len(hit) else float('nan')
-        rows.append(' & '.join([graph, 'HiPore-C ' + cell, num(get('direct', 'all', 'npmi')),
+        rows.append(' & '.join([graph, cell, num(get('direct', 'all', 'npmi')),
                                 num(get('indirect', 'all', 'npmi')), num(get('indirect', 'oe-oe', 'npmi')),
                                 num(get('triplets', 'all', 'c_uvw')),
                                 '{} / {}'.format(num(get('communities', 'null_shift', 'groups_with_3_members')),
@@ -741,7 +742,7 @@ def s23():
         c = pd.read_csv(path('porec', run + '_confirm_summary.tsv'), sep='\t')
         c = c[(c['stratum'] == 'all') & (c['pair_class'] == 'all')].set_index('set')
         h = pd.read_csv(path('porec', run + '_hubs_hub_summary.tsv'), sep='\t').set_index('hub_size')
-        rows.append(' & '.join([graph, 'HiPore-C ' + cell,
+        rows.append(' & '.join([graph, cell,
                                 '{:.1f}\\%'.format(100 * c.loc['direct', 'confirmed_p']),
                                 '{:.1f}\\%'.format(100 * c.loc['direct', 'control_confirmed_p']),
                                 '{:.1f}\\%'.format(100 * c.loc['indirect', 'confirmed_p']),
@@ -749,7 +750,7 @@ def s23():
                                 '{:.0f}\\% / {:.0f}\\%'.format(100 * h.loc['3-3', 'hubs_with_promoter_plus2_in_one_group'],
                                                              100 * h.loc['3-3', 'shifted'])]) + r' \\')
     table('table_s23.tex', 'llccccc', 'Graph & Multi-way data & & & & &', rows,
-          'Support of the interaction graphs in HiPore-C concatemers \\citep{zhong2023}, assigned to hg19 HindIII '
+          'Support of the interaction graphs in HiPore-C \\citep{zhong2023} and Pore-C \\citep{deshpande2022} concatemers, assigned to hg19 HindIII '
           'fragments. Top: probability that fragment pairs at graph distance 1 to 5 co-occur more than matched pairs '
           'at the same offset from the same pools and coverage classes, with 95\\% confidence intervals from '
           'resampling chromosomes. Middle: concordance of direct interactions, indirect contacts, indirect contacts '
