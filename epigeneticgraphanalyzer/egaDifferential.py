@@ -26,8 +26,8 @@ from .elements import (assign_elements, element_agreement, element_class_counts,
                        node_elements, node_types, read_element_bed, roles_per_element_type, stratum_masks, tss_status)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
-from .structural import (add_sv_edges, flag_sv_edges, read_copy_number, read_structural_variants, read_sv_contacts,
-                         structural_genes, sv_edge_table, sv_status)
+from .structural import (add_sv_edges, breakpoint_calls, flag_sv_edges, read_copy_number, read_structural_variants,
+                         read_sv_contacts, read_trans_calls, structural_genes, sv_edge_table, sv_status)
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
 
 log = logging.getLogger(__name__)
@@ -161,7 +161,10 @@ def parse_arguments(args=None):
     parser.add_argument('--svContacts',
                         help='Contacts of baited fragments across the junctions (<prefix>_sv_contacts.tsv of '
                              'analysis/capture_sv_calls.py): the promoter\'s own contacts with the partner side, '
-                             'written as edges sv=True to <prefix>_sv_edges.tsv and <prefix>_union_sv.graphml')
+                             'written as edges sv=True to <prefix>_sv_edges.tsv and <prefix>_union_sv.graphml. With '
+                             '--format ibed the called inter-chromosomal and long-range pairs across a breakpoint '
+                             '(dropped from the cis graph) are written to <prefix>_sv_called_edges.tsv and added '
+                             'to <prefix>_union_sv.graphml as edges sv=True')
     parser.add_argument('--copyNumber', nargs='+',
                         help="condition=file.bedGraph of the relative copy number per condition: adds the level "
                              "'copy number' after the structural variant level")
@@ -400,10 +403,23 @@ def main(args=None):
                      flagged)
         if copy_number:
             structural_levels.append('copy_number')
+        # called inter-chromosomal and long-range pairs across the junctions (CHiCAGO ibed lists them; the cis
+        # graph leaves them out): written as edges sv=True, never mixed into the cis levels
+        called = None
+        if args.structuralVariants and args.format == 'ibed':
+            calls = {name_a: read_trans_calls(args.interactionsA, args.scoreThreshold),
+                     name_b: read_trans_calls(args.interactionsB, args.scoreThreshold)}
+            if sum(len(t) for t in calls.values()):
+                called = breakpoint_calls(calls, svs, window, (name_a, name_b))
+                write_table(called, prefix + '_sv_called_edges.tsv')
+                log.info('%d called pairs join the two sides of a breakpoint (%s)', len(called),
+                         called['status'].value_counts().to_dict() if len(called) else {})
+            else:
+                log.info('no inter-chromosomal or long-range pairs among the called interactions')
         sv_genes, structural = structural_genes(
             graph, change, svs, (name_a, name_b), window, elements=elements, marks=marks, contacts=contacts,
             copy_number=copy_number, differential=set(classes['node']), sv_threshold=args.svThreshold,
-            cn_threshold=args.copyNumberThreshold)
+            cn_threshold=args.copyNumberThreshold, called=called)
         if not args.structuralVariants:
             structural = structural.drop(columns=[c for c in structural if c.startswith('sv_')])
         if args.structuralVariants:
@@ -416,6 +432,9 @@ def main(args=None):
         if contacts is not None:
             sv_edges = sv_edge_table(graph, contacts, svs, (name_a, name_b))
             write_table(sv_edges, prefix + '_sv_edges.tsv')
+        if called is not None and len(called):
+            sv_edges = called if sv_edges is None or not len(sv_edges) else \
+                pd.concat([sv_edges.assign(source='read pairs'), called], ignore_index=True)
 
     def cascade_with(setting, suffix, presence='mean', write=True):
         """Explanation cascade with the roles of `setting` (promoter roles, step-1 roles, mark signs per level):

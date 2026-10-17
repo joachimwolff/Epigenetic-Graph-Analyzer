@@ -39,7 +39,6 @@ window are taken.
 """
 
 import logging
-import re
 
 import numpy as np
 import pandas as pd
@@ -353,13 +352,18 @@ def _support_text(r, names):
 
 def structural_genes(graph, change, svs, names, window=1000000, elements=None, marks=None, contacts=None,
                      copy_number=None, differential=None, sv_threshold=1.0, cn_threshold=0.5, element_column=None,
-                     pseudo_count=1.0):
+                     pseudo_count=1.0, called=None, min_junction_pairs=10):
     """Genes whose promoter fragment lies within `window` of a breakend, and the copy number at every promoter.
 
     `change`: node -> RNA log2 B/A of the bait nodes; `svs` of read_structural_variants; `elements` the element
     table of node_elements (class column `element_column`, default class_declared_mean); `marks` mark -> (node ->
     signal A, node -> signal B); `contacts` read_sv_contacts; `copy_number` read_copy_number; `differential` the set
-    of differential nodes (None: every node with |log2FC| >= 1 is not assumed, the column is left empty).
+    of differential nodes (None: the column is left empty); `called` the called inter-chromosomal / long-range
+    interactions across the junctions (breakpoint_calls), counted per gene as called_<c>.
+
+    An enhancer-hijacking candidate has the join present in a condition, an active element on the partner side in
+    that condition and contacts of the promoter across the junction there: at least `min_junction_pairs` read pairs
+    (with `contacts`) or at least one called interaction (with `called`); without either, the first two suffice.
 
     Returns (genes, levels): genes is one row per gene and nearby join (every bait with an expression value, also
     non-differential: sv_genes.tsv); levels is indexed by node with sv_explains, sv_result, sv_detail, sv_by,
@@ -427,11 +431,18 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
                     row['junction_log2'] = float(np.log2(((pb + pseudo_count) / tb) / ((pa + pseudo_count) / ta))) \
                         if ta and tb and not (pd.isna(ta) or pd.isna(tb)) else \
                         float(np.log2((pb + pseudo_count) / (pa + pseudo_count)))
-                present_any = row['present_' + a] or row['present_' + b]
-                active_where = [c for c in names if row['present_' + c] and row['partner_active_' + c] > 0]
-                own_contacts = own is not None and (own[a][0] + own[b][0]) > 0
-                row['hijacking_candidate'] = bool(present_any and active_where and
-                                                  (own is None or own_contacts))
+                if called is not None:
+                    mine = called[(called['node_a'] == node) & (called['sv_name'] == r['name'])]
+                    for c in names:
+                        row['called_' + c] = int(mine['called_' + c].astype(bool).sum()) if len(mine) else 0
+
+                def touches(c):
+                    if own is None and called is None:
+                        return True
+                    return (own is not None and own[c][0] >= min_junction_pairs) or \
+                        (called is not None and row['called_' + c] > 0)
+                row['hijacking_candidate'] = any(row['present_' + c] and row['partner_active_' + c] > 0 and touches(c)
+                                                 for c in names)
                 rows.append(row)
     genes = pd.DataFrame(rows)
     # copy number at every promoter
@@ -494,6 +505,9 @@ def structural_genes(graph, change, svs, names, window=1000000, elements=None, m
                         partner_word, near, verb, pa, pb, junction)
                 else:
                     text += '; partner {}{}'.format(partner_word, near)
+                if 'called_' + names[0] in g and not pd.isna(g['called_' + names[0]]):
+                    text += '; called interactions across the junction {} {}, {} {}'.format(
+                        names[0], int(g['called_' + names[0]]), names[1], int(g['called_' + names[1]]))
                 active_text = ', '.join('{} {}'.format(c, int(g['partner_active_' + c])) for c in names)
                 text += '; active elements on the partner side: {} of {} nodes ({})'.format(
                     active_text, int(g['partner_nodes']), 'concordant' if explains else result)
@@ -563,18 +577,89 @@ def sv_edge_table(graph, contacts, svs, names):
     return table
 
 
+def read_trans_calls(paths, score_threshold=None):
+    """Inter-chromosomal and other called pairs of CHiCAGO ibed files (the cis graph reader drops the
+    inter-chromosomal ones): bait and other end, bait name, the largest score over the files, kept when it reaches
+    `score_threshold` (all listed pairs without it). Only inter-chromosomal pairs and intra-chromosomal pairs at least
+    1 Mb apart are kept."""
+    frames = []
+    for path in paths:
+        table = pd.read_csv(path, sep='\t', usecols=[0, 1, 2, 3, 4, 5, 6, 9], header=0,
+                            names=['chrom_a', 'start_a', 'end_a', 'genes_a', 'chrom_b', 'start_b', 'end_b', 'score'],
+                            dtype={'chrom_a': str, 'chrom_b': str, 'genes_a': str})
+        far = (table['chrom_a'] != table['chrom_b']) | \
+            ((table['start_b'] - table['start_a']).abs() >= 1000000)
+        frames.append(table[far])
+    if not frames:
+        return pd.DataFrame(columns=['chrom_a', 'start_a', 'end_a', 'genes_a', 'chrom_b', 'start_b', 'end_b', 'score'])
+    table = pd.concat(frames, ignore_index=True)
+    table = table.sort_values('score', ascending=False).drop_duplicates(
+        ['chrom_a', 'start_a', 'end_a', 'chrom_b', 'start_b', 'end_b'])
+    if score_threshold is not None:
+        table = table[table['score'] >= score_threshold]
+    return table.reset_index(drop=True)
+
+
+def breakpoint_calls(calls, svs, window, names):
+    """Called pairs ({condition: read_trans_calls}) whose bait lies within `window` of one breakend of a join and the
+    other end within `window` of the other breakend: one row per pair and join with node_a (bait), node_b,
+    bait_genes, sv_name, score_<c>, called_<c>, status (gained / lost / shared), sv=True, source 'called'."""
+    rows = {}
+    for c in names:
+        table = calls.get(c)
+        if table is None or not len(table):
+            continue
+        mid_a = (table['start_a'] + table['end_a']) // 2
+        mid_b = (table['start_b'] + table['end_b']) // 2
+        for r in svs.itertuples(index=False):
+            for (ca, pa), (cb, pb) in (((r.chrom1, r.pos1), (r.chrom2, r.pos2)), ((r.chrom2, r.pos2), (r.chrom1, r.pos1))):
+                hit = (table['chrom_a'] == ca) & ((mid_a - pa).abs() <= window) & (table['chrom_b'] == cb) & \
+                    ((mid_b - pb).abs() <= window)
+                if ca == cb:
+                    lo = np.minimum(mid_a, mid_b)
+                    hi = np.maximum(mid_a, mid_b)
+                    hit &= (lo < min(pa, pb)) & (hi > max(pa, pb))
+                for t in table[hit].itertuples(index=False):
+                    key = ('{}:{}-{}'.format(t.chrom_a, t.start_a, t.end_a), '{}:{}-{}'.format(t.chrom_b, t.start_b,
+                                                                                      t.end_b), r.name)
+                    row = rows.setdefault(key, dict(node_a=key[0], node_b=key[1], bait_genes=t.genes_a,
+                                                    sv_name=r.name, **{'score_' + n: 0.0 for n in names}))
+                    row['score_' + c] = max(row['score_' + c], float(t.score))
+    table = pd.DataFrame(list(rows.values()))
+    if not len(table):
+        return pd.DataFrame(columns=['node_a', 'node_b', 'bait_genes', 'sv_name'] +
+                            ['score_' + n for n in names] + ['called_' + n for n in names] +
+                            ['status', 'sv', 'source'])
+    a, b = names
+    for c in names:
+        table['called_' + c] = table['score_' + c] > 0
+    table['status'] = np.where(table['called_' + a] & table['called_' + b], 'shared',
+                               np.where(table['called_' + a], 'lost', 'gained'))
+    table['sv'] = True
+    table['source'] = 'called'
+    return table.sort_values(['sv_name', 'node_a', 'node_b']).reset_index(drop=True)
+
+
+def _add_node(out, node, **attributes):
+    chrom, rest = node.split(':')
+    start, end = rest.split('-')
+    out.add_node(node, chrom=chrom, start=int(start), end=int(end), **attributes)
+
+
 def add_sv_edges(graph, edges):
-    """A copy of `graph` with the junction contacts of sv_edge_table as edges sv=True (partner bins that are no
-    node of the graph are added with sv_partner=True)."""
+    """A copy of `graph` with the junction contacts of sv_edge_table and the called pairs of breakpoint_calls as
+    edges sv=True (ends that are no node of the graph are added: a bait with bait=True and its genes, a partner with
+    sv_partner=True)."""
     out = graph.copy()
     for r in edges.itertuples(index=False):
         r = r._asdict()
+        if r['node_a'] not in out:
+            _add_node(out, r['node_a'], bait=True, genes=str(r.get('bait_genes', '') or r.get('genes', '') or ''),
+                      sv_partner=False)
         if r['node_b'] not in out:
-            chrom, rest = r['node_b'].split(':')
-            start, end = rest.split('-')
-            out.add_node(r['node_b'], chrom=chrom, start=int(start), end=int(end), bait=False, sv_partner=True,
-                         genes='')
-        attributes = {k: v for k, v in r.items() if k not in ('node_a', 'node_b', 'genes')}
+            _add_node(out, r['node_b'], bait=False, sv_partner=True, genes='')
+        attributes = {k: v for k, v in r.items() if k not in ('node_a', 'node_b', 'genes', 'bait_genes')
+                      and not (isinstance(v, float) and np.isnan(v))}
         attributes['sv'] = True
         out.add_edge(r['node_a'], r['node_b'], **attributes)
     return out
@@ -588,8 +673,6 @@ def level_text(level, entry):
 
 
 __all__ = ['SV_LEVELS', 'ACTIVE_CLASSES', 'sv_label', 'read_structural_variants', 'sv_status', 'read_sv_contacts',
-           'read_copy_number', 'flag_sv_edges', 'structural_genes', 'sv_edge_table', 'add_sv_edges', 'level_text']
+           'read_copy_number', 'flag_sv_edges', 'structural_genes', 'sv_edge_table', 'read_trans_calls',
+           'breakpoint_calls', 'add_sv_edges', 'level_text']
 
-
-def _unused():
-    return re

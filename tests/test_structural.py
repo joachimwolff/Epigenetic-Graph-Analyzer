@@ -290,3 +290,30 @@ def test_differential_cli_with_planted_breakpoint(tmp_path):
                               '--pdf', 'none', '-o', os.path.join(d, 'out', 'main')])
     main = open(outputs[0][0]).read()
     assert 'a structural variant near the promoter' in main.lower()
+
+
+def test_called_trans_pairs_across_a_breakpoint(tmp_path):
+    from epigeneticgraphanalyzer.structural import breakpoint_calls, read_trans_calls
+    header = 'bait_chr\tbait_start\tbait_end\tbait_name\totherEnd_chr\totherEnd_start\totherEnd_end\totherEnd_name\t' \
+             'N_reads\tscore\n'
+    rows_a = ['chr21\t35983609\t35987950\tRUNX1\tchr8\t91651566\t91658167\t.\t9\t57.5',
+              'chr21\t35983609\t35987950\tRUNX1\tchr8\t40000000\t40005000\t.\t9\t8.0',
+              'chr21\t35983609\t35987950\tRUNX1\tchr21\t35900000\t35905000\t.\t9\t8.0',
+              'chr8\t92097876\t92104857\tRUNX1T1\tchr21\t34600000\t34605000\t.\t3\t2.0']
+    rows_b = ['chr21\t35983609\t35987950\tRUNX1\tchr8\t91651566\t91658167\t.\t9\t30.0']
+    paths = []
+    for name, rows in (('a.ibed', rows_a), ('b.ibed', rows_b)):
+        path = os.path.join(str(tmp_path), name)
+        with open(path, 'w') as handle:
+            handle.write(header + '\n'.join(rows) + '\n')
+        paths.append(path)
+    calls_a = read_trans_calls([paths[0]], 5)
+    assert len(calls_a) == 2   # the cis pair and the pair below the threshold are left out
+    svs = pd.DataFrame([dict(chrom1='chr8', pos1=91500000, chrom2='chr21', pos2=35500000, name='t(8;21)')])
+    called = breakpoint_calls({'A': calls_a, 'B': read_trans_calls([paths[1]], 5)}, svs, 1000000, ('A', 'B'))
+    assert list(called['node_a']) == ['chr21:35983609-35987950']
+    assert list(called['status']) == ['shared'] and called['sv'].all()
+    assert called['bait_genes'].iloc[0] == 'RUNX1'
+    combined = add_sv_edges(nx.Graph(), called)
+    assert combined.nodes['chr21:35983609-35987950']['genes'] == 'RUNX1'
+    assert combined.edges['chr21:35983609-35987950', 'chr8:91651566-91658167']['sv']

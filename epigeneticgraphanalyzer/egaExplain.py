@@ -26,7 +26,9 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             With <prefix>_explanations_all_levels.tsv (egaDifferential), all_levels lists every
                             level in rank order with its result under the declared roles (all_levels_learned: the
                             roles learned at each level), also when an earlier level explains the gene: promoter
-                            marks, contacts, promoter state, step 1 marks, step 1 states, step 2 .. step n; the
+                            marks, contacts, promoter state, (with egaDifferential --structuralVariants /
+                            --copyNumber: structural variant, copy number,) step 1 marks, step 1 states, step 2 ..
+                            step n; the
                             state levels under both presence statistics (mean | max1kb), followed by the explaining
                             levels, e.g. 'Hoxa3 (up, log2 10.6): promoter marks: no concordant change (...);
                             contacts: ...; promoter state: bivalent in Md and PA2 (H3K4me2 5.1/5.2, H3K27me3 67/80;
