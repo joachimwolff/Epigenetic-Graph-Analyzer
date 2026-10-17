@@ -594,6 +594,147 @@ def classify_genes(features, marks, mark_signs, rna_threshold=1.0, chromatin_thr
     return de
 
 
+def cascade_label(hops):
+    """Cascade level of a number of steps: 0 'gene', k 'step<k>'."""
+    return 'gene' if hops == 0 else 'step{}'.format(hops)
+
+
+def explanation_cascade(classes, marks, mark_signs, chromatin_threshold=1.0, contact_threshold=None):
+    """Where the expression change of every differentially expressed gene finds its first explanation.
+
+    `classes` is the output of classify_genes (differential genes with their features and mirror features). Level
+    'gene': a concordant change of a mark at the promoter fragment (the promoter rule of classify_genes) and/or of
+    the promoter's own interactions, i.e. |contact_direct| (log2 B/A of the summed strength of its direct
+    interactions) >= `contact_threshold` (default `chromatin_threshold`) with the sign of the expression change.
+    Genes not explained at the gene go on to step 1, 2, ..., n (n = the levels in `classes`): the first step at which
+    a mark changes concordantly (the rule of classify_genes); the rest stay unexplained. An explanation is the
+    first concordant change given the measured layers, not a proof of regulation.
+
+    Returns a DataFrame (indexed by node) with explained_at ('gene', 'step1', ..., 'unexplained'), explained_hops
+    (0 at the gene), explained_by (at the gene: 'marks', 'interactions' or 'both'; at a step: the concordant marks),
+    beyond_mirror (at a step: not every explaining mark changes concordantly at the mirrored loci of that step; NA
+    without mirror features) and nodes_tested (1 at the gene, else the number of nodes at that step).
+    """
+    if contact_threshold is None:
+        contact_threshold = chromatin_threshold
+    levels = hop_levels(classes, marks)
+    direction = np.sign(classes['rna_log2FC'].to_numpy(dtype=float))
+
+    def concordant(column, sign=1):
+        if column not in classes:
+            return np.zeros(len(classes), dtype=bool)
+        values = np.nan_to_num(classes[column].to_numpy(dtype=float))
+        return (np.sign(values) * sign == direction) & (np.abs(values) >= chromatin_threshold)
+
+    by_marks = np.zeros(len(classes), dtype=bool)
+    for mark in marks:
+        by_marks |= concordant(mark + '_promoter', mark_signs.get(mark, 1))
+    contact = np.nan_to_num(classes['contact_direct'].to_numpy(dtype=float)) if 'contact_direct' in classes \
+        else np.zeros(len(classes))
+    by_contact = (np.sign(contact) == direction) & (np.abs(contact) >= contact_threshold)
+    at = np.array(['unexplained'] * len(classes), dtype=object)
+    hops = np.full(len(classes), np.nan)
+    explained_by = np.array([''] * len(classes), dtype=object)
+    beyond = np.full(len(classes), np.nan)
+    nodes = np.full(len(classes), np.nan)
+    gene = by_marks | by_contact
+    at[gene] = 'gene'
+    hops[gene] = 0
+    nodes[gene] = 1
+    explained_by[by_marks & by_contact] = 'both'
+    explained_by[by_marks & ~by_contact] = 'marks'
+    explained_by[~by_marks & by_contact] = 'interactions'
+    for level in levels:
+        k = level_hops(level)
+        open_ = at == 'unexplained'
+        hit_marks = {m: concordant('{}_{}'.format(m, level), mark_signs.get(m, 1)) & open_ for m in marks}
+        hit = np.zeros(len(classes), dtype=bool)
+        for values in hit_marks.values():
+            hit |= values
+        at[hit] = cascade_label(k)
+        hops[hit] = k
+        if 'n_' + level in classes:
+            nodes[hit] = classes['n_' + level].to_numpy(dtype=float)[hit]
+        have_mirror = all('{}_{}_mirror'.format(m, level) in classes for m in marks)
+        mirrored = {m: hit_marks[m] & concordant('{}_{}_mirror'.format(m, level), mark_signs.get(m, 1))
+                    for m in marks} if have_mirror else {}
+        for i in np.nonzero(hit)[0]:
+            explaining = [m for m in marks if hit_marks[m][i]]
+            explained_by[i] = ','.join(explaining)
+            if have_mirror:
+                beyond[i] = float(sum(mirrored[m][i] for m in explaining) < len(explaining))
+    return pd.DataFrame({'explained_at': at, 'explained_hops': pd.array([None if np.isnan(h) else int(h) for h in hops],
+                                                                        dtype='Int64'),
+                         'explained_by': explained_by,
+                         'beyond_mirror': pd.array([None if np.isnan(b) else bool(b) for b in beyond], dtype='boolean'),
+                         'nodes_tested': pd.array([None if np.isnan(v) else int(v) for v in nodes], dtype='Int64')},
+                        index=classes['node'].to_numpy() if 'node' in classes else classes.index)
+
+
+def cascade_table(cascade, genes=None, pvalues=None, proximity=None, max_hops=None):
+    """Counts of the explanation cascade (explanation_cascade), one row per level.
+
+    Rows: gene (with gene_marks_only, gene_interactions_only, gene_both), step1 .. step<max_hops>, unexplained.
+    genes_reaching: genes not explained at an earlier level (all differential genes for the gene level);
+    fraction_of_remaining = genes / genes_reaching. Per step: beyond_mirror, and with `pvalues` (node -> per-gene
+    permutation P of the step at which the gene is first explained) p_lt_0.05, beyond_mirror_p_lt_0.05 and the
+    numbers at FDR < 0.1 and < 0.05 (Benjamini-Hochberg across the genes first explained at that step, names of
+    `genes` (node -> gene names) at FDR < 0.05 listed); proximity_support and proximity_ci of the step from a
+    read_proximity_support curve; median_nodes_tested.
+    """
+    total = len(cascade)
+    if max_hops is None:
+        max_hops = int(cascade['explained_hops'].max()) if cascade['explained_hops'].notna().any() else 0
+    rows = []
+    reaching = total
+
+    def row(level, mask, reaching_count):
+        n = int(mask.sum())
+        return {'level': level, 'genes': n, 'genes_reaching': reaching_count,
+                'fraction_of_differential': n / total if total else np.nan,
+                'fraction_of_remaining': n / reaching_count if reaching_count else np.nan}
+
+    at = cascade['explained_at'].to_numpy()
+    gene = at == 'gene'
+    r = row('gene', gene, reaching)
+    if proximity is not None:
+        r.update(proximity_support=1.0, proximity_ci='NA')
+    r['median_nodes_tested'] = 1.0
+    rows.append(r)
+    for name, value in (('gene_marks_only', 'marks'), ('gene_interactions_only', 'interactions'), ('gene_both', 'both')):
+        r = row(name, gene & (cascade['explained_by'].to_numpy() == value), reaching)
+        rows.append(r)
+    reaching -= int(gene.sum())
+    for k in range(1, max_hops + 1):
+        level = cascade_label(k)
+        mask = at == level
+        part = cascade[mask]
+        r = row(level, mask, reaching)
+        beyond = part['beyond_mirror'].fillna(False).to_numpy(dtype=bool)
+        r['beyond_mirror'] = int(beyond.sum()) if part['beyond_mirror'].notna().any() or not len(part) else np.nan
+        if pvalues is not None:
+            p = np.array([pvalues.get(n, np.nan) for n in part.index], dtype=float)
+            q = _benjamini_hochberg(p) if len(p) else p
+            r['p_lt_0.05'] = int((p < 0.05).sum())
+            r['beyond_mirror_p_lt_0.05'] = int(((p < 0.05) & beyond).sum())
+            r['q_lt_0.1'] = int((q < 0.1).sum())
+            r['q_lt_0.05'] = int((q < 0.05).sum())
+            names = [str(genes.get(n, n)) if genes is not None else n for n in part.index[q < 0.05]]
+            r['genes_q_lt_0.05'] = ';'.join(names)
+        if proximity is not None:
+            values, intervals = proximity_columns([k], proximity)
+            r['proximity_support'], r['proximity_ci'] = values[0], intervals[0]
+        r['median_nodes_tested'] = float(part['nodes_tested'].astype(float).median()) if len(part) else np.nan
+        rows.append(r)
+        reaching -= int(mask.sum())
+    rows.append(row('unexplained', at == 'unexplained', reaching))
+    columns = ['level', 'genes', 'genes_reaching', 'fraction_of_differential', 'fraction_of_remaining',
+               'beyond_mirror', 'p_lt_0.05', 'beyond_mirror_p_lt_0.05', 'q_lt_0.1', 'q_lt_0.05', 'proximity_support',
+               'proximity_ci', 'median_nodes_tested', 'genes_q_lt_0.05']
+    table = pd.DataFrame(rows)
+    return table[[c for c in columns if c in table]]
+
+
 def _concordant(values, mark_sign, direction, threshold):
     values = np.nan_to_num(np.asarray(values, dtype=float))
     return (np.sign(values) * mark_sign == direction) & (np.abs(values) >= threshold)

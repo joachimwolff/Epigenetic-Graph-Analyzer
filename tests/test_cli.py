@@ -129,6 +129,11 @@ def test_differential_cli(tmp_path):
         result = json.load(handle)
     assert result['n_permutations'] == 5
     assert os.path.exists(prefix + '_community_matching.tsv')
+    cascade = pd.read_csv(prefix + '_explanation_cascade.tsv', sep='\t')
+    classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t')
+    assert cascade.loc[cascade['level'].isin(['gene', 'step1', 'step2', 'step3', 'unexplained']), 'genes'].sum() == \
+        len(classes)
+    assert set(classes['explained_at']) <= {'gene', 'step1', 'step2', 'step3', 'unexplained'}
     from epigeneticgraphanalyzer import egaPlotDifferential
     figure = os.path.join(d, 'out', 'differential.png')
     gene = 'GENE{}'.format(baits.index(next(b for b in baits if b[0] == sorted(gained)[0][0] and b[1] == sorted(gained)[0][1])))

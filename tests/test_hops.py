@@ -120,6 +120,47 @@ def test_classification_with_three_hops(tmp_path):
                                      'promoter+direct+indirect+hop3']
 
 
+def test_explanation_cascade():
+    from epigeneticgraphanalyzer.differential import cascade_table, explanation_cascade
+    marks = ['H3K27ac', 'H3K27me3']
+    features = features_table()
+    # own interactions: d (down) loses strength -> explained at the gene by interactions only (before its direct
+    # mark change); p (up) gains -> marks and interactions; for i (up) and h (down) the change is discordant
+    features['contact_direct'] = [1.2, -1.0, -1.5, 0.5, 0.0]
+    # a sixth gene explained at three hops only by H3K27ac, with a concordant mirror (not beyond the mirror)
+    extra = features.iloc[[4]].assign(node='m', genes='M', rna_log2FC=-2.0, H3K27ac_hop3=-2.0, n_hop3=5)
+    features = pd.concat([features, extra], ignore_index=True)
+    for mark in marks:
+        for level in ('direct', 'indirect', 'hop3'):
+            features['{}_{}_mirror'.format(mark, level)] = 0.0
+    features.loc[features['node'] == 'm', 'H3K27ac_hop3_mirror'] = -1.5
+    classes = classify_genes(features, marks, {'H3K27me3': -1})
+    cascade = explanation_cascade(classes, marks, {'H3K27me3': -1})
+    assert list(cascade['explained_at']) == ['gene', 'gene', 'step2', 'step3', 'unexplained', 'step3']
+    assert list(cascade['explained_by'][:3]) == ['both', 'interactions', 'H3K27ac']
+    assert cascade.loc['h', 'explained_by'] == 'H3K27me3' and cascade.loc['m', 'explained_by'] == 'H3K27ac'
+    assert bool(cascade.loc['h', 'beyond_mirror']) and not bool(cascade.loc['m', 'beyond_mirror'])
+    assert cascade['nodes_tested'].tolist()[:4] == [1, 1, 4, 9] and cascade.loc['m', 'nodes_tested'] == 5
+    assert pd.isna(cascade.loc['u', 'nodes_tested']) and pd.isna(cascade.loc['u', 'beyond_mirror'])
+    # without the interaction rule the cascade is the classification
+    plain = explanation_cascade(classes, marks, {'H3K27me3': -1}, contact_threshold=np.inf)
+    assert list(plain['explained_at'][:4]) == ['gene', 'step1', 'step2', 'step3']
+    support = {1: (0.66, 0.64, 0.68), 2: (0.58, 0.56, 0.60), 3: (0.54, 0.52, 0.56)}
+    table = cascade_table(cascade, dict(zip(classes['node'], classes['genes'])),
+                          {'i': 0.01, 'h': 0.001, 'm': 0.002}, support, max_hops=3).set_index('level')
+    assert list(table.index) == ['gene', 'gene_marks_only', 'gene_interactions_only', 'gene_both', 'step1', 'step2',
+                                 'step3', 'unexplained']
+    assert table['genes'].tolist() == [2, 0, 1, 1, 0, 1, 2, 1]
+    assert table['genes_reaching'].tolist() == [6, 6, 6, 6, 4, 4, 3, 1]
+    assert table.loc['step3', 'fraction_of_remaining'] == 2 / 3
+    assert table.loc['step3', 'beyond_mirror'] == 1 and table.loc['step3', 'p_lt_0.05'] == 2
+    assert table.loc['step3', 'beyond_mirror_p_lt_0.05'] == 1
+    # BH across the two genes at step 3: q = 0.002 for both
+    assert table.loc['step3', 'q_lt_0.05'] == 2 and table.loc['step3', 'genes_q_lt_0.05'] == 'H;M'
+    assert table.loc['step3', 'proximity_support'] == 0.54 and table.loc['step3', 'proximity_ci'] == '0.52-0.56'
+    assert table.loc['step3', 'median_nodes_tested'] == 7.0
+
+
 def chain_design(n_units=40, n_planted=24, seed=0):
     """Units S - O1 - O2 - T (T at three hops of S); the RNA change of S follows the H3K27ac change at T."""
     rng = np.random.default_rng(seed)

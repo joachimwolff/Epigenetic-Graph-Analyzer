@@ -9,13 +9,14 @@ import pandas as pd
 from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging, write_table
-from .annotation import bigwig_node_signal, gene_values_to_nodes, parse_track_arguments
+from .annotation import gene_values_to_nodes, parse_track_arguments
 from .differential import (REPLICATE_MODES, ActivityOperators, _benjamini_hochberg, annotate_chicdiff,
                            classify_genes, consensus_scores, differential_edges_from_scores, feature_correlations,
                            gene_features, community_expression_changes, community_transitions,
                            gene_community_changes, gene_level_hop_test, indirect_only_genes, level_name,
                            match_communities, mirror_comparison, mirrored_features, nested_models, permutation_test,
-                           default_threads, read_proximity_support, union_graph)
+                           _interval_signals, cascade_table, default_threads, explanation_cascade, read_proximity_support,
+                           union_graph)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
@@ -147,9 +148,18 @@ def main(args=None):
     if set(tracks_a) != set(tracks_b):
         raise ValueError('Conditions need the same marks: {} vs {}'.format(sorted(tracks_a), sorted(tracks_b)))
     marks = {}
+    # mean signal over every node fragment (as annotation.bigwig_node_signal), read in parallel
+    node_list = list(graph.nodes)
+    paths = list(dict.fromkeys(p for tracks in (tracks_a, tracks_b) for mark in tracks for p in tracks[mark]))
+    started = time.time()
+    read = _interval_signals(paths, [graph.nodes[n]['chrom'] for n in node_list],
+                             np.array([graph.nodes[n]['start'] for n in node_list], dtype=np.int64),
+                             np.array([graph.nodes[n]['end'] for n in node_list], dtype=np.int64), args.threads)
+    read = {p: dict(zip(node_list, values.tolist())) for p, values in read.items()}
+    log.info('node signals of %d bigWig files: %.0f s', len(paths), time.time() - started)
     for mark in tracks_a:
-        signal_a = [bigwig_node_signal(graph, path) for path in tracks_a[mark]]
-        signal_b = [bigwig_node_signal(graph, path) for path in tracks_b[mark]]
+        signal_a = [read[path] for path in tracks_a[mark]]
+        signal_b = [read[path] for path in tracks_b[mark]]
         mean_a = {n: float(np.mean([s[n] for s in signal_a])) for n in graph.nodes}
         mean_b = {n: float(np.mean([s[n] for s in signal_b])) for n in graph.nodes}
         marks[mark] = (mean_a, mean_b)
@@ -198,6 +208,10 @@ def main(args=None):
     classified = features if differential_nodes is None else features[features['node'].isin(differential_nodes)]
     classes = classify_genes(classified, list(marks), mark_signs, args.rnaThreshold, args.chromatinThreshold,
                              proximity=proximity)
+    # explanation cascade: gene (marks and / or own interactions), then the first step with a concordant mark change
+    cascade = explanation_cascade(classes, list(marks), mark_signs, args.chromatinThreshold)
+    classes = classes.assign(explained_at=cascade['explained_at'].to_numpy(),
+                             explained_by=cascade['explained_by'].to_numpy())
     write_table(classes, prefix + '_gene_classes.tsv')
     indirect_only = indirect_only_genes(graph, operators, mark_vectors, features, list(marks), mark_signs,
                                         args.rnaThreshold, args.chromatinThreshold, genes=differential_nodes,
@@ -208,9 +222,11 @@ def main(args=None):
         tested = classified if differential_nodes is not None else features
         # the indirect level for every differential gene (as before), every level k >= 3 for the genes first
         # explained there; one set of permutations for all levels
-        levels = {'indirect': None}
+        # and every cascade step for the genes first explained there (p-values do not depend on the tested set)
+        levels = {'direct': cascade.index[cascade['explained_at'] == 'step1'].tolist(), 'indirect': None}
         for k in range(3, args.maxHops + 1):
-            levels[level_name(k)] = classes.loc[classes['explanation'] == level_name(k), 'node'].tolist()
+            levels[level_name(k)] = sorted(set(classes.loc[classes['explanation'] == level_name(k), 'node']) |
+                                           set(cascade.index[cascade['explained_at'] == 'step{}'.format(k)]))
         started = time.time()
         tests = gene_level_hop_test(operators, mark_vectors, tested, list(marks), mark_signs, args.rnaThreshold,
                                     args.genePermutations, args.seed, genes=levels, threads=args.threads)
@@ -218,8 +234,16 @@ def main(args=None):
         gene_test = tests['indirect']
         write_table(gene_test, prefix + '_indirect_gene_test.tsv')
         for level, test in tests.items():
-            if level != 'indirect':
+            if level not in ('direct', 'indirect'):
+                # genes first explained at this level by classify_genes, BH across them
+                test = test[test['node'].isin(set(classes.loc[classes['explanation'] == level, 'node']))].copy()
+                test[level + '_q'] = _benjamini_hochberg(test[level + '_p'].to_numpy())
                 write_table(test, prefix + '_{}_gene_test.tsv'.format(level))
+        cascade_p = {}
+        for k in range(1, args.maxHops + 1):
+            step = set(cascade.index[cascade['explained_at'] == 'step{}'.format(k)])
+            test = tests[level_name(k)]
+            cascade_p.update({n: p for n, p in zip(test['node'], test[level_name(k) + '_p']) if n in step})
         if len(indirect_only):
             indirect_only = indirect_only.merge(gene_test, on='node', how='left')
             # per explaining level: statistic, P and BH q across the genes first explained at that level
@@ -235,6 +259,9 @@ def main(args=None):
     if len(indirect_only):
         indirect_only = indirect_only[[c for c in indirect_only.columns if c not in new_columns] + new_columns]
     write_table(indirect_only, prefix + '_indirect_only_genes.tsv')
+    names = dict(zip(classes['node'], classes['genes']))
+    write_table(cascade_table(cascade, names, cascade_p if args.genePermutations else None, proximity, args.maxHops),
+                prefix + '_explanation_cascade.tsv')
     informative_change = {n: change[n] for n in informative['node']}
     result = permutation_test(graph, marks, informative_change, mark_signs, n_permutations=args.permutations,
                               seed=args.seed,

@@ -5,6 +5,7 @@ S4 promoter hubs; S5 communities with a coordinated expression change; S6 nested
 S7 classification of differentially expressed genes; S8 candidates for regulation through indirect contacts;
 S9 virtual capture benchmark; S10 CRISPRi benchmark; S11 inter-chromosomal rearrangements and copy number of
 Kasumi-1; S12 chromatin assortativity (ChAseR) by graph distance; S13 promoter hubs against a polymer model.
+S24 explanation cascade of the differentially expressed genes (analysis/16_hops_n.sh).
 
 Usage: python supplement_tables.py <results dir> <output dir>
 """
@@ -849,10 +850,68 @@ def s23():
           'tab:s23', size=r'\scriptsize')
 
 
+CASCADE_COMPARISONS = (('hESC / hNEC', 'hops_n/hESC_vs_hNEC'), ('Md / PA2', 'hops_n/Md_vs_PA2'),
+                       ('Kasumi-1 siMM / siRE', 'hops_n/siMM_vs_siRE'),
+                       ('AML t(8;21) / FLT3-ITD', 'hops_n/t821_vs_FLT3ITD'))
+
+
+def s24():
+    """Explanation cascade (analysis/16_hops_n.sh, egaDifferential --maxHops 3), one block per comparison."""
+    names = {'gene': 'Gene', 'gene_marks_only': '\\quad marks only', 'gene_interactions_only':
+             '\\quad interactions only', 'gene_both': '\\quad both', 'unexplained': 'Unexplained'}
+    rows = []
+    for label, prefix in CASCADE_COMPARISONS:
+        source = path(prefix + '_explanation_cascade.tsv')
+        if not os.path.exists(source):
+            continue
+        t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+        first = True
+        for _, r in t.iterrows():
+            level = r['level']
+            name = names.get(level) or '{} step{}'.format(int(level[4:]), '' if level == 'step1' else 's')
+            step = level.startswith('step')
+
+            def count(column):
+                return integer(r[column]) if step and column in r and not pd.isna(r[column]) else ''
+
+            support = ''
+            if step and 'proximity_support' in r and not pd.isna(r['proximity_support']):
+                support = '{:.2f} ({})'.format(r['proximity_support'], str(r['proximity_ci']).replace('-', '--'))
+            genes = tex(str(r.get('genes_q_lt_0.05', '')).replace(';', ', ')) if step and not pd.isna(
+                r.get('genes_q_lt_0.05', float('nan'))) else ''
+            rows.append(' & '.join([
+                label if first else '', name, integer(r['genes']), integer(r['genes_reaching']),
+                '{:.1f}'.format(100 * r['fraction_of_differential']),
+                '{:.1f}'.format(100 * r['fraction_of_remaining']) if not pd.isna(r['fraction_of_remaining']) else '--',
+                count('beyond_mirror'), count('p_lt_0.05'), count('beyond_mirror_p_lt_0.05'), count('q_lt_0.1'),
+                count('q_lt_0.05'), support,
+                '{:.0f}'.format(r['median_nodes_tested']) if step and not pd.isna(r['median_nodes_tested']) else '',
+                '\\textit{' + genes + '}' if genes else '']) + r' \\')
+            first = False
+        rows.append(r'\midrule')
+    if not rows:
+        return
+    table('table_s24.tex', 'p{1.6cm}lrrrrrrrrrlr>{\\raggedright\\arraybackslash}p{3.0cm}',
+          'Comparison & Level & Genes & Reaching & \\% DE & \\% reaching & Beyond mirror & $P<0.05$ & '
+          'Beyond mirror, $P<0.05$ & $q<0.1$ & $q<0.05$ & 3D support & Nodes & Genes at $q<0.05$', rows[:-1],
+          'Explanation cascade of the baited promoter fragments of differentially expressed genes. Gene: a '
+          'concordant change of a chromatin mark at the promoter fragment and/or of the summed strength of its own '
+          'interactions ($|\\log_2|$ change $\\geq 1$ in the direction of the expression change); the remaining '
+          'genes are assigned to the first graph step (1 to 3) at which a mark changes concordantly at the nodes '
+          'at exactly that distance, or remain unexplained. Reaching: genes not explained at an earlier level. '
+          'Beyond mirror: the explaining marks do not change concordantly at the mirrored loci of the same step; '
+          '$P$: per-gene permutation test of the step (200,000 permutations of the node signals), $q$: '
+          'Benjamini-Hochberg across the genes first explained at that step. 3D support: probability (95\\% '
+          'interval) that graph neighbours at that step are closer in the nucleus than distance-matched pairs '
+          '(GAM of H1 hESC for hESC / hNEC, HiPore-C of K562 for the two AML comparisons, none for the mouse '
+          'comparison). Nodes: median number of nodes at that step. An explanation is the first concordant change '
+          'given the measured layers.', 'tab:s24', size=r'\scriptsize', long=True, colsep='3pt')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23):
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24):
         build()
         print(build.__name__, flush=True)
 

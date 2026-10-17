@@ -8,15 +8,17 @@
 #   Md / PA2:             none (mouse, no multi-way data)
 #   Kasumi-1 and AML:     HiPore-C of K562 (09_porec.sh), the closest myeloid cell line with multi-way data
 set -euo pipefail
-data=${1:?usage: 16_hops_n.sh <data_dir> <results_dir> <kasumi1 dir> <assi2019 dir> [permutations]}
+data=${1:?usage: 16_hops_n.sh <data_dir> <results_dir> <kasumi1 dir> <assi2019 dir> [permutations] [threads]}
 results=${2:?}
 kasumi=${3:?}
 assi=${4:?}
 permutations=${5:-200}
+threads=${6:-24}
+here=$(cd "$(dirname "$0")" && pwd)
 out="$results/hops_n"
 mkdir -p "$out"
 common=(--verbose --maxHops 3 --genePermutations 200000 --rnaThreshold 1 --chromatinThreshold 1
-        --permutations "$permutations" --bootstrap 1000 --seed 0)
+        --permutations "$permutations" --bootstrap 1000 --seed 0 --threads "$threads")
 
 # hESC / hNEC (04_differential.sh)
 study="$data/chicago_calls/GSE86821_freire_pritchett_2017_H9_hESC_hNPC"
@@ -76,3 +78,6 @@ egaDifferential "${common[@]}" \
     --padjColumn pvalue --alpha 0.05 --geneKey genes \
     --proximitySupport "$results/porec/K562_hiporec_hops.tsv" \
     -o "$out/t821_vs_FLT3ITD" > "$out/t821_vs_FLT3ITD.log" 2>&1
+
+# explanation cascade per comparison (one PDF each)
+python "$here/figure_explanation_cascade.py" "$results" "$out/figures"
