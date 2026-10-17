@@ -877,7 +877,7 @@ def s24():
             support = ''
             if step and 'proximity_support' in r and not pd.isna(r['proximity_support']):
                 support = '{:.2f} ({})'.format(r['proximity_support'], str(r['proximity_ci']).replace('-', '--'))
-            genes = tex(str(r.get('genes_q_lt_0.05', '')).replace(';', ', ')) if step and not pd.isna(
+            genes = tex(str(r.get('genes_q_lt_0.05', '')).replace(';', '; ')) if step and not pd.isna(
                 r.get('genes_q_lt_0.05', float('nan'))) else ''
             rows.append(' & '.join([
                 label if first else '', name, integer(r['genes']), integer(r['genes_reaching']),
