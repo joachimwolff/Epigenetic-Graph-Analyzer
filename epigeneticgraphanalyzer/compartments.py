@@ -259,28 +259,32 @@ def _orient(vec, orient_by):
     return vec
 
 
-def _select(vecs, phasing):
-    """Of several eigenvectors, the one with the largest absolute correlation with the phasing track."""
+def _select(vecs, phasing, margin=1.5):
+    """Index of the compartment eigenvector: the first one, unless another of the leading ones correlates at least
+    `margin` times more strongly (absolute Pearson r) with the phasing track. A plain maximum is too greedy:
+    on shallow matrices a second eigenvector often correlates slightly better with GC than the first one although
+    the first one is the compartment pattern."""
     if phasing is None or vecs.shape[1] == 1:
         return vecs[:, 0], 0
     o = np.asarray(phasing, dtype=float)
-    best, best_r = 0, -1.0
+    r = np.zeros(vecs.shape[1])
     for k in range(vecs.shape[1]):
         v = vecs[:, k]
         ok = np.isfinite(v) & np.isfinite(o)
         if ok.sum() > 2 and np.std(v[ok]) > 0 and np.std(o[ok]) > 0:
-            r = abs(np.corrcoef(v[ok], o[ok])[0, 1])
-            if r > best_r:
-                best, best_r = k, r
-    return vecs[:, best], best
+            r[k] = abs(np.corrcoef(v[ok], o[ok])[0, 1])
+    best = int(np.argmax(r))
+    if best != 0 and r[best] >= margin * r[0]:
+        return vecs[:, best], best
+    return vecs[:, 0], 0
 
 
 def contact_eigenvector(matrix, valid=None, orient_by=None, min_contacts=1, n_candidates=1):
     """Compartment eigenvector of the correlation of the observed / expected matrix of one chromosome.
 
-    Bins with fewer than `min_contacts` non-zero entries (or outside `valid`) are NaN. With n_candidates > 1 the
-    eigenvector (of the leading n_candidates) that correlates best with `orient_by` is taken (as cooltools does with
-    a phasing track), so that a chromosome-arm or other leading pattern does not replace the compartments. The sign
+    Bins with fewer than `min_contacts` non-zero entries (or outside `valid`) are NaN. With n_candidates > 1 another
+    of the leading eigenvectors replaces the first one when it correlates at least 1.5 times more strongly with
+    `orient_by` (_select), so that a chromosome-arm or other leading pattern does not replace the compartments. The sign
     is chosen so that the vector correlates positively with `orient_by` (gene density, GC, chromatin score).
     Returns (vector, index of the chosen eigenvector).
     """

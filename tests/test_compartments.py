@@ -71,7 +71,7 @@ def test_contact_eigenvector_recovers_compartments():
 
 
 def test_contact_eigenvector_selects_compartments_over_arms():
-    label = _toy_compartments(160, seed=7)
+    label = np.tile(np.repeat([1.0, -1.0], 10), 8)          # balanced in both arms, uncorrelated with the arms
     m = _toy_hic(label, seed=7)
     arm = np.where(np.arange(160) < 80, 1, -1)
     m = m * np.where(np.outer(arm, arm) > 0, 10.0, 0.1)     # strong arm pattern dominates the first eigenvector
@@ -221,3 +221,17 @@ def test_ega_compartments_cli(tmp_path):
     domains = pd.read_csv(prefix + '_domains.tsv', sep='\t')
     assert set(domains.test) == {'community_boundaries_at_tad_boundaries', 'communities_within_one_tad',
                                  'edges_crossing_tad_boundaries'}
+
+
+def test_eigenvector_selection_margin():
+    rng = np.random.default_rng(8)
+    phasing = rng.normal(size=500)
+    noise = rng.normal(size=(500, 2))
+
+    def mix(r):
+        return r * phasing + np.sqrt(1 - r ** 2) * noise[:, 0]
+
+    vecs = np.column_stack([mix(0.5), 0.6 * phasing + 0.8 * noise[:, 1]])
+    assert cp._select(vecs, phasing)[1] == 0                # slightly better second eigenvector: keep the first
+    vecs = np.column_stack([mix(0.2), 0.9 * phasing + 0.44 * noise[:, 1]])
+    assert cp._select(vecs, phasing)[1] == 1
