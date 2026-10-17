@@ -292,9 +292,14 @@ def truthy(value):
 # --------------------------------------------------------------------------------------------------------------------
 # levels of the explanation
 
+SV_LEVELS = ('structural_variant', 'copy_number')
+
+
 def level_order(level):
-    """Rank order of a level: promoter marks, contacts, promoter state, step 1, step 1 state, step 2, ..."""
-    fixed = {'promoter_marks': 0, 'contacts': 1, 'promoter_state': 2, 'step1': 3, 'step1_state': 4}
+    """Rank order of a level: promoter marks, contacts, promoter state, structural variant, copy number, step 1, step 1
+    state, step 2, ..."""
+    fixed = {'promoter_marks': 0, 'contacts': 1, 'promoter_state': 2, 'structural_variant': 2.4, 'copy_number': 2.6,
+             'step1': 3, 'step1_state': 4}
     if level in fixed:
         return fixed[level]
     match = re.fullmatch(r'step(\d+)', str(level))
@@ -307,7 +312,8 @@ def level_label(level):
     """Readable label of a level, as in the tables and the ladder."""
     labels = {'promoter_marks': 'Promoter: histone marks', 'contacts': 'Promoter: own contacts',
               'promoter_state': 'Promoter: chromatin state', 'step1': 'Direct partners (1 step): histone marks',
-              'step1_state': 'Direct partners: chromatin state'}
+              'step1_state': 'Direct partners: chromatin state',
+              'structural_variant': 'Promoter: structural variant nearby', 'copy_number': 'Promoter: copy number'}
     if level in labels:
         return labels[level]
     match = re.fullmatch(r'step(\d+)', str(level))
@@ -321,7 +327,9 @@ def level_phrase(level):
     phrases = {'promoter_marks': 'the histone marks at the promoter', 'contacts': 'the own contacts of the promoter',
                'promoter_state': 'the chromatin state of the promoter',
                'step1': 'the histone marks of the direct partners',
-               'step1_state': 'the chromatin state of the direct partners'}
+               'step1_state': 'the chromatin state of the direct partners',
+               'structural_variant': 'a structural variant near the promoter',
+               'copy_number': 'the copy number of the promoter region'}
     if level in phrases:
         return phrases[level]
     match = re.fullmatch(r'step(\d+)', str(level))
@@ -334,6 +342,8 @@ def cascade_level(level):
     """Cascade level (gene, step1, step2, ...) of an explanation level."""
     if level in ('promoter_marks', 'contacts', 'promoter_state'):
         return 'gene'
+    if level in SV_LEVELS:
+        return 'structural_variant'
     if level == 'step1_state':
         return 'step1'
     return level
@@ -352,7 +362,9 @@ def normalise_level(value):
                'interactions': 'contacts', 'owninteractions': 'contacts', 'promotercontacts': 'contacts',
                'promoterstate': 'promoter_state', 'step1states': 'step1_state',
                'state': 'promoter_state', 'genestate': 'promoter_state', 'step1': 'step1', 'direct': 'step1',
-               'step1marks': 'step1', 'step1state': 'step1_state', 'indirect': 'step2'}
+               'step1marks': 'step1', 'step1state': 'step1_state', 'indirect': 'step2',
+               'structuralvariant': 'structural_variant', 'sv': 'structural_variant', 'copynumber': 'copy_number',
+               'cn': 'copy_number'}
     if text in aliases:
         return aliases[text]
     match = re.fullmatch(r'(?:step|hop)(\d+)(marks)?', text)
@@ -721,7 +733,11 @@ class Run:
             result = '' if isnan(result) else str(result)
             marks = parsed(value(r, 'changes')) if not isnan(value(r, 'changes')) else {}
             mirror = parsed(value(r, 'mirror')) if not isnan(value(r, 'mirror')) else {}
-            if level == 'contacts':
+            if level in SV_LEVELS:
+                detail = value(r, 'detail')
+                row['changes'] = row['all_changes'] = '' if isnan(detail) else str(detail)
+                row['detail'] = '' if row['explains'] else result
+            elif level == 'contacts':
                 text = '{} gained, {} lost, {} shared; summed strength log2 {}'.format(
                     fmt_int(value(r, 'gained')), fmt_int(value(r, 'lost')), fmt_int(value(r, 'shared')),
                     fmt_num(value(r, 'contact'), signed=True)) if c['gained'] else str(value(r, 'detail'))
@@ -1457,7 +1473,10 @@ def cascade_figure(run):
     """Genes per cascade level: first explaining level (egaDifferential cascade) and any explaining level."""
     cascade = run.cascade
     levels = ['gene'] + ['step{}'.format(k) for k in range(1, run.max_hops + 1)]
-    labels = {'gene': 'Promoter', 'step1': 'Direct partners', 'unexplained': 'Not explained'}
+    if cascade is not None and 'structural_variant' in set(cascade['level']):
+        levels.insert(1, 'structural_variant')
+    labels = {'gene': 'Promoter', 'structural_variant': 'Structural variant', 'step1': 'Direct partners',
+              'unexplained': 'Not explained'}
     first = cascade.set_index('level')['genes'] if cascade is not None else pd.Series(dtype=float)
     total = int(first.reindex(levels + ['unexplained']).fillna(0).sum()) if len(first) else len(run.classes)
     any_level = run.any_level_counts()
@@ -2039,11 +2058,76 @@ class GeneStory:
                 '; this is the nearest level that explains it' if nearest_here else '')
         return '{} is {} in both {}.'.format(subject, a_state, kind)
 
+    def structural_sentences(self, rows, nearest):
+        """A structural variant near the promoter and the copy number of the promoter region, in plain words:
+        'The promoter lies 0.4 Mb from the t(8;21) breakpoint; the rearrangement is present in t821 only and the
+        promoter's contacts to chromosome 21 near RUNX1 are lost there; this is the nearest level that explains the
+        change.'"""
+        out = []
+        subject = 'The promoter' if len(self.fragments) == 1 else 'This promoter fragment'
+        a, b = self.run.names
+        sv = rows.get('structural_variant')
+        if sv is not None and str(sv.get('result') or '') not in ('', 'no breakpoint nearby'):
+            extra = sv.get('extra') or {}
+            name = str(extra.get('sv_name', '') or 'a')
+            distance = extra.get('sv_distance', np.nan)
+            status = str(extra.get('sv_status', '') or '')
+            partner = str(extra.get('sv_partner', '') or '')
+            genes = [g for g in str(extra.get('sv_partner_genes', '') or '').split(',') if g and g != 'nan'][:2]
+            chrom = partner.split(':')[0]
+            where = 'chromosome {}'.format(chrom[3:] if chrom.lower().startswith('chr') else chrom) \
+                if chrom and not name.startswith(chrom + ' ') else 'the far side of the join'
+            near = ' near {}'.format(join_words([gene_span(g) for g in genes])) if genes else ''
+            text = '{} lies {} from the {} breakpoint'.format(
+                subject, fmt_distance(distance) if not isnan(distance) else 'close to', esc(name))
+            if status in ('present in both', 'similar support in both'):
+                text += '; the rearrangement is present in both {} and {}'.format(esc(a), esc(b))
+            elif status == 'gained':
+                text += '; the rearrangement is present in {} only'.format(esc(b))
+            elif status == 'lost':
+                text += '; the rearrangement is present in {} only'.format(esc(a))
+            elif status:
+                text += '; the rearrangement is {}'.format(esc(status))
+            junction = extra.get('sv_junction_log2', np.nan)
+            if not isnan(junction) and abs(junction) >= 0.5:
+                text += ', and its contacts to {}{} are {} in {} (log2 {})'.format(
+                    where, near, 'gained' if junction > 0 else 'lost', esc(b), fmt_log2(junction))
+            elif not isnan(junction):
+                text += ', and its contacts to {}{} are similar in both'.format(where, near)
+            else:
+                text += ' (partner side: {}{})'.format(where, near)
+            if sv['explains']:
+                text += '; this accounts for the expression change{}'.format(
+                    ', the nearest level that explains it'
+                    if nearest is not None and nearest['level'] == 'structural_variant' else '')
+            else:
+                text += {'present in both': '; it does not explain the change',
+                         'discordant': '; the change of the rearrangement runs against the expression change',
+                         'no active partner element': '; the partner side carries no active element',
+                         'junction contacts discordant': '; the promoter\'s own contacts across the junction change '
+                                                         'against the expression change'}.get(
+                    str(sv.get('result') or ''), '')
+            out.append(text + '.')
+        cn = rows.get('copy_number')
+        if cn is not None and str(cn.get('result') or '') not in ('', 'no value'):
+            extra = cn.get('extra') or {}
+            va, vb = extra.get('copy_number_A', np.nan), extra.get('copy_number_B', np.nan)
+            value = extra.get('copy_number_log2', np.nan)
+            if not isnan(va) and not isnan(vb):
+                verdict = 'in line with the expression change' if cn['explains'] else \
+                    'against the expression change' if cn.get('result') == 'discordant' else \
+                    ('practically unchanged' if not isnan(value) and abs(value) < 0.1 else
+                     'a change below the threshold')
+                out.append('The relative copy number of the promoter region is {} in {} and {} in {} (log2 {}), '
+                           '{}.'.format(sig(va, 2), esc(a), sig(vb, 2), esc(b), fmt_log2(value), verdict))
+        return out
+
     def step_sentence(self, node, rows, nearest):
         """The nearest explaining level (when not at the promoter) and the strongest supported explanation."""
         best = self.best(rows)
         out = []
-        nearest_said = nearest is not None and (nearest['level'] in ('promoter_marks', 'contacts', 'promoter_state') or
+        nearest_said = nearest is not None and (nearest['level'] in ('promoter_marks', 'contacts', 'promoter_state',
+                                                                     'structural_variant', 'copy_number') or
                                                 cascade_level(nearest['level']) == getattr(self, 'known_level', None))
         if nearest is None:
             return ['None of the measured levels explains the change.']
@@ -2168,6 +2252,7 @@ class GeneStory:
         nearest = self.nearest(rows)
         sentences.append(self.promoter_sentence(node, rows, nearest))
         sentences.append(self.state_sentence(rows, nearest))
+        sentences += self.structural_sentences(rows, nearest)
         sentences += self.step_sentence(node, rows, nearest)
         sentences.append(self.fragments_sentence())
         return ' '.join(s for s in sentences if s)
@@ -2190,6 +2275,8 @@ class GeneStory:
         level = row['level']
         threshold = self.run.chromatin_threshold
         a, b = self.run.names
+        if level in SV_LEVELS:
+            return esc(row.get('detail_raw') or row.get('all_changes') or '')
         if level == 'contacts':
             gained, lost, shared, strength = row['contacts']
             if isnan(gained):
@@ -2995,6 +3082,19 @@ class Report:
                                po=' ({:,} of them bivalent or poised in both {}s)'.format(int(poised), run.kind)
                                if not isnan(poised) else '', d=direct, dp=100 * direct / n if n else 0,
                                f=', ' + far if far else '', u=count('none')))
+            if 'structural_variant' in levels.index or 'copy_number' in levels.index:
+                sv_any = levels['genes_any'].get('structural_variant', np.nan)
+                cn_any = levels['genes_any'].get('copy_number', np.nan)
+                items = []
+                if not isnan(sv_any):
+                    items.append('a structural variant near the promoter (a breakpoint within the window, its change '
+                                 'between the {}s in line with the expression change and active elements on the '
+                                 'partner side) explains {:,} genes, {:,} of them first'.format(
+                                     run.kind, int(sv_any), count('structural_variant')))
+                if not isnan(cn_any):
+                    items.append('a copy number change of the promoter region explains {:,}, {:,} of them first'.format(
+                        int(cn_any), count('copy_number')))
+                bullets.append(capitalise(join_words(items)) + '.')
             parts = []
             for lv in ['step1_marks'] + steps:
                 if lv not in levels.index:
@@ -3208,7 +3308,7 @@ class Report:
         levels = run.levels
         chosen = {}
         used = set()
-        order = ['gene'] + ['step{}'.format(k) for k in range(1, run.max_hops + 1)]
+        order = ['gene', 'structural_variant'] + ['step{}'.format(k) for k in range(1, run.max_hops + 1)]
         for level in order:
             nodes = [n for n, lv in first.items() if lv == level]
             if not nodes:
@@ -3226,7 +3326,7 @@ class Report:
             frame = pd.DataFrame(rows)
             if not len(frame):
                 continue
-            if level == 'gene':
+            if level in ('gene', 'structural_variant'):
                 frame = frame.sort_values(['n_levels', 'rna'], ascending=[False, False])
             elif frame['q'].notna().any():
                 frame = frame.assign(nq=frame['q'].fillna(2), np_=frame['p'].fillna(2))
@@ -3257,10 +3357,10 @@ class Report:
         for level, picked in chosen.items():
             if not picked:
                 continue
-            title = 'Explained at the promoter' if level == 'gene' else ('Explained first at the direct partners'
-                                                                         if level == 'step1' else
-                                                                         'Explained first {} steps away'.format(
-                                                                             level_hops(level)))
+            title = 'Explained at the promoter' if level == 'gene' else \
+                'Explained first by a structural variant or copy number change near the promoter' \
+                if level == 'structural_variant' else ('Explained first at the direct partners' if level == 'step1'
+                                                       else 'Explained first {} steps away'.format(level_hops(level)))
             doc.heading(title, level=3, cls='group')
             for row in picked:
                 gene = row.gene or row.node
@@ -3620,7 +3720,8 @@ def b_name(run):
 
 def level_short(level):
     short = {'promoter_marks': 'promoter marks', 'contacts': 'contacts', 'promoter_state': 'promoter state',
-             'step1': 'step 1', 'step1_state': 'step 1 state'}
+             'structural_variant': 'structural variant', 'copy_number': 'copy number', 'step1': 'step 1',
+             'step1_state': 'step 1 state'}
     return short.get(level, 'step {}'.format(level_hops(level)) if re.fullmatch(r'step\d+', str(level)) else level)
 
 

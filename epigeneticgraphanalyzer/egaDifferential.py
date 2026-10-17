@@ -26,6 +26,8 @@ from .elements import (assign_elements, element_agreement, element_class_counts,
                        node_elements, node_types, read_element_bed, roles_per_element_type, stratum_masks, tss_status)
 from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
+from .structural import (add_sv_edges, breakpoint_calls, flag_sv_edges, read_copy_number, read_structural_variants,
+                         read_sv_contacts, read_trans_calls, structural_genes, sv_edge_table, sv_status)
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
 
 log = logging.getLogger(__name__)
@@ -148,6 +150,36 @@ def parse_arguments(args=None):
     parser.add_argument('--elementMinGenes', type=int, default=50,
                         help='Roles learned per chromatin class of the nodes: classes with at least this many genes '
                              'at a level')
+    parser.add_argument('--structuralVariants', nargs='+',
+                        help='Breakpoints of structural variants: BEDPE with the conditions in which every join is '
+                             'present (column conditions, present_<condition>, pairs_<condition> / '
+                             'obs_exp_<condition>; analysis/capture_sv_calls.py writes <prefix>_sv.bedpe), '
+                             'condition=file.bedpe (every join of the file present in that condition) or '
+                             'condition=<prefix>_trans_hotspots.tsv of analysis/capture_sv_cnv.py. Adds the level '
+                             "'structural variant' after the promoter levels, flags the graph edges that join the two "
+                             'sides of a breakpoint (sv=True) and writes <prefix>_sv_genes.tsv, _sv_breakpoints.tsv')
+    parser.add_argument('--svContacts',
+                        help='Contacts of baited fragments across the junctions (<prefix>_sv_contacts.tsv of '
+                             'analysis/capture_sv_calls.py): the promoter\'s own contacts with the partner side, '
+                             'written as edges sv=True to <prefix>_sv_edges.tsv and <prefix>_union_sv.graphml. With '
+                             '--format ibed the called inter-chromosomal and long-range pairs across a breakpoint '
+                             '(dropped from the cis graph) are written to <prefix>_sv_called_edges.tsv and added '
+                             'to <prefix>_union_sv.graphml as edges sv=True')
+    parser.add_argument('--copyNumber', nargs='+',
+                        help="condition=file.bedGraph of the relative copy number per condition: adds the level "
+                             "'copy number' after the structural variant level")
+    parser.add_argument('--svWindow', type=float, default=1.0,
+                        help='Mb: promoters within this distance of a breakend, partner nodes within it of the '
+                             'partner breakend')
+    parser.add_argument('--svMinPairs', type=int, default=50,
+                        help='capture_sv_cnv.py hotspot tables: read pairs of a breakpoint bin pair')
+    parser.add_argument('--svMinObsExp', type=float, default=20.0,
+                        help='capture_sv_cnv.py hotspot tables: observed / expected of a breakpoint bin pair')
+    parser.add_argument('--svThreshold', type=float, default=1.0,
+                        help='log2 change of the support (obs/exp) of a join present in both conditions counted as '
+                             'gained or lost')
+    parser.add_argument('--copyNumberThreshold', type=float, default=0.5,
+                        help='log2 B/A of the relative copy number at the promoter counted as a change')
     parser.add_argument('--bootstrap', type=int, default=1000, help='Bootstrap resamples of the mirror comparison')
     parser.add_argument('--resolution', type=float, default=1.0, help='Community resolution parameter')
     parser.add_argument('--seed', type=int, default=0)
@@ -353,6 +385,57 @@ def main(args=None):
                                           n_boot=args.roleBootstrap, seed=args.seed),
                 prefix + '_state_transitions.tsv')
 
+    # structural variants and copy number near the promoters (levels after the promoter levels)
+    structural, structural_levels, sv_edges = None, [], None
+    if args.structuralVariants or args.copyNumber:
+        window = int(args.svWindow * 1e6)
+        svs = read_structural_variants(args.structuralVariants or [], (name_a, name_b), args.svMinPairs,
+                                       args.svMinObsExp)
+        contacts = read_sv_contacts(args.svContacts, (name_a, name_b)) if args.svContacts else None
+        copy_number = read_copy_number(args.copyNumber, (name_a, name_b)) if args.copyNumber else None
+        if args.structuralVariants:
+            structural_levels.append('structural_variant')
+            flagged = flag_sv_edges(graph, svs, window)
+            breakpoints = pd.concat([svs, sv_status(svs, (name_a, name_b), args.svThreshold)], axis=1) \
+                if len(svs) else svs
+            write_table(breakpoints, prefix + '_sv_breakpoints.tsv')
+            log.info('%d structural variant joins, %d graph edges join the two sides of a breakpoint', len(svs),
+                     flagged)
+        if copy_number:
+            structural_levels.append('copy_number')
+        # called inter-chromosomal and long-range pairs across the junctions (CHiCAGO ibed lists them; the cis
+        # graph leaves them out): written as edges sv=True, never mixed into the cis levels
+        called = None
+        if args.structuralVariants and args.format == 'ibed':
+            calls = {name_a: read_trans_calls(args.interactionsA, args.scoreThreshold),
+                     name_b: read_trans_calls(args.interactionsB, args.scoreThreshold)}
+            if sum(len(t) for t in calls.values()):
+                called = breakpoint_calls(calls, svs, window, (name_a, name_b))
+                write_table(called, prefix + '_sv_called_edges.tsv')
+                log.info('%d called pairs join the two sides of a breakpoint (%s)', len(called),
+                         called['status'].value_counts().to_dict() if len(called) else {})
+            else:
+                log.info('no inter-chromosomal or long-range pairs among the called interactions')
+        sv_genes, structural = structural_genes(
+            graph, change, svs, (name_a, name_b), window, elements=elements, marks=marks, contacts=contacts,
+            copy_number=copy_number, differential=set(classes['node']), sv_threshold=args.svThreshold,
+            cn_threshold=args.copyNumberThreshold, called=called, tss=tss)
+        if not args.structuralVariants:
+            structural = structural.drop(columns=[c for c in structural if c.startswith('sv_')])
+        if args.structuralVariants:
+            write_table(sv_genes, prefix + '_sv_genes.tsv')
+            log.info('%d genes with the promoter within %.1f Mb of a breakend (%d differential, %d enhancer-hijacking '
+                     'candidates)', sv_genes['node'].nunique() if len(sv_genes) else 0, args.svWindow,
+                     sv_genes.loc[sv_genes['differential'].astype(bool), 'node'].nunique() if len(sv_genes) else 0,
+                     sv_genes.loc[sv_genes['hijacking_candidate'].astype(bool), 'node'].nunique()
+                     if len(sv_genes) else 0)
+        if contacts is not None:
+            sv_edges = sv_edge_table(graph, contacts, svs, (name_a, name_b))
+            write_table(sv_edges, prefix + '_sv_edges.tsv')
+        if called is not None and len(called):
+            sv_edges = called if sv_edges is None or not len(sv_edges) else \
+                pd.concat([sv_edges.assign(source='read pairs'), called], ignore_index=True)
+
     def cascade_with(setting, suffix, presence='mean', write=True):
         """Explanation cascade with the roles of `setting` (promoter roles, step-1 roles, mark signs per level):
         gene: marks / interactions, then bivalent promoter states; step 1: marks, then poised states of contacting
@@ -371,11 +454,14 @@ def main(args=None):
         for t in thresholds:
             for level in ('promoter', 'step1'):
                 transitions_report.append(state_transition_table(classes, tables[t], level).assign(threshold=t))
-            variant = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=tables[t])
-            thresholds_report.append(cascade_table(variant, max_hops=args.maxHops, states_callable=callable_)
+            variant = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=tables[t],
+                                          structural=structural)
+            thresholds_report.append(cascade_table(variant, max_hops=args.maxHops, states_callable=callable_,
+                                                   structural=structural is not None)
                                      .assign(threshold=t))
         states = tables[args.stateThreshold]
-        cascade = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=states)
+        cascade = explanation_cascade(classes, list(marks), signs, args.chromatinThreshold, states=states,
+                                      structural=structural)
         if write:
             for name, report in (('_bivalent_transitions', transitions_report),
                                  ('_state_thresholds', thresholds_report)):
@@ -402,15 +488,17 @@ def main(args=None):
                                     seed=args.seed, differential=set(classes['node'])),
                 prefix + '_element_transitions.tsv')
     details = explanation_details(classes, cascade, graph, marks, mark_signs, args.chromatinThreshold, states=states,
-                                  proximity=proximity)
+                                  proximity=proximity, structural=structural)
     classes = classes.assign(explained_at=cascade['explained_at'].to_numpy(),
                              explained_type=cascade['explained_type'].to_numpy(),
                              explained_by=cascade['explained_by'].to_numpy())
     classes = classes.join(details, on='node').join(states, on='node')
+    if structural is not None:
+        classes = classes.join(structural, on='node')
     if args.roles == 'both':
         other, other_states, other_callable = variants[('learned', 'mean')][:3]
         other_details = explanation_details(classes, other, graph, marks, learned_signs, args.chromatinThreshold,
-                                            states=other_states, proximity=proximity)
+                                            states=other_states, proximity=proximity, structural=structural)
         classes = classes.assign(explained_at_learned=other['explained_at'].to_numpy(),
                                  explained_type_learned=other['explained_type'].to_numpy(),
                                  explained_by_learned=other['explained_by'].to_numpy(),
@@ -475,7 +563,7 @@ def main(args=None):
     for (roles, presence), (which, _, which_callable, suffix, write) in variants.items():
         if write:
             write_table(cascade_table(which, names, first_step_p(which, roles) if args.genePermutations else None,
-                                      proximity, args.maxHops, which_callable),
+                                      proximity, args.maxHops, which_callable, structural=structural is not None),
                         prefix + '_explanation_cascade' + suffix + '.tsv')
     # every level for every differential gene, under both role sets and both presence statistics
     started = time.time()
@@ -484,7 +572,8 @@ def main(args=None):
                                     states={key: value[1] for key, value in variants.items()},
                                     tests=tests_by if args.genePermutations else None, proximity=proximity,
                                     chromatin_threshold=args.chromatinThreshold, names=(name_a, name_b),
-                                    node_types=node_types(elements))
+                                    node_types=node_types(elements), structural=structural,
+                                    structural_levels=structural_levels)
     write_table(all_levels, prefix + '_explanations_all_levels.tsv')
     write_table(explanation_level_counts(all_levels), prefix + '_explanation_levels.tsv')
     write_table(explanation_combinations(all_levels, top=20), prefix + '_explanation_combinations.tsv')
@@ -537,6 +626,9 @@ def main(args=None):
     with open(ensure_parent(prefix + '_community_summary.json'), 'w') as handle:
         json.dump(summary, handle, indent=2)
     write_graph(graph, ensure_parent(prefix + '_union.graphml'))
+    if sv_edges is not None and len(sv_edges):
+        # the junction contacts as edges sv=True, kept out of the cis graph used by the other levels
+        write_graph(add_sv_edges(graph, sv_edges), ensure_parent(prefix + '_union_sv.graphml'))
 
 
 if __name__ == '__main__':
