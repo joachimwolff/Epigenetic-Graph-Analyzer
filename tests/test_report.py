@@ -102,8 +102,15 @@ def test_gene_reports(run):
     assert all('cond1_vs_cond2_gene_{}.html'.format(g) in index for g in genes)
 
 
-def test_levels_fallback_matches_cascade(run):
-    data = egaReport.Run(run['prefix'])
+def test_levels_fallback_matches_cascade(run, tmp_path):
+    # without the all-level table the report derives the levels from the other outputs
+    import glob
+    import shutil
+    prefix = str(tmp_path / os.path.basename(run['prefix']))
+    for path in glob.glob(run['prefix'] + '*'):
+        if not path.endswith('_explanations_all_levels.tsv'):
+            shutil.copy(path, str(tmp_path / os.path.basename(path)))
+    data = egaReport.Run(prefix)
     assert data.levels_source.endswith('(derived)')
     first = data.first_level()
     # every gene explained by egaDifferential has an explaining level at its first cascade level
