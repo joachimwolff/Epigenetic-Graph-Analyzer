@@ -39,3 +39,8 @@ egaDifferential --verbose --maxHops 3 --genePermutations 200000 --rnaThreshold 1
     --proximitySupport "$results/reviewer_controls/hESC_gam_hops_coverage.tsv" \
     -o "$out/hESC_vs_hNEC" > "$out/hESC_vs_hNEC.log" 2>&1
 python "$here/blind_roles.py" "$out/hESC_vs_hNEC" "$out/blind_roles.tsv" "${unknown[@]}" > "$out/blind_roles.log" 2>&1
+# DNA methylation of hESC only (no WGBS of E009): a state annotation of the element classes and promoters of hESC
+if [[ -e "$roadmap/E008_WGBS_FractionalMethylation.bigwig" ]]; then
+    python "$here/blind_methylation.py" "$out/hESC_vs_hNEC" "$roadmap/E008_WGBS_FractionalMethylation.bigwig" hESC \
+        "$out/methylation_E008" > "$out/methylation_E008.log" 2>&1
+fi

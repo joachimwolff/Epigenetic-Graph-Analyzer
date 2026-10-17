@@ -1268,6 +1268,17 @@ def s28():
                                     tex(r['learned_role']), tex(r['verdict'])]) + r' \\')
             first = False
         rows.append(r'\midrule')
+    methylation = path('hops_n', 'blind', 'methylation_E008_classes.tsv')
+    if os.path.exists(methylation):
+        m = pd.read_csv(methylation, sep='\t')
+        m = m[(m['roles'] == 'declared') & (m['fragments'] >= 50)]
+        rows.append(r'\multicolumn{8}{l}{\textit{CpG methylation of hESC (E008 WGBS; no WGBS of E009) by element '
+                    r'class in hESC: fragments, median (quartiles), fraction $\geq$ 0.6}} \\')
+        for _, r in m.iterrows():
+            rows.append(' & '.join([tex(r['element_class']), '', '', integer(r['with_cpg']), num(r['median'], 2),
+                                    '{} to {}'.format(num(r['q25'], 2), num(r['q75'], 2)),
+                                    '{:.0f}\\%'.format(100 * r['fraction_methylated']), '']) + r' \\')
+        rows.append(r'\midrule')
     table('table_s28_blind.tex', 'p{2.6cm}llrrrll',
           'Track (expected) & Level & Nodes & Genes & $\\rho$ & 95\\% interval & Learned role & Verdict', rows[:-1],
           'Blind test of the role discovery, hESC / hNEC: Roadmap tracks of E008 and E009 given without a role '
@@ -1276,7 +1287,9 @@ def s28():
           'nodes that are promoters (captured or not), promoters that are not captured, and non-promoter elements: '
           'Spearman $\\rho$ of the mark change with the expression change with a 95\\% chromosome block-bootstrap '
           'interval; active or repressive when the interval excludes 0. Expected from the known biology: H3K9me3 '
-          'repressive, H3K36me3 transcription-associated (active); H2A.Z has no single expected sign. At the '
+          'repressive, H3K36me3 transcription-associated (active); H2A.Z (at active and poised promoters and '
+          'enhancers) has no single expected sign. Last block: DNA methylation of hESC as a state (no WGBS of E009, '
+          'so methylation cannot enter as a change), mean fractional CpG methylation of the fragment. At the '
           'promoter level the node is the captured promoter fragment of the gene, which covers mostly the promoter '
           'and little of the gene body.', 'tab:s28blind', size=r'\scriptsize', long=True, colsep='3pt')
 
