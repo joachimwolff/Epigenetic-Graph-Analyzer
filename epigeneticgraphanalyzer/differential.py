@@ -371,11 +371,11 @@ def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0, th
     columns = {}
     for level in operators.levels:
         W_a, W_b, _ = operators.level(level)
-        coo_a = W_a.tocoo()
-        coo_b = W_b.tocsr()
-        rows, cols = coo_a.row, coo_a.col
-        weight_a = coo_a.data
-        weight_b = np.asarray(coo_b[rows, cols]).ravel()
+        # paths of either condition: gained neighbours exist in B only, lost ones in A only
+        pattern = ((abs(W_a) > 0).astype(np.int8) + (abs(W_b) > 0).astype(np.int8)).tocoo()
+        rows, cols = pattern.row, pattern.col
+        weight_a = np.asarray(W_a.tocsr()[rows, cols]).ravel()
+        weight_b = np.asarray(W_b.tocsr()[rows, cols]).ravel()
         chroms = list(source_chrom[rows])
         starts = source_centre[rows] - node_end[cols]
         ends = source_centre[rows] - node_start[cols]

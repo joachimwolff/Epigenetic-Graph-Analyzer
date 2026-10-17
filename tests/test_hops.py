@@ -301,3 +301,17 @@ def test_community_null_threads_and_sampling():
                                         n_permutations=3000, threads=4)
     pd.testing.assert_frame_equal(one, four)
     assert len(one) == 4 and one['coherence_p'].between(1 / 3001, 1).all()
+
+
+def test_mirror_includes_neighbours_gained_in_b(tmp_path):
+    """A node reached in condition B only (through a gained edge) must enter the mirrored B activity."""
+    from epigeneticgraphanalyzer.differential import mirrored_features
+    from tests.synthetic import write_bigwig
+    # a at 100 kb, b at 200 kb, c at 300 kb; source b; b-c shared, c-a gained in B, so a is 2 hops away in B only
+    graph = weighted_graph([('b', 'c', 1.0, 1.0), ('c', 'a', 0.0, 1.0)])
+    operators = ActivityOperators(graph, ['b'], max_hops=2)
+    # the mirror of a around b lies at 300-305 kb (fragment 60)
+    track_a = write_bigwig(str(tmp_path / 'a.bw'), {}, default=1.0)
+    track_b = write_bigwig(str(tmp_path / 'b.bw'), {('chr1', 60): 10.0}, default=1.0)
+    mirror = mirrored_features(graph, operators, {'m': [track_a]}, {'m': [track_b]})
+    assert mirror.loc['b', 'm_indirect_mirror'] == pytest.approx(np.log2(11.0))
