@@ -124,14 +124,17 @@ def default_genes(directory):
     if os.path.exists(path):
         t = pd.read_csv(path, sep='\t')
         biv = t[t['promoter_transition'].astype(str).str.startswith('bivalent -> active')]
-        biv = biv.drop_duplicates('gene').sort_values('gene_log2FC', ascending=False)
-        picks += [('hESC_vs_hNEC', g.split(',')[0]) for g in biv['gene'].head(3)]
+        biv = biv.sort_values('gene_log2FC', ascending=False)
+        names = list(dict.fromkeys(g.split(',')[-1] if g.startswith(('AC', 'AL', 'RP')) else g.split(',')[0]
+                                   for g in biv['gene']))
+        picks += [('hESC_vs_hNEC', g) for g in names[:3]]
     path = os.path.join(directory, 'siMM_vs_siRE_gene_triggers.tsv')
     if os.path.exists(path):
         t = pd.read_csv(path, sep='\t')
         t = t[t['explained_at'].astype(str).str.startswith('step')].drop_duplicates('gene')
         t = t.reindex(t['gene_log2FC'].abs().sort_values(ascending=False).index)
-        picks += [('siMM_vs_siRE', g.split(',')[0]) for g in t['gene'].head(3)]
+        names = list(dict.fromkeys(g.split(',')[0] for g in t['gene']))
+        picks += [('siMM_vs_siRE', g) for g in names[:3]]
     return picks
 
 
