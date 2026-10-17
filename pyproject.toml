@@ -44,12 +44,16 @@ egaPlotLocus = "epigeneticgraphanalyzer.egaPlotLocus:main"
 egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
 egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
 egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
+egaReport = "epigeneticgraphanalyzer.egaReport:main"
 
 [tool.setuptools.dynamic]
 version = {attr = "epigeneticgraphanalyzer._version.__version__"}
 
 [tool.setuptools.packages.find]
 include = ["epigeneticgraphanalyzer*"]
+
+[tool.setuptools.package-data]
+epigeneticgraphanalyzer = ["templates/*.html", "templates/*.css"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
