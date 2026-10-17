@@ -45,4 +45,6 @@ for graph in GM_chicago GM_mifsud K562 VC_GM12878; do
     done
 done
 xargs -P "$jobs" -I{} bash -c '{}' < "$commands"
+"$python" "$here/table_eqtl.py" "$out" "$out/tables"
+"$python" "$here/figure_eqtl.py" "$out" "$out/figures"
 echo EQTL_RUNS_DONE

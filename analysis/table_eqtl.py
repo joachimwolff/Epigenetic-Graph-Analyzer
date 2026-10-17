@@ -117,10 +117,13 @@ def main():
     summary = collect(root)
     summary.to_csv(os.path.join(root, 'eqtl_summary.tsv'), sep='\t', index=False)
     lines = [r'\begin{table}[!h]', r'\centering\scriptsize', r'\begin{adjustbox}{max width=\textwidth}',
-             r'\begin{tabular}{@{}lllrrlllllll@{}}', r'\toprule',
-             r'Graph & eQTL set & Graph version & eQTL pairs & Controls & Direct, eQTL / control (\%) & '
-             r'OR direct & OR 2-step, no direct & OR 3-step, no 1--2 step & $P_\mathrm{LR}$ 2-step & '
-             r'$P_\mathrm{LR}$ 3-step & $P_\mathrm{LR}$ 2-step, no direct \\', r'\midrule']
+             r'\begin{tabular}{@{}lllrrllllllllll@{}}', r'\toprule',
+             r' & & & & & & \multicolumn{3}{c}{Odds ratio (Mantel-Haenszel)} & '
+             r'\multicolumn{4}{c}{$P_\mathrm{LR}$, logistic} & \multicolumn{2}{c}{$P_\mathrm{LR}$, conditional} \\',
+             r'\cmidrule(lr){7-9}\cmidrule(lr){10-13}\cmidrule(l){14-15}',
+             r'Graph & eQTL set & Graph & eQTL pairs & Controls & Direct (\%) & '
+             r'Direct & 2-step, no direct & 3-step, no 1--2 step & 2-step & 3-step & 2-step, no direct & '
+             r'3-step, no direct & 2-step & 3-step \\', r'\midrule']
     previous = None
     for _, r in summary.iterrows():
         if previous is not None and r['graph'] != previous:
@@ -135,15 +138,20 @@ def main():
                        'or_high': r['or_two_high']}),
             odds_cell({'odds_ratio': r['or_three_without_1_2'], 'or_low': r['or_three_low'],
                        'or_high': r['or_three_high']}),
-            pval(r['lrt_p_two']), pval(r['lrt_p_three']), pval(r['lrt_p_two_without_direct'])]) + r' \\')
+            pval(r['lrt_p_two']), pval(r['lrt_p_three']), pval(r['lrt_p_two_without_direct']),
+            pval(r['lrt_p_three_without_direct']), pval(r['lrt_p_two_conditional']),
+            pval(r['lrt_p_three_conditional'])]) + r' \\')
     caption = (r'eQTL variant-gene pairs against distance-matched non-eQTL pairs in the promoter interaction graphs. '
                r'Controls per eQTL pair: the same variant fragment with baited promoters of other eGenes, and the same '
                r'gene with other fragments carrying a significant variant, within a factor $10^{0.1}$ of the eQTL '
                r'distance (up to 1~Mb) and never a significant pair of the data set. OR: Mantel-Haenszel odds ratio over '
                r'distance bins with chromosome block-bootstrap 95\% interval (1,000 resamples). $P_\mathrm{LR}$: '
                r'likelihood-ratio test of the 2- or 3-step term in the logistic model of eQTL status on log distance, '
-               r'direct edge, 2-step path and 3-step path, on all pairs or on pairs without a direct edge. Mirrored: '
-               r'every edge reflected around its bait, keeping bait degree and edge length.')
+               r'distance bins, direct edge, 2-step path and 3-step path, on all pairs or on pairs without a direct '
+               r'edge; conditional: conditional logistic model within matched sets (eQTL pair and its controls) on '
+               r'log distance and the three path terms. Direct (\%): eQTL / control pairs with a direct edge. Control '
+               r'fragments also match the eQTL fragment in length (factor $10^{0.15}$) and bait status. Graph: '
+               r'observed, or mirrored (every edge reflected around its bait, keeping bait degree and edge length).')
     lines += [r'\bottomrule', r'\end{tabular}', r'\end{adjustbox}', r'\caption{' + caption + '}',
               r'\label{tab:s30}', r'\end{table}']
     with open(os.path.join(out, 'table_s30.tex'), 'w') as handle:

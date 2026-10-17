@@ -17,6 +17,7 @@ import matplotlib
 
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
+import matplotlib.ticker  # noqa: E402,F401
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
 
@@ -38,7 +39,7 @@ CONTRASTS = {'direct': 'direct edge', 'two_step_without_direct': '2-step path, p
 def fraction_panel(fractions, step, path):
     bins = [b for b in fractions['distance_bin'].unique() if b != 'all']
     x = np.arange(len(bins))
-    fig, ax = plt.subplots(figsize=(2.6, 2.0))
+    fig, ax = plt.subplots(figsize=(2.8, 2.6))
     for graph, marker, fill in (('observed', 'o', True), ('mirrored', 's', False)):
         for group, color, offset in (('eqtl', EQTL, -0.08), ('control', CONTROL, 0.08)):
             t = fractions[(fractions['graph'] == graph) & (fractions['group'] == group)].set_index('distance_bin')
@@ -54,7 +55,8 @@ def fraction_panel(fractions, step, path):
     ax.set_xlabel('Distance variant - TSS (kb)')
     ax.set_ylabel('Pairs connected {} (%)'.format(STEPS[step]))
     ax.set_ylim(bottom=0)
-    ax.legend(frameon=False, fontsize=5.5, loc='upper right')
+    ax.legend(frameon=False, fontsize=5.5, loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=2,
+              handlelength=2.2, columnspacing=1.0)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
@@ -63,7 +65,7 @@ def fraction_panel(fractions, step, path):
 def odds_panel(odds, contrast, path):
     t = odds[(odds['contrast'] == contrast) & (odds['control'] == 'control') & (odds['distance_bin'] == 'all_mh')]
     rows = [(g, d) for g in GRAPHS for d in DATA if ((t['graph_name'] == g) & (t['data'] == d)).any()]
-    fig, ax = plt.subplots(figsize=(3.4, 0.22 * len(rows) + 0.7))
+    fig, ax = plt.subplots(figsize=(4.4, 0.22 * len(rows) + 1.0))
     for i, (g, d) in enumerate(rows):
         for graph, color, offset, fill in (('observed', EQTL, -0.15, True), ('mirrored', CONTROL, 0.15, False)):
             r = t[(t['graph_name'] == g) & (t['data'] == d) & (t['graph'] == graph)]
@@ -76,10 +78,13 @@ def odds_panel(odds, contrast, path):
                     markerfacecolor=color if fill else 'white', label='{} graph'.format(graph) if i == 0 else None)
     ax.axvline(1, color='black', lw=0.5, ls='--')
     ax.set_xscale('log')
+    ax.xaxis.set_major_locator(matplotlib.ticker.FixedLocator([0.25, 0.5, 1, 2, 4]))
+    ax.xaxis.set_major_formatter(matplotlib.ticker.FixedFormatter(['0.25', '0.5', '1', '2', '4']))
+    ax.xaxis.set_minor_locator(matplotlib.ticker.NullLocator())
     ax.set_yticks(range(len(rows)))
     ax.set_yticklabels(['{} / {}'.format(GRAPHS[g], DATA[d]) for g, d in rows][::-1], fontsize=5.5)
     ax.set_xlabel('Odds ratio, eQTL vs control pairs\n({})'.format(CONTRASTS[contrast]))
-    ax.legend(frameon=False, fontsize=5.5, loc='lower right')
+    ax.legend(frameon=False, fontsize=5.5, loc='lower center', bbox_to_anchor=(0.5, 1.0), ncol=2)
     fig.tight_layout()
     fig.savefig(path)
     plt.close(fig)
