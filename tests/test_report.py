@@ -59,14 +59,33 @@ def external_resources(text):
     return found
 
 
+FORBIDDEN_IN_BODY = ('/mnt/', 'step1_state', 'promoter_marks', 'promoter_state', 'nan', 'explains, rank',
+                     'egaDifferential (declared roles)', '_gene_classes.tsv', 'chr1:', '\u2014')
+
+
+def check_body(text, run):
+    """The report body (outside the appendix) reads as text: no paths, internal names, reprs or raw coordinates."""
+    body = egaReport.body_outside_appendix(text)
+    # the text of the body without the inline figures
+    prose = re.sub(r'<svg.*?</svg>', '', body, flags=re.S)
+    for word in FORBIDDEN_IN_BODY:
+        assert word not in prose, word
+    assert run['dir'] not in prose
+    # no Python reprs (the word in a sentence, 'None of ...', is fine)
+    assert not re.search(r'\bNone\b(?! of)', prose)
+    assert not re.search(r"\[\'|\{\'|\bTrue\b|\bFalse\b", prose)
+    # comma-joined lists keep a space after the comma
+    assert not re.search(r'GENE\d+,GENE\d+', re.sub(r'<[^>]+>', '', prose))
+    return body
+
+
 def test_main_report(run):
     out = os.path.join(run['dir'], 'reports')
     outputs = egaReport.main(['-p', run['prefix'], '--top', '2', '--pdf', 'none', '-o', out])
     html_path = outputs[0][0]
     assert os.path.basename(html_path) == 'cond1_vs_cond2_report.html'
     text = open(html_path).read()
-    for anchor in ('summary', 'cascade', 'combinations', 'roles', 'states', 'findings', 'hubs', 'communities',
-                   'methods'):
+    for anchor in ('findings', 'cascade', 'genes', 'communities', 'appendix'):
         assert 'id="{}"'.format(anchor) in text, anchor
     assert 'cond1' in text and 'cond2' in text
     # figures are inline SVG with captions below; no external resources, no em-dashes
@@ -74,11 +93,16 @@ def test_main_report(run):
     assert re.search(r'</div><figcaption><span class="label">Figure 1\.</span>', text)
     assert external_resources(text) == []
     assert 'http' not in re.sub(r'<p[^>]*>.*?</p>', '', text, flags=re.S)
-    assert '—' not in text
-    # the numbers of the summary come from the run outputs
+    body = check_body(text, run)
+    # key findings and gene cards with the at-a-glance paragraph and the ladder
+    assert '<ul class="findings">' in body and 'class="card"' in body and 'class="glance"' in body
+    assert 'Explanation ladder' in body
+    # the numbers of the summary come from the run outputs (appendix) and the key findings (body)
     edges = pd.read_csv(run['prefix'] + '_edges.tsv.gz', sep='\t')
     assert '{:,}'.format(int((edges['status'] == 'gained').sum())) in text
-    assert '{:,}'.format(len(run['classes'])) in text
+    assert '{:,} genes differ in expression'.format(len(run['classes'])) in body
+    # the appendix is a collapsible section with the paths
+    assert '<details><summary>' in text and run['prefix'] in text
 
 
 def test_gene_reports(run):
@@ -93,13 +117,52 @@ def test_gene_reports(run):
         path = os.path.join(out, 'cond1_vs_cond2_gene_{}.html'.format(gene))
         assert path in pages
         text = open(path).read()
-        for anchor in ('gene-summary', 'gene-levels', 'gene-figures', 'gene-states', 'gene-support', 'gene-hub',
-                       'methods'):
+        for anchor in ('glance', 'interactions', 'evidence', 'states', 'hub', 'appendix'):
             assert 'id="{}"'.format(anchor) in text, anchor
-        assert 'class="levels"' in text and 'explains, rank 1' in text
+        body = check_body(text, run)
+        # readable level labels in the evidence table, the expression change as a factor
+        assert 'Promoter: histone marks' in body and 'Promoter: own contacts' in body
+        assert re.search(r'Expression of <span class="gene">{}</span> is about [0-9.,]+-fold (higher|lower)'
+                         .format(gene), body)
+        assert 'Distance control' in body
         assert external_resources(text) == []
     index = open(os.path.join(out, 'cond1_vs_cond2_genes_index.html')).read()
     assert all('cond1_vs_cond2_gene_{}.html'.format(g) in index for g in genes)
+
+
+def test_formatting():
+    assert egaReport.fmt_pq(8.4999e-05) == '8.5 \u00d7 10<sup>\u22125</sup>'
+    assert egaReport.fmt_pq(8.4999e-05, markup=False) == '8.5 \u00d7 10^-5'
+    assert egaReport.fmt_pq(0.0116849) == '0.012'
+    assert egaReport.fmt_pq(0.004975) == '0.005'
+    assert egaReport.fold(10.604116) == '1,560'
+    assert egaReport.fold(-1.73499) == '3.3'
+    assert egaReport.fmt_log2(-0.04) == '0.0'
+    assert egaReport.fmt_log2(-1.37) == '\u22121.4'
+    assert egaReport.join_words(['a', 'b', 'c']) == 'a, b and c'
+    assert egaReport.level_label('step1_state') == 'Direct partners: chromatin state'
+    assert egaReport.level_label('step3') == '3 steps away'
+    assert egaReport.readable_note('repressive mark gained') == 'gain of the repressive mark'
+    assert egaReport.state_text('repressed -> bivalent: active mark gained', ('Md', 'PA2')) == \
+        'repressed in Md, bivalent in PA2'
+    assert egaReport.fmt_distance(-120400) == '120 kb'
+    assert egaReport.fmt_distance(1037000) == '1.0 Mb'
+
+
+def test_places(run):
+    data = egaReport.Run(run['prefix'])
+    graph = data.graph
+    baits = [n for n, d in graph.nodes(data=True) if d.get('bait') and d.get('genes')]
+    others = [n for n, d in graph.nodes(data=True) if not d.get('bait') and d.get('chrom') ==
+              graph.nodes[baits[0]]['chrom']]
+    gene = egaReport.gene_names(graph.nodes[baits[0]]['genes'])[0]
+    places = egaReport.Places(graph)
+    assert places.label(baits[0], markup=False) == '{} promoter'.format(gene)
+    label = places.label(others[0], baits[0], gene, markup=False)
+    assert re.fullmatch(r'element [0-9.]+ (bp|kb|Mb) from {}( \(near \S+\))?'.format(gene), label), label
+    places.strands = {gene: '+'}
+    assert re.search(r'(upstream|downstream) of {}'.format(gene), places.label(others[0], baits[0], gene,
+                                                                               markup=False))
 
 
 def test_levels_fallback_matches_cascade(run, tmp_path):
@@ -160,7 +223,10 @@ def test_all_level_table_is_read(run, tmp_path):
     outputs = egaReport.main(['-p', prefix, '--explainPrefix', '', '--gene', gene, '--pdf', 'none', '-o', out])
     text = open(outputs[0][0]).read()
     assert 'copy_explanations_all_levels.tsv' in text
-    assert 'q = 0.03' in text
+    # P and q of the supported step in the at-a-glance paragraph and the evidence table
+    body = egaReport.body_outside_appendix(text)
+    assert 'q = 0.03' in body and '2 steps away' in body
+    assert 'copy_explanations_all_levels.tsv' not in body
 
 
 def test_matplotlib_pdf(run):

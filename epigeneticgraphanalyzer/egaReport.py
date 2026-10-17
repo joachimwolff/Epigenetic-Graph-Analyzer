@@ -4,15 +4,24 @@ The report only reads the outputs of egaDifferential (<prefix>_*) and, when pres
 (<explain prefix>_*). Every number shown is taken from these files or counted from them; the figures are drawn from
 <prefix>_union.graphml with the drawing functions of egaPlotDifferential.
 
-Main report (default): (a) summary of the comparison, (b) explanation cascade (first level and any level, level
-combinations, mark roles declared and learned per level, chromatin state transitions), (c) major findings: per
-cascade level the genes with the strongest support, each with all explaining levels in rank order, interaction arcs in
-both conditions and their change and the neighbourhood graph with the explaining nodes, (d) hubs and communities:
-members changing in the same and in the opposite direction, genes that left or joined, drawn in both conditions,
-(e) methods, parameters and versions.
+The report is written for a reader of the biology: the body names places by their genes ('the Hoxa2 promoter',
+'element 1.0 Mb upstream of Hoxa3 (near Skap2)'), levels by readable labels ('Promoter: chromatin state', '2 steps
+away') and numbers with at most three significant digits. File paths, parameters, versions, coordinates and the full
+numeric tables are kept in the appendix 'Data and methods' at the end (a collapsible section in HTML, the last pages
+of the PDF).
 
-Gene report (--gene NAME [NAME ...]): the same structure restricted to each gene, one page per gene and an index.
+Main report (default): title block, key findings (sentences generated from the run), the explanation cascade, one
+finding card per selected gene (the 'at a glance' paragraph, the explanation ladder and the interaction arcs, with a
+link to the gene report), hubs and coordinated communities in prose with figures, appendix.
+
+Gene report (--gene NAME [NAME ...]): title block, 'at a glance' paragraph with the explanation ladder, interactions
+(arcs and neighbourhood graph), evidence by level per promoter fragment, chromatin states (with re-ChIP where
+available), hub and community, appendix; an index page when several genes are given.
 Community report (--community ID): one page for a community of condition B (or A with --communitySide A).
+
+Declared mark roles are shown throughout; the result under the roles learned from the data is mentioned only where it
+differs from the declared one. Upstream and downstream need the strand of the report gene (--annotation, a GTF or
+BED file); without it the distance alone is given.
 
 The per-gene explanation of every level comes from <prefix>_explanations_all_levels.tsv when egaDifferential wrote
 it; otherwise it is derived from <prefix>_gene_classes.tsv (mark changes at the promoter, own interactions,
@@ -74,6 +83,13 @@ LEFT_COLOR = '#E69F00'
 JOINED_COLOR = '#009E73'
 ROLE_SIGN = {'active': 1, 'enhancer': 1, 'repressive': -1}
 FRAGMENT_COLUMNS = ('fragment', 'promoter fragment', 'node', 'path', 'genes')
+# readable names of the conditions of common data sets, and what they are (tissues, cell types)
+KNOWN_CONDITIONS = {'Md': ('mandibular arch', 'tissue'), 'PA2': ('second pharyngeal arch', 'tissue'),
+                    'hESC': ('human embryonic stem cells', 'cell type'),
+                    'hNEC': ('hESC-derived neuroectoderm', 'cell type'),
+                    'siMM': ('Kasumi-1, control siRNA', 'condition'),
+                    'siRE': ('Kasumi-1, RUNX1-ETO knockdown', 'condition')}
+ACCENT = '#2c5d8a'
 CHROMIUM_CANDIDATES = ('/snap/bin/chromium', 'chromium', 'chromium-browser', 'google-chrome', 'google-chrome-stable')
 
 matplotlib.rcParams.update({'svg.fonttype': 'none', 'font.family': 'sans-serif', 'font.sans-serif': FONT_FAMILY,
@@ -96,8 +112,17 @@ def parse_arguments(args=None):
     parser.add_argument('--community', type=int, default=None, help='Community report for this community ID')
     parser.add_argument('--communitySide', choices=('A', 'B'), default='B',
                         help='Condition whose community IDs --community refers to')
-    parser.add_argument('--top', type=int, default=3,
-                        help='Genes shown per cascade level in the major findings (main report)')
+    parser.add_argument('--labels', nargs=2, default=None,
+                        help='Readable names of the conditions A B for the title (default: known names of common '
+                             'data sets, else the condition names)')
+    parser.add_argument('--annotation', default=None,
+                        help='Gene annotation (GTF, GTF.gz or BED with strand) for upstream / downstream of the '
+                             'report gene; without it only the distance is given')
+    parser.add_argument('--rechip', default=None,
+                        help='Re-ChIP signal per bait (default: <prefix dir>/rechip/rechip_baits.tsv.gz if its '
+                             'columns match the condition names)')
+    parser.add_argument('--top', type=int, default=2,
+                        help='Genes shown per cascade level in the gene cards of the main report')
     parser.add_argument('--maxCommunities', type=int, default=3,
                         help='Coordinated communities drawn in the main report')
     parser.add_argument('--maxNodes', type=int, default=80,
@@ -168,6 +193,80 @@ def fmt_pct(value):
     return '' if isnan(value) else '{:.1f}%'.format(100 * float(value))
 
 
+MINUS = '−'
+
+
+def round_sig(value, digits=2):
+    value = float(value)
+    if value == 0 or not np.isfinite(value):
+        return value
+    return round(value, digits - 1 - int(np.floor(np.log10(abs(value)))))
+
+
+def sig(value, digits=2):
+    """A number with at most `digits` significant digits (thousands separated), no exponent above 0.001."""
+    if isnan(value):
+        return ''
+    value = round_sig(value, digits)
+    if value == 0:
+        return '0'
+    decimals = max(0, digits - 1 - int(np.floor(np.log10(abs(value)))))
+    text = '{:,.{d}f}'.format(value, d=decimals)
+    return text.replace('-', MINUS)
+
+
+def fmt_log2(value, signed=True):
+    """A log2 change with one decimal and a true minus sign ('+3.4', '−1.2')."""
+    if isnan(value):
+        return ''
+    value = float(value)
+    if round(value, 1) == 0:
+        return '0.0'
+    text = '{:+.1f}'.format(value) if signed else '{:.1f}'.format(abs(value))
+    return text.replace('-', MINUS)
+
+
+def fold(value):
+    """Plain factor of a log2 change ('37', '1,560')."""
+    factor = 2 ** abs(float(value))
+    if factor < 10:
+        return '{:.1f}'.format(factor)
+    if factor < 100:
+        return '{:.0f}'.format(factor)
+    return '{:,.0f}'.format(round_sig(factor, 3))
+
+
+def fmt_pq(value, markup=True):
+    """P or q: two significant digits, below 0.001 as 8.5 x 10^-5 (superscript in HTML)."""
+    if isnan(value):
+        return ''
+    value = float(value)
+    if value == 0:
+        return '0'
+    if value < 0.001:
+        mantissa, exponent = '{:.1e}'.format(value).split('e')
+        exponent = int(exponent)
+        power = '10<sup>{}{}</sup>'.format(MINUS if exponent < 0 else '', abs(exponent)) if markup else \
+            '10^{}'.format(exponent)
+        return '{} × {}'.format(mantissa, power)
+    text = sig(value, 2)
+    return text.rstrip('0').rstrip('.') if '.' in text else text
+
+
+def join_words(items, conjunction='and'):
+    items = [i for i in items if i]
+    if len(items) <= 1:
+        return ''.join(items)
+    return '{} {} {}'.format(', '.join(items[:-1]), conjunction, items[-1])
+
+
+def gene_names(genes):
+    """Gene names of a fragment, informative names first (without Gm..., predicted loci and the like)."""
+    names = [g for g in str(genes if not isnan(genes) else '').split(',') if g and g != 'nan']
+    informative = [g for g in names if not g.startswith(IGNORED_GENE_PREFIXES)]
+    return informative or names
+
+
 def gene_span(name):
     return '<span class="gene">{}</span>'.format(esc(name))
 
@@ -205,15 +304,30 @@ def level_order(level):
 
 
 def level_label(level):
-    labels = {'promoter_marks': 'promoter marks', 'contacts': 'contacts of the promoter',
-              'promoter_state': 'promoter state', 'step1': 'step 1 (direct partners)',
-              'step1_state': 'step 1 state (contacting fragments)'}
+    """Readable label of a level, as in the tables and the ladder."""
+    labels = {'promoter_marks': 'Promoter: histone marks', 'contacts': 'Promoter: own contacts',
+              'promoter_state': 'Promoter: chromatin state', 'step1': 'Direct partners (1 step): histone marks',
+              'step1_state': 'Direct partners: chromatin state'}
     if level in labels:
         return labels[level]
     match = re.fullmatch(r'step(\d+)', str(level))
     if match:
-        return 'step {} (nodes at exactly {} steps)'.format(match.group(1), match.group(1))
-    return str(level)
+        return '{} steps away'.format(match.group(1))
+    return str(level).replace('_', ' ')
+
+
+def level_phrase(level):
+    """The level inside a sentence."""
+    phrases = {'promoter_marks': 'the histone marks at the promoter', 'contacts': 'the own contacts of the promoter',
+               'promoter_state': 'the chromatin state of the promoter',
+               'step1': 'the histone marks of the direct partners',
+               'step1_state': 'the chromatin state of the direct partners'}
+    if level in phrases:
+        return phrases[level]
+    match = re.fullmatch(r'step(\d+)', str(level))
+    if match:
+        return 'the nodes {} steps away'.format(match.group(1))
+    return str(level).replace('_', ' ')
 
 
 def cascade_level(level):
@@ -326,6 +440,11 @@ class Run:
         self.chromatin_threshold = chromatin_threshold if chromatin_threshold is not None else \
             self.command_value('--chromatinThreshold', 1.0)
         self.names = list(names) if names else self.condition_names()
+        self.labels = [KNOWN_CONDITIONS.get(n, (n, None))[0] for n in self.names]
+        kinds = {KNOWN_CONDITIONS.get(n, (None, None))[1] for n in self.names}
+        self.kind = kinds.pop() if len(kinds) == 1 and None not in kinds else 'condition'
+        self.rechip = None
+        self.rechip_path = None
         self.marks = self.find_marks()
         self.max_hops = max([int(m.group(1)) for c in self.classes.columns
                              for m in [re.fullmatch(r'n_hop(\d+)', c)] if m] + [2])
@@ -336,6 +455,31 @@ class Run:
         self.levels_variant = None
         self.level_counts = self.table('_explanation_levels.tsv')
         self.levels, self.levels_source = self.build_levels()
+
+    def set_labels(self, labels):
+        if labels:
+            self.labels = list(labels)
+            self.kind = 'condition'
+
+    def condition_title(self):
+        """'mandibular arch (Md) vs second pharyngeal arch (PA2)', or the names as given."""
+        parts = ['{} ({})'.format(label, name) if label != name else name
+                 for label, name in zip(self.labels, self.names)]
+        return '{} vs {}'.format(*parts)
+
+    def read_rechip(self, path=None):
+        """Re-ChIP signal per bait (columns reChIP_<condition>_<mean|max1kb>); only when they match the names."""
+        path = path or os.path.join(os.path.dirname(os.path.abspath(self.prefix)), 'rechip', 'rechip_baits.tsv.gz')
+        if not os.path.exists(path):
+            return None
+        with gzip.open(path, 'rt') if path.endswith('.gz') else open(path) as handle:
+            header = handle.readline().rstrip('\n').split('\t')
+        if not all('reChIP_{}_mean'.format(n) in header for n in self.names) or 'node' not in header:
+            return None
+        self.rechip = pd.read_csv(path, sep='\t').set_index('node')
+        self.rechip_path = path
+        self.used[os.path.basename(path)] = path
+        return self.rechip
 
     # files ----------------------------------------------------------------------------------------------------------
     def table(self, suffix, required=False):
@@ -503,6 +647,9 @@ class Run:
                  beyond=col(('beyond_mirror',), 'beyond_mirror_' + roles if roles else None),
                  concordant=col(('concordant_marks', 'marks'), 'concordant_marks_' + roles if roles else None),
                  strongest=col(('strongest',), 'strongest_' + roles if roles else None),
+                 strongest_node=col(('strongest_node',), 'strongest_node_' + roles if roles else None),
+                 state_fragment=col(('state_fragment',), 'state_fragment_' + key if key else None),
+                 signs=col(('signs',), 'signs_' + roles if roles else None),
                  n_concordant=col(('n_concordant_nodes',), 'n_concordant_nodes_' + roles if roles else None),
                  changes=col(('mark_changes', 'changes')), mirror=col(('mirror_changes',)),
                  nodes=col(('nodes_tested', 'nodes', 'n_nodes')), support=col(('proximity_support', 'support_3d')),
@@ -579,6 +726,36 @@ class Run:
                 if not row['explains'] and result:
                     parts.append(result)
                 row['detail'] = '; '.join(parts)
+            # structured fields for the prose of the report
+            row['result'] = result
+            row['mark_values'] = marks
+            row['mirror_values'] = mirror
+            row['concordant_marks'] = [m for m in str(value(r, 'concordant') if not isnan(value(r, 'concordant'))
+                                                      else '').split(',') if m]
+            row['n_concordant'] = value(r, 'n_concordant')
+            row['strongest_node'] = value(r, 'strongest_node') if not isnan(value(r, 'strongest_node')) else ''
+            row['strongest_text'] = value(r, 'strongest') if not isnan(value(r, 'strongest')) else ''
+            row['transition'] = value(r, 'transition') if not isnan(value(r, 'transition')) else ''
+            row['state_fragment'] = value(r, 'state_fragment') if not isnan(value(r, 'state_fragment')) else ''
+            row['detail_raw'] = value(r, 'detail') if not isnan(value(r, 'detail')) else ''
+            row['contacts'] = tuple(value(r, k) for k in ('gained', 'lost', 'shared', 'contact'))
+            row['signs_declared'] = value(r, 'signs') if not isnan(value(r, 'signs')) else ''
+            row['learned_explains'] = row['learned_result'] = row['learned_p'] = row['learned_q'] = np.nan
+            row['signs_learned'] = ''
+            if learned_key and 'explains_' + learned_key in raw:
+                row['learned_explains'] = truthy(r['explains_' + learned_key])
+                learned_result = r.get('result_' + learned_key, '')
+                row['learned_result'] = learned_result if isinstance(learned_result, str) else ''
+                row['learned_p'], row['learned_q'] = r.get('p_learned', np.nan), r.get('q_learned', np.nan)
+                signs = r.get('signs_learned', '')
+                row['signs_learned'] = signs if isinstance(signs, str) else ''
+            row['alt_explains'] = np.nan
+            row['alt_result'] = row['alt_transition'] = row['alt_detail'] = ''
+            if max_key and 'explains_' + max_key in raw:
+                row['alt_explains'] = truthy(r['explains_' + max_key])
+                for field in ('result', 'transition', 'detail'):
+                    other = r.get('{}_{}'.format(field, max_key), '')
+                    row['alt_' + field] = other if isinstance(other, str) else ''
             # the learned roles and the max1kb presence statistic
             notes = []
             if learned_key and 'explains_' + learned_key in raw:
@@ -649,19 +826,28 @@ class Run:
             base = dict(node=node, genes=r['genes'], gene=r['gene'], rna_log2FC=r['rna_log2FC'], extra={})
 
             def add(level, explains, changes, all_changes='', nodes=np.nan, p=np.nan, q=np.nan, beyond=np.nan,
-                    mirror='', sup=np.nan, sup_ci='', detail='', roles_level=None, contact=False):
+                    mirror='', sup=np.nan, sup_ci='', detail='', roles_level=None, contact=False, **more):
                 declared, learned = self.roles_text(roles_level, contact) if roles_level else ('', '')
+                fields = dict(result='concordant' if explains else 'below threshold', mark_values={},
+                              mirror_values={}, concordant_marks=[], n_concordant=np.nan, strongest_node='',
+                              strongest_text='', transition='', state_fragment='', detail_raw='',
+                              contacts=(np.nan,) * 4, signs_declared='', signs_learned='', learned_explains=np.nan,
+                              learned_result='', learned_p=np.nan, learned_q=np.nan, alt_explains=np.nan,
+                              alt_result='', alt_transition='', alt_detail='')
+                fields.update(more)
                 rows.append(dict(base, level=level, level_label=level_label(level), cascade_level=cascade_level(level),
                                  order=level_order(level), explains=bool(explains), changes=changes,
                                  all_changes=all_changes, nodes=nodes, p=p, q=q, beyond_mirror=beyond, mirror=mirror,
-                                 support=sup, support_ci=sup_ci, declared=declared, learned=learned, detail=detail))
+                                 support=sup, support_ci=sup_ci, declared=declared, learned=learned, detail=detail,
+                                 **fields))
 
             # promoter marks
             values = {m: r.get(m + '_promoter', np.nan) for m in self.marks}
             hit = [m for m in self.marks if self.concordant(values[m], self.signs.get(m, 1), direction)]
             add('promoter_marks', bool(hit), ', '.join('{} {}'.format(m, fmt_num(values[m], signed=True)) for m in hit),
                 ', '.join('{} {}'.format(m, fmt_num(v, signed=True)) for m, v in values.items() if not isnan(v)),
-                nodes=1, sup=1.0 if support else np.nan, sup_ci='NA' if support else '', roles_level='promoter')
+                nodes=1, sup=1.0 if support else np.nan, sup_ci='NA' if support else '', roles_level='promoter',
+                mark_values={m: v for m, v in values.items() if not isnan(v)}, concordant_marks=hit)
             # own interactions of the promoter
             contact = r.get('contact_direct', np.nan)
             counts = [r.get('interactions_' + s, np.nan) for s in ('gained', 'lost', 'shared')]
@@ -671,7 +857,7 @@ class Run:
                 if not isnan(contact) else ''
             add('contacts', self.concordant(contact, 1, direction), text, text,
                 nodes=sum(c for c in counts if not isnan(c)) if not all(isnan(c) for c in counts) else np.nan,
-                roles_level='promoter', contact=True)
+                roles_level='promoter', contact=True, contacts=tuple(counts) + (contact,))
             # promoter state
             transition = r.get('promoter_transition', np.nan)
             if not isnan(transition) and transition != 'states not callable':
@@ -680,7 +866,11 @@ class Run:
                     ('state transition' if truthy(r.get('promoter_explains')) else '')
                 add('promoter_state', explains, '{}{}'.format(transition, ' ({})'.format(kind) if kind else ''),
                     str(r.get('promoter_state_summary', '') if not isnan(r.get('promoter_state_summary')) else ''),
-                    nodes=1, roles_level='promoter')
+                    nodes=1, roles_level='promoter', transition=str(transition),
+                    result='poised in both' if truthy(r.get('promoter_unresolved')) else
+                    ('concordant transition' if truthy(r.get('promoter_explains')) else 'unchanged'),
+                    detail_raw=str(r.get('promoter_state_summary', '') if not isnan(r.get('promoter_state_summary'))
+                                   else ''))
             # steps
             for k in range(1, self.max_hops + 1):
                 name = hop_names.get(k, 'hop{}'.format(k))
@@ -712,7 +902,11 @@ class Run:
                 add('step{}'.format(k), bool(hit),
                     ', '.join('{} {}'.format(m, fmt_num(values[m], signed=True)) for m in hit), '; '.join(parts),
                     nodes=r.get('n_' + name, np.nan), p=p, q=q, beyond=beyond, mirror=mirror, sup=sup, sup_ci=sup_ci,
-                    detail=detail, roles_level='step{}'.format(k))
+                    detail=detail, roles_level='step{}'.format(k),
+                    mark_values={m: v for m, v in values.items() if not isnan(v)},
+                    mirror_values={m: v for m, v in mirrors.items() if not isnan(v)}, concordant_marks=hit,
+                    n_concordant=r.get('step1_concordant_fragments', np.nan) if k == 1 else np.nan,
+                    result='concordant' if hit else 'below threshold')
                 if k == 1:
                     transition = r.get('step1_transition', np.nan)
                     if not isnan(transition) and transition not in ('states not callable', 'no poised fragment'):
@@ -725,7 +919,10 @@ class Run:
                             str(r.get('step1_state_summary', '') if not isnan(r.get('step1_state_summary')) else ''),
                             nodes=r.get('step1_transition_fragments', np.nan), sup=sup, sup_ci=sup_ci,
                             detail='fragment {}'.format(fragment) if isinstance(fragment, str) and fragment else '',
-                            roles_level='step1')
+                            roles_level='step1', transition=str(transition),
+                            state_fragment=fragment if isinstance(fragment, str) else '',
+                            result='poised in both' if truthy(r.get('step1_unresolved')) else
+                            ('concordant transition' if truthy(r.get('step1_explains')) else 'unchanged'))
         table = pd.DataFrame(rows)
         if not len(table):
             return pd.DataFrame(columns=['node', 'gene', 'level', 'rank', 'explains', 'order', 'cascade_level'])
@@ -783,17 +980,18 @@ class Run:
                                                         'genes_down': np.nan}])], ignore_index=True)
         result['fraction_of_differential'] = result['genes'] / len(all_nodes)
         return result.sort_values('genes', ascending=False).reset_index(drop=True), False
-
-
 # --------------------------------------------------------------------------------------------------------------------
 # HTML document
 
 class Document:
-    """Sections, paragraphs, numbered figures (captions below) and numbered tables (captions below)."""
+    """Sections, paragraphs, numbered figures and tables (captions below) and an appendix ('Data and methods') that is
+    a collapsible section in HTML and the last pages of the PDF."""
 
     def __init__(self, title, keep_figures=False):
         self.title = title
         self.parts = []
+        self.appendix_parts = []
+        self.in_appendix = False
         self.toc = []
         self.figure_count = 0
         self.table_count = 0
@@ -801,89 +999,128 @@ class Document:
         self.figures = []      # (Figure objects, caption) for the matplotlib PDF
         self.text_blocks = []  # plain text in order, for the matplotlib PDF
 
-    def section(self, anchor, title, level=2):
-        self.toc.append((level, anchor, title))
-        self.parts.append('<h{l} id="{a}">{t}</h{l}>'.format(l=level, a=esc(anchor), t=esc(title)))
+    @property
+    def target(self):
+        return self.appendix_parts if self.in_appendix else self.parts
+
+    def begin_appendix(self):
+        self.in_appendix = True
+        self.toc.append((2, 'appendix', 'Data and methods'))
+        self.text_blocks.append(('heading', 'Data and methods', 2))
+
+    def section(self, anchor, title, level=2, cls=None):
+        if level == 2 and not self.in_appendix:
+            self.toc.append((level, anchor, title))
+        self.target.append('<h{l} id="{a}"{c}>{t}</h{l}>'.format(l=level, a=esc(anchor), t=esc(title),
+                                                                  c=' class="{}"'.format(cls) if cls else ''))
         self.text_blocks.append(('heading', title, level))
 
-    def heading(self, title, level=4):
-        self.parts.append('<h{l}>{t}</h{l}>'.format(l=level, t=title))
-        self.text_blocks.append(('heading', re.sub('<[^>]+>', '', title), level))
+    def heading(self, title, level=3, anchor=None, cls=None):
+        self.target.append('<h{l}{a}{c}>{t}</h{l}>'.format(l=level, t=title, a=' id="{}"'.format(esc(anchor))
+                                                           if anchor else '', c=' class="{}"'.format(cls) if cls
+                                                           else ''))
+        self.text_blocks.append(('heading', plain_text(title), level))
 
     def html(self, markup, text=None):
-        self.parts.append(markup)
-        plain = text if text is not None else re.sub(r'<[^>]+>', ' ', markup)
-        plain = html.unescape(re.sub(r'\s+', ' ', plain)).strip()
+        self.target.append(markup)
+        plain = text if text is not None else plain_text(markup)
         if plain:
             self.text_blocks.append(('text', plain, 0))
 
     def p(self, markup, cls=None):
         self.html('<p{}>{}</p>'.format(' class="{}"'.format(cls) if cls else '', markup))
 
-    def figure(self, figures, caption, cols=1):
-        """Panels (matplotlib Figures) as inline SVG in a grid, caption below."""
+    def figure_markup(self, figures, caption, cols=1, cls=''):
+        """Markup of a numbered figure (panels as inline SVG, caption below); the caller places it."""
         self.figure_count += 1
         number = self.figure_count
-        panels = []
-        for k, fig in enumerate(figures):
-            panels.append('<div class="panel">{}</div>'.format(svg_markup(fig, 'f{}p{}'.format(number, k))))
-        self.parts.append('<figure id="figure-{n}"><div class="panels cols-{c}">{p}</div><figcaption><span '
-                          'class="label">Figure {n}.</span> {cap}</figcaption></figure>'.format(
-                              n=number, c=cols, p=''.join(panels), cap=caption))
-        plain = 'Figure {}. {}'.format(number, html.unescape(re.sub(r'<[^>]+>', '', caption)))
+        panels = ''.join('<div class="panel">{}</div>'.format(svg_markup(fig, 'f{}p{}'.format(number, k)))
+                         for k, fig in enumerate(figures))
+        markup = ('<figure id="figure-{n}" class="{cls}"><div class="panels cols-{c}">{p}</div><figcaption><span '
+                  'class="label">Figure {n}.</span> {cap}</figcaption></figure>'.format(
+                      n=number, c=cols, p=panels, cap=caption, cls=cls))
+        plain = 'Figure {}. {}'.format(number, plain_text(caption))
         if self.keep_figures:
             self.figures.append((figures, plain))
             self.text_blocks.append(('figure', len(self.figures) - 1, 0))
         else:
             for fig in figures:
                 fig.clear()
-        return number
+        return markup
 
-    def table(self, frame, caption, formats=None, numeric=(), long=(), escape=True, max_rows=None, nowrap=()):
-        """A table with its caption below; `formats` maps columns to formatting functions."""
+    def figure(self, figures, caption, cols=1, cls=''):
+        self.target.append(self.figure_markup(figures, caption, cols, cls))
+        return self.figure_count
+
+    def table(self, frame, caption, formats=None, numeric=(), long=(), escape=True, max_rows=None, nowrap=(),
+              markup=(), row_classes=None, cls=''):
+        """A table with its caption below; `formats` maps columns to formatting functions, `markup` names columns
+        whose formatted text is HTML already."""
         self.table_count += 1
         number = self.table_count
         formats = formats or {}
         frame = frame if max_rows is None else frame.head(max_rows)
-        nowrap = set(nowrap) | {c for c in ('level', 'mark', 'category', 'gene', 'kind', 'side') if c in frame.columns}
-        head = ''.join('<th class="{}">{}</th>'.format('num' if c in numeric else '',
-                                                      esc(str(c).replace('_lt_', ' < ').replace('_', ' ')))
+        if self.in_appendix:
+            # columns without any value are left out
+            keep = [c for c in frame.columns
+                    if frame[c].map(lambda v: (formats[c](v) if c in formats else ('' if isnan(v) else str(v)))
+                                    not in ('', 'nan')).any()]
+            frame = frame[keep]
+        nowrap = set(nowrap)
+        head = ''.join('<th class="{}">{}</th>'.format('num' if c in numeric else '', esc(str(c).replace('_', ' ')))
                        for c in frame.columns)
-        body = []
-        for _, row in frame.iterrows():
-            cells = []
+        body, plain_rows = [], [' | '.join(str(c) for c in frame.columns)]
+        for k, (_, row) in enumerate(frame.iterrows()):
+            cells, plain = [], []
             for c in frame.columns:
                 value = row[c]
                 text = formats[c](value) if c in formats else ('' if isnan(value) else str(value))
-                text = esc(text) if escape else text
-                cls = 'num' if c in numeric else ('long' if c in long else ('key' if c in nowrap else
-                                                                          ('frag' if c in FRAGMENT_COLUMNS else '')))
-                cells.append('<td class="{}">{}</td>'.format(cls, text))
-            body.append('<tr>{}</tr>'.format(''.join(cells)))
-        self.parts.append('<div class="table-wrap" id="table-{n}"><div class="table-scroll"><table><thead><tr>{h}</tr>'
-                          '</thead><tbody>{b}</tbody></table></div><p class="caption"><span class="label">Table {n}.'
-                          '</span> {cap}</p></div>'.format(n=number, h=head, b=''.join(body), cap=caption))
-        plain_rows = [' | '.join(str(c) for c in frame.columns)]
-        for _, row in frame.iterrows():
-            plain_rows.append(' | '.join(html.unescape(re.sub('<[^>]+>', '', formats[c](row[c]) if c in formats
-                                                              else ('' if isnan(row[c]) else str(row[c]))))
-                                         for c in frame.columns))
+                plain.append(plain_text(text))
+                text = text if (not escape or c in markup) else esc(text)
+                classes = ' '.join(x for x, on in (('num', c in numeric), ('long', c in long), ('key', c in nowrap))
+                                   if on)
+                cells.append('<td{}>{}</td>'.format(' class="{}"'.format(classes) if classes else '', text))
+            row_cls = row_classes[k] if row_classes is not None else ''
+            body.append('<tr{}>{}</tr>'.format(' class="{}"'.format(row_cls) if row_cls else '', ''.join(cells)))
+            plain_rows.append(' | '.join(plain))
+        self.target.append('<div class="table-wrap {cls}" id="table-{n}"><div class="table-scroll"><table><thead><tr>'
+                           '{h}</tr></thead><tbody>{b}</tbody></table></div><p class="caption"><span class="label">'
+                           'Table {n}.</span> {cap}</p></div>'.format(n=number, h=head, b=''.join(body), cap=caption,
+                                                                     cls=cls))
         self.text_blocks.append(('table', '\n'.join(plain_rows), 0))
-        self.text_blocks.append(('text', 'Table {}. {}'.format(number, html.unescape(re.sub('<[^>]+>', '', caption))), 0))
+        self.text_blocks.append(('text', 'Table {}. {}'.format(number, plain_text(caption)), 0))
         return number
 
-    def render(self, heading, meta):
+    def render(self, heading, nav=True, print_version=False):
         with open(os.path.join(TEMPLATE_DIR, 'report.css')) as handle:
             css = handle.read()
         with open(os.path.join(TEMPLATE_DIR, 'report.html')) as handle:
             template = string.Template(handle.read())
-        items = []
-        for level, anchor, title in self.toc:
-            items.append('<li class="{}"><a href="#{}">{}</a></li>'.format('sub' if level > 2 else '', esc(anchor),
-                                                                          esc(title)))
-        return template.substitute(version=esc(__version__), title=esc(self.title), css=css,
-                                   toc='<ol>{}</ol>'.format(''.join(items)), heading=heading, meta=meta,
-                                   body='\n'.join(self.parts))
+        links = ''.join('<a href="#{}">{}</a>'.format(esc(anchor), esc(title)) for level, anchor, title in self.toc
+                        if level == 2)
+        body = '\n'.join(self.parts)
+        if self.appendix_parts:
+            body += ('\n<section class="appendix" id="appendix"><details{}><summary><span class="appendix-title">'
+                     'Data and methods</span><span class="appendix-hint">files, parameters, versions, coordinates and '
+                     'the full numeric tables</span></summary>\n{}\n</details></section>'.format(
+                         ' open' if print_version else '', '\n'.join(self.appendix_parts)))
+        return template.substitute(version=esc(__version__), title=esc(self.title), css=css, heading=heading,
+                                   nav='<nav class="contents" aria-label="Contents">{}</nav>'.format(links)
+                                   if nav and len(self.toc) > 2 else '', body=body)
+
+
+def plain_text(markup):
+    """Text of a piece of markup (superscripts as ^)."""
+    text = re.sub(r'<sup>(.*?)</sup>', r'^\1', str(markup))
+    text = re.sub(r'<[^>]+>', ' ', text)
+    text = html.unescape(re.sub(r'\s+', ' ', text)).strip()
+    return re.sub(r'\s+([,.;:)])', r'\1', text).replace('( ', '(')
+
+
+def body_outside_appendix(text):
+    """The HTML body without the appendix (used by the tests and the checks of the report text)."""
+    body = text.split('<body>', 1)[-1]
+    return re.sub(r'<section class="appendix".*?</section>', '', body, flags=re.S)
 
 
 def new_figure(width, height):
@@ -911,6 +1148,7 @@ def svg_markup(fig, uid):
     style = ' style="max-width:{:.0f}pt"'.format(width) if width else ''
     text = text.replace('<svg', '<svg role="img"{}'.format(style), 1)
     return text
+
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -1013,8 +1251,8 @@ def overlay_highlights(ax, sub, positions, seeds, explaining):
 def arcs_figure(run, sub, seeds, explaining):
     """Interaction arcs of condition A, condition B and their change (gained above, lost below)."""
     names = run.names
-    fig = new_figure(7.0, 4.3)
-    grid = fig.add_gridspec(3, 1, height_ratios=[1, 1, 2.3], hspace=0.12)
+    fig = new_figure(7.0, 3.3)
+    grid = fig.add_gridspec(3, 1, height_ratios=[1, 1, 2.3], hspace=0.1)
     axes = [fig.add_subplot(grid[k, 0]) for k in range(3)]
     middle = {n: node_middle(sub, n) for n in sub.nodes}
     span = (min(middle.values()), max(middle.values()))
@@ -1056,8 +1294,8 @@ def arcs_figure(run, sub, seeds, explaining):
                plt.Line2D([0], [0], color=STATUS_COLORS['shared'], lw=2, label='shared')] + width_handles() + \
         [plt.Line2D([0], [0], marker='s', ls='', color=INK, ms=4, label='baited promoter'),
          plt.Line2D([0], [0], marker='o', ls='', mfc='white', mec=EXPLAINING, mew=1.2, ms=5, label='explaining node')]
-    axes[2].legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.42), fontsize=6, frameon=False,
-                   ncol=3, handlelength=2.2)
+    axes[2].legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.5), fontsize=6, frameon=False,
+                   ncol=4, handlelength=2.2, columnspacing=1.2)
     return fig
 
 
@@ -1197,17 +1435,17 @@ def cascade_figure(run):
     """Genes per cascade level: first explaining level (egaDifferential cascade) and any explaining level."""
     cascade = run.cascade
     levels = ['gene'] + ['step{}'.format(k) for k in range(1, run.max_hops + 1)]
-    labels = {'gene': 'gene (promoter, contacts, state)', 'unexplained': 'unexplained'}
+    labels = {'gene': 'Promoter', 'step1': 'Direct partners', 'unexplained': 'Not explained'}
     first = cascade.set_index('level')['genes'] if cascade is not None else pd.Series(dtype=float)
     total = int(first.reindex(levels + ['unexplained']).fillna(0).sum()) if len(first) else len(run.classes)
     any_level = run.any_level_counts()
     rows = levels + ['unexplained']
-    names = [labels.get(r, 'step {}'.format(level_hops(r))) for r in rows]
+    names = [labels.get(r, '{} steps away'.format(level_hops(r))) for r in rows]
     fig = new_figure(7.0, 0.42 * len(rows) + 1.0)
     axes = [fig.add_subplot(1, 2, k + 1) for k in range(2)]
-    for ax, values, title in ((axes[0], first.reindex(rows).fillna(0), 'first explaining level'),
-                              (axes[1], any_level.reindex(rows).fillna(0), 'any explaining level')):
-        if title.startswith('any'):
+    for ax, values, title in ((axes[0], first.reindex(rows).fillna(0), 'Nearest level that explains the gene'),
+                              (axes[1], any_level.reindex(rows).fillna(0), 'Every level that explains the gene')):
+        if title.startswith('Every'):
             values['unexplained'] = first.get('unexplained', np.nan) if len(first) else np.nan
         y = np.arange(len(rows))[::-1]
         ax.barh(y, values.to_numpy(dtype=float), height=0.62, color=BAR_COLOR, lw=0)
@@ -1267,205 +1505,898 @@ def roles_figure(run):
     ax.legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.14), ncol=4, fontsize=6.5, frameon=False)
     return fig
 
+def ladder_figure(columns, levels, support=None):
+    """Explanation ladder: one row per level from the promoter outwards, one column per promoter fragment. Filled
+    marker: the level explains the expression change; open: it does not; ring: significant (q < 0.05) and beyond the
+    distance-matched mirror loci. `support` maps levels to the 3D support written at the right."""
+    n_rows, n_cols = len(levels), len(columns)
+    has_support = bool(support)
+    width = 2.15 + 0.62 * n_cols + (0.62 if has_support else 0)
+    fig = new_figure(width, 0.255 * n_rows + 0.95)
+    ax = fig.add_axes([2.0 / width, 0.62 / (0.255 * n_rows + 0.95), 1 - 2.05 / width,
+                       0.255 * n_rows / (0.255 * n_rows + 0.95)])
+    y_of = {lv: n_rows - 1 - i for i, lv in enumerate(levels)}
+    for j, (_, rows) in enumerate(columns):
+        present = [y_of[lv] for lv in levels if lv in rows]
+        if present:
+            ax.plot([j, j], [min(present), max(present)], color='#d9d8d3', lw=1.0, zorder=0)
+        for lv in levels:
+            row = rows.get(lv)
+            if row is None:
+                continue
+            y = y_of[lv]
+            if row['explains']:
+                ax.scatter(j, y, s=42, color=INK, zorder=3, lw=0)
+            else:
+                ax.scatter(j, y, s=42, facecolor='white', edgecolor='#8c8b85', lw=1.0, zorder=3)
+            if supported(row):
+                ax.scatter(j, y, s=150, facecolor='none', edgecolor=ACCENT, lw=1.6, zorder=2)
+    if has_support:
+        for lv in levels:
+            if lv in support:
+                ax.text(n_cols - 0.35, y_of[lv], support[lv], va='center', ha='left', fontsize=7, color=INK)
+        ax.text(n_cols - 0.35, n_rows - 0.35, '3D support', va='bottom', ha='left', fontsize=6.5, color='#5b5b57')
+    ax.set_xlim(-0.5, n_cols - 0.5 + (0.95 if has_support else 0))
+    ax.set_ylim(-0.6, n_rows - 0.4)
+    ax.set_yticks([y_of[lv] for lv in levels])
+    ax.set_yticklabels([level_label(lv) for lv in levels], fontsize=7, color=INK)
+    ax.set_xticks(range(n_cols))
+    ax.set_xticklabels([textwrap.fill(label, 12) for label, _ in columns], fontsize=6.5, color='#5b5b57')
+    ax.xaxis.tick_top()
+    ax.tick_params(length=0, pad=3)
+    for side in ('left', 'right', 'top', 'bottom'):
+        ax.spines[side].set_visible(False)
+    handles = [plt.Line2D([0], [0], marker='o', ls='', color=INK, ms=6, label='explains'),
+               plt.Line2D([0], [0], marker='o', ls='', mfc='white', mec='#8c8b85', ms=6, label='does not explain'),
+               plt.Line2D([0], [0], marker='o', ls='', mfc='none', mec=ACCENT, mew=1.6, ms=10,
+                          label='significant, passes the distance control')]
+    fig.legend(handles=handles, loc='lower left', bbox_to_anchor=(0.01, 0.0), ncol=2, fontsize=6.3, frameon=False,
+               handletextpad=0.3, columnspacing=1.0)
+    return fig
+
 
 # --------------------------------------------------------------------------------------------------------------------
-# text of the explanation of one gene
+# places named by genes
 
-def level_sentence(row, names):
-    """One item of the ranked explanation: level, what changed, nodes, P / q, mirror, 3D support."""
+def read_strands(path, genes):
+    """Strand of the named genes from a GTF (gene or transcript lines, gene_name, else gene_id) or a BED file with
+    the strand in column 6."""
+    wanted = {g for g in genes if g}
+    strands = {}
+    if not path or not wanted or not os.path.exists(path):
+        return strands
+    is_bed = re.search(r'\.bed(\.gz)?$', path) is not None
+    name_pattern = re.compile(r'gene_name "([^"]+)"')
+    id_pattern = re.compile(r'gene_id "([^"]+)"')
+    opener = gzip.open if path.endswith('.gz') else open
+    with opener(path, 'rt') as handle:
+        for line in handle:
+            if line.startswith(('#', 'track', 'browser')):
+                continue
+            if is_bed:
+                fields = line.rstrip('\n').split('\t')
+                if len(fields) >= 6 and fields[3] in wanted:
+                    strands.setdefault(fields[3], fields[5])
+                continue
+            if '\ttranscript\t' not in line and '\tgene\t' not in line:
+                continue
+            fields = line.split('\t', 8)
+            match = name_pattern.search(fields[8]) or id_pattern.search(fields[8])
+            if match and match.group(1) in wanted and match.group(1) not in strands:
+                strands[match.group(1)] = fields[6]
+                if len(strands) == len(wanted):
+                    break
+    return strands
+
+
+def fmt_distance(bases):
+    bases = abs(float(bases))
+    if bases < 1000:
+        return '{:.0f} bp'.format(bases)
+    if bases < 10000:
+        return '{:.1f} kb'.format(bases / 1000)
+    if bases < 1e6:
+        return '{:.0f} kb'.format(bases / 1000)
+    return '{:.1f} Mb'.format(bases / 1e6)
+
+
+class Places:
+    """Names of graph nodes by genes: a promoter by its genes, an other end by its distance from the report gene and
+    the nearest gene (baited promoters of the graph)."""
+
+    def __init__(self, graph, strands=None):
+        self.graph = graph
+        self.strands = strands or {}
+        index = {}
+        for n, d in graph.nodes(data=True):
+            if d.get('bait'):
+                names = gene_names(d.get('genes', ''))
+                if names:
+                    index.setdefault(d.get('chrom'), []).append(((int(d['start']) + int(d['end'])) / 2, names[0]))
+        self.index = {c: sorted(v) for c, v in index.items()}
+        self.middles = {c: np.array([x[0] for x in v]) for c, v in self.index.items()}
+
+    def middle(self, node):
+        data = self.graph.nodes[node]
+        return (int(data['start']) + int(data['end'])) / 2
+
+    def nearest_gene(self, node, exclude=()):
+        if node not in self.graph:
+            return None
+        chrom = self.graph.nodes[node].get('chrom')
+        if chrom not in self.index:
+            return None
+        middle = self.middle(node)
+        k = int(np.searchsorted(self.middles[chrom], middle))
+        best = None
+        for i in range(max(0, k - 12), min(len(self.index[chrom]), k + 12)):
+            position, name = self.index[chrom][i]
+            if name in exclude:
+                continue
+            if best is None or abs(position - middle) < best[1]:
+                best = (name, abs(position - middle))
+        return best
+
+    def promoter_genes(self, node):
+        data = self.graph.nodes[node] if node in self.graph else {}
+        return gene_names(data.get('genes', '')) if data.get('bait') else []
+
+    def label(self, node, ref_node=None, ref_gene=None, markup=True, article=False):
+        """'Hoxa2 promoter' or 'element 1.0 Mb upstream of Hoxa3 (near Skap2)'; with `article` 'the' or 'an'."""
+        g = gene_span if markup else str
+        if node not in self.graph:
+            return 'an unmapped fragment' if article else 'unmapped fragment'
+        names = self.promoter_genes(node)
+        if names:
+            return '{}{} promoter'.format('the ' if article else '', g(names[0]))
+        data = self.graph.nodes[node]
+        exclude = {ref_gene} if ref_gene else set()
+        near = self.nearest_gene(node, exclude)
+        if ref_node in self.graph and self.graph.nodes[ref_node].get('chrom') == data.get('chrom') and ref_gene:
+            distance = self.middle(node) - self.middle(ref_node)
+            strand = self.strands.get(ref_gene)
+            if strand in ('+', '-'):
+                side = 'upstream of' if (distance < 0) == (strand == '+') else 'downstream of'
+            else:
+                side = 'from'
+            text = 'element {} {} {}'.format(fmt_distance(distance), side, g(ref_gene))
+            if near is not None and near[1] < abs(distance):
+                text += ' (near {})'.format(g(near[0]))
+        else:
+            text = 'element on {}{}'.format(data.get('chrom'), ' near {}'.format(g(near[0])) if near else '')
+        return ('an ' if article else '') + text
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# reading the levels of one gene
+
+def significant(row):
+    q, p = row.get('q', np.nan), row.get('p', np.nan)
+    if not isnan(q):
+        return float(q) < 0.05
+    return not isnan(p) and float(p) < 0.05
+
+
+def supported(row):
+    """Explains, significant and beyond the distance-matched mirror loci."""
+    return bool(row.get('explains')) and significant(row) and truthy(row.get('beyond_mirror'))
+
+
+def is_step(level):
+    return re.fullmatch(r'step\d+', str(level)) is not None
+
+
+def parse_transition(text):
+    """('bivalent', 'active', 'repressive mark lost') from 'bivalent -> active: repressive mark lost'."""
+    text = '' if isnan(text) else str(text)
+    main, _, note = text.partition(': ')
+    a, arrow, b = main.partition(' -> ')
+    return a.strip(), (b if arrow else a).strip(), note.strip()
+
+
+def readable_note(note):
+    """'gain of the repressive mark' from 'repressive mark gained'."""
+    kinds = {'active': 'an activating', 'repressive': 'the repressive', 'enhancer': 'an enhancer'}
+    out = []
+    for part in [p.strip() for p in note.split(',') if p.strip()]:
+        match = re.fullmatch(r'(active|repressive|enhancer) mark (gained|lost)', part)
+        if match:
+            out.append('{} of {} mark'.format('gain' if match.group(2) == 'gained' else 'loss',
+                                              kinds[match.group(1)]))
+        else:
+            out.append(part)
+    return join_words(out)
+
+
+def transition_verdict(result, explains):
+    """How a state transition relates to the expression change, from the result of the level."""
+    result = str(result or '')
+    if explains or result == 'concordant transition':
+        return 'in line with the expression change'
+    if 'not supported' in result:
+        return 'in the direction of the expression change, but not supported by the mark changes themselves'
+    if 'without a poised state' in result:
+        return 'a change that involves no poised state and is not counted as an explanation'
+    if 'not concordant' in result or 'discordant' in result:
+        return 'against the expression change'
+    return 'not counted as an explanation ({})'.format(result) if result else 'not counted as an explanation'
+
+
+def state_text(transition, names):
+    a, b, _ = parse_transition(transition)
+    if not a:
+        return ''
+    if a == b:
+        return '{} in {} and {}'.format(a, names[0], names[1])
+    return '{} in {}, {} in {}'.format(a, names[0], b, names[1])
+
+
+def strongest_change(row):
+    """(mark, log2 change) of the strongest node from the all-level text ('... H3K27ac log2 +5.2')."""
+    match = re.search(r'(\S+) log2 ([+-]?[0-9.]+)\s*$', str(row.get('strongest_text') or ''))
+    return (match.group(1), float(match.group(2))) if match else (None, np.nan)
+
+
+def fold_values(detail):
+    """'H3K27ac 0.6 / 0.6, H3K4me2 4.9 / 4.9' from '... (H3K27ac 0.6/0.6, H3K4me2 4.9/4.9; mean) ...'."""
+    match = re.search(r'\(([^()]*?); (?:mean|max1kb)\)', str(detail or ''))
+    if not match:
+        return ''
+    return ', '.join(item.strip().replace('/', ' / ') for item in match.group(1).split(','))
+
+
+def transition_count(detail):
+    match = re.search(r'\((\d+) of (\d+) with this transition\)', str(detail or ''))
+    return (int(match.group(1)), int(match.group(2))) if match else None
+
+
+def sign_map(text):
+    out = {}
+    for item in str(text or '').split(';'):
+        if ':' in item:
+            mark, value = item.rsplit(':', 1)
+            try:
+                out[mark] = int(float(value))
+            except ValueError:
+                continue
+    return out
+
+
+def marks_phrase(values, marks, first_prefix='log2 '):
+    """'H3K27ac (log2 +3.4) and H3K4me2 (+1.6) rise and H3K27me3 (−1.4) falls'."""
+    marks = [m for m in marks if m in values and not isnan(values[m])]
+    up = [m for m in marks if values[m] > 0]
+    down = [m for m in marks if values[m] < 0]
+    state = {'first': True}
+
+    def item(m):
+        text = '{} ({}{})'.format(m, first_prefix if state['first'] else '', fmt_log2(values[m]))
+        state['first'] = False
+        return text
     parts = []
-    changes = row.get('changes') if row.get('explains') else row.get('all_changes')
-    if isinstance(changes, str) and changes:
-        parts.append(esc(changes))
-    if isinstance(row.get('detail'), str) and row.get('detail'):
-        parts.append(esc(row['detail']))
-    if not isnan(row.get('nodes')) and row.get('level') not in ('promoter_marks', 'promoter_state'):
-        parts.append('{} node{}'.format(fmt_int(row['nodes']), '' if fmt_int(row['nodes']) == '1' else 's'))
-    if not isnan(row.get('p')):
-        parts.append('P = {}'.format(fmt_p(row['p'])) + ('' if isnan(row.get('q')) else
-                                                         ', q = {}'.format(fmt_p(row['q']))))
-    if isinstance(row.get('mirror'), str) and row.get('mirror'):
-        parts.append(esc(row['mirror']))
-    if not isnan(row.get('support')) and level_hops(row.get('level')) > 0:
-        parts.append('3D support {}{}'.format(fmt_num(row['support']), ' ({})'.format(esc(row['support_ci']))
-                                              if isinstance(row.get('support_ci'), str) and row['support_ci']
-                                              not in ('', 'NA') else ''))
-    return '; '.join(parts)
+    if up:
+        parts.append('{} {}'.format(join_words([item(m) for m in up]), 'rises' if len(up) == 1 else 'rise'))
+    if down:
+        parts.append('{} {}'.format(join_words([item(m) for m in down]), 'falls' if len(down) == 1 else 'fall'))
+    return join_words(parts)
 
 
-def ranked_list(rows, names):
-    """Ordered list of all levels of a gene: explaining levels in rank order, then the others."""
-    rows = rows.sort_values('order')
-    items = []
-    explaining = rows[rows['explains']].sort_values(['rank', 'order'])
-    for _, row in explaining.iterrows():
-        items.append('<li><strong>{}</strong> <span class="tag yes">explains, rank {}</span>: {}</li>'.format(
-            esc(row['level_label']), fmt_int(row['rank']), level_sentence(row, names) or 'change recorded'))
-    for _, row in rows[~rows['explains']].iterrows():
-        sentence = level_sentence(row, names)
-        items.append('<li class="miss"><strong>{}</strong> <span class="tag">does not explain</span>{}</li>'.format(
-            esc(row['level_label']), ': ' + sentence if sentence else ''))
-    return '<ol class="levels">{}</ol>'.format(''.join(items))
+def number_word(n):
+    words = {1: 'one', 2: 'two', 3: 'three', 4: 'four', 5: 'five', 6: 'six', 7: 'seven', 8: 'eight', 9: 'nine'}
+    return words.get(n, '{:,}'.format(n))
 
 
-def level_short(level):
-    short = {'promoter_marks': 'promoter marks', 'contacts': 'contacts', 'promoter_state': 'promoter state',
-             'step1': 'step 1', 'step1_state': 'step 1 state'}
-    return short.get(level, 'step {}'.format(level_hops(level)) if re.fullmatch(r'step\d+', str(level)) else level)
+def capitalise(text):
+    return text[:1].upper() + text[1:] if text else text
 
 
-def evidence_table(doc, rows, gene, names, declared=''):
-    rows = rows.sort_values(['explains', 'rank', 'order'], ascending=[False, True, True])
+class GeneStory:
+    """Levels of one gene (all its promoter fragments) and their reading in sentences, tables and the ladder."""
 
-    def mirror(row):
-        if not isnan(row['beyond_mirror']):
-            return 'beyond' if truthy(row['beyond_mirror']) else 'not beyond'
-        return row['mirror'] if isinstance(row['mirror'], str) else ''
+    def __init__(self, run, places, gene, nodes):
+        self.run = run
+        self.places = places
+        self.gene = gene
+        self.nodes = list(nodes)
+        self.fragments = []  # (node, {level: row})
+        for node in self.nodes:
+            part = run.levels[run.levels['node'] == node]
+            if len(part):
+                self.fragments.append((node, {r['level']: r for _, r in part.sort_values('order').iterrows()}))
+        self.fragments.sort(key=lambda f: self.fragment_key(f[1]))
+        rna = [rows[next(iter(rows))]['rna_log2FC'] for _, rows in self.fragments]
+        if not rna:
+            rna = [run.graph.nodes[n].get('rna_log2FC', np.nan) for n in self.nodes if n in run.graph]
+        self.rna = next((float(v) for v in rna if not isnan(v)), np.nan)
+        self.differential = bool(self.fragments)
 
-    def support(row):
-        if isnan(row['support']) or level_hops(row['level']) == 0:
+    def fragment_key(self, rows):
+        best = self.best(rows)
+        return (best is None, float(best['q']) if best is not None and not isnan(best['q']) else 2.0)
+
+    @staticmethod
+    def best(rows, require_beyond=True):
+        candidates = [r for lv, r in rows.items() if is_step(lv) and r['explains'] and significant(r) and
+                      (truthy(r.get('beyond_mirror')) or not require_beyond)]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda r: (float(r['q']) if not isnan(r['q']) else 2.0,
+                                              float(r['p']) if not isnan(r['p']) else 2.0, r['order']))
+
+    @staticmethod
+    def nearest(rows):
+        explaining = [r for r in rows.values() if r['explains']]
+        return min(explaining, key=lambda r: r['order']) if explaining else None
+
+    # names ----------------------------------------------------------------------------------------------------------
+    def g(self):
+        return gene_span(self.gene)
+
+    def fragment_others(self, node):
+        data = self.run.graph.nodes[node] if node in self.run.graph else {}
+        genes = data.get('genes', '') or self.run.classes.set_index('node')['genes'].get(node, '')
+        return [x for x in gene_names(genes) if x != self.gene]
+
+    def fragment_name(self, node, markup=True):
+        """'the fragment shared with Hoxa7 and Mira' (several fragments) or 'its promoter'."""
+        others = self.fragment_others(node)
+        g = gene_span if markup else str
+        if others:
+            return 'the fragment shared with {}'.format(join_words([g(x) for x in others[:3]]) +
+                                                        (' and others' if len(others) > 3 else ''))
+        return 'the fragment with {} alone'.format(g(self.gene))
+
+    def fragment_heading(self, node):
+        others = self.fragment_others(node)
+        if len(self.fragments) <= 1 and len(self.nodes) <= 1:
+            return 'Promoter of {}'.format(self.g())
+        if others:
+            return 'Promoter fragment shared with {}'.format(join_words([gene_span(x) for x in others[:3]]))
+        return 'Promoter fragment of {} alone'.format(self.g())
+
+    def column_label(self, node):
+        if len(self.fragments) <= 1:
             return ''
-        ci = row['support_ci'] if isinstance(row['support_ci'], str) and row['support_ci'] not in ('', 'NA') else ''
-        return '{}{}'.format(fmt_num(row['support']), ' ({})'.format(ci) if ci else '')
+        others = self.fragment_others(node)
+        return 'with {}'.format(', '.join(others[:2])) if others else '{} alone'.format(self.gene)
 
-    changes = 'changes (log2 {} / {})'.format(names[1], names[0])
-    frame = pd.DataFrame({
-        'rank': rows['rank'], 'level': rows['level'].map(level_short),
-        'explains': rows['explains'].map({True: 'yes', False: 'no'}), changes: rows['all_changes'],
-        'nodes': rows['nodes'], 'P': rows['p'], 'q': rows['q'], 'mirror': rows.apply(mirror, axis=1),
-        '3D support': rows.apply(support, axis=1), 'learned roles': rows['learned']})
-    frame = frame[[c for c in frame.columns if not frame[c].map(lambda v: isnan(v) or v == '').all()]]
-    doc.table(frame, 'Evidence of every level for {}, explaining levels in rank order. Changes are log2 fold changes '
-                     '{} / {} (mark signal at the promoter or contact-weighted over the nodes of a step, values at the '
-                     'mirrored loci in brackets); P and q of the per-gene permutation test of the step; mirror: '
-                     'whether the explaining marks change differently at the mirrored loci; 3D support: probability '
-                     'that graph neighbours at this step are closer in the nucleus than distance-matched pairs (0.5 '
-                     'without relation), with its interval; learned roles: the result of the level under the roles '
-                     'learned from the data (all-level table), or the marks whose learned role differs from the '
-                     'declared one (derived levels){}.'.format(
-                         gene_span(gene), names[1], names[0],
-                         ' (declared roles: {})'.format(esc(declared)) if declared else ''),
-              formats={'rank': fmt_int, 'nodes': fmt_int, 'P': fmt_p, 'q': fmt_p},
-              numeric=('rank', 'nodes', 'P', 'q'), long=(changes,), nowrap=('level', '3D support', 'mirror'))
+    def place(self, node, ref_node, article=True, markup=True):
+        return self.places.label(node, ref_node, self.gene, markup=markup, article=article)
+
+    # sentences ------------------------------------------------------------------------------------------------------
+    def expression_sentence(self):
+        a, b = self.run.names
+        if isnan(self.rna):
+            return 'No expression change is recorded for {}.'.format(self.g())
+        if not self.differential:
+            return ('{} is not differential between {} and {} at the thresholds of this comparison (log2 {}); the '
+                    'levels are not evaluated.'.format(self.g(), esc(a), esc(b), fmt_log2(self.rna)))
+        return 'Expression of {} is about {}-fold {} in {} than in {} (log2 {}).'.format(
+            self.g(), fold(self.rna), 'higher' if self.rna > 0 else 'lower', esc(b), esc(a), fmt_log2(self.rna))
+
+    def promoter_sentence(self, node, rows, nearest=None):
+        threshold = self.run.chromatin_threshold
+        nearest_level = nearest['level'] if nearest is not None else None
+        nearest_tag = ', the nearest level that explains it'
+        where = 'its promoter' if len(self.fragments) == 1 else 'its promoter fragment {}'.format(
+            self.fragment_name(node)[len('the fragment '):])
+        where = where.replace('promoter fragment with', 'promoter fragment that carries')
+        clauses = []
+        marks = rows.get('promoter_marks')
+        if marks is not None:
+            values = marks['mark_values'] or {}
+            if marks['explains'] and marks['concordant_marks']:
+                clauses.append('{}, in line with the expression change{}'.format(
+                    marks_phrase(values, marks['concordant_marks']),
+                    nearest_tag if nearest_level == 'promoter_marks' else ''))
+            else:
+                large = [m for m, v in values.items() if not isnan(v) and abs(v) >= threshold]
+                if large:
+                    clauses.append('{}, against the expression change'.format(marks_phrase(values, large)))
+                elif values:
+                    mark = max(values, key=lambda m: abs(values[m]) if not isnan(values[m]) else -1)
+                    clauses.append('the histone marks change by at most log2 {} ({})'.format(
+                        fmt_log2(abs(values[mark]), signed=False), mark))
+                else:
+                    clauses.append('no histone mark changes by log2 {:g} or more'.format(threshold))
+        contacts = rows.get('contacts')
+        if contacts is not None:
+            gained, lost, shared, strength = contacts['contacts']
+            counts = '{} gained, {} lost{}; summed strength log2 {}'.format(
+                fmt_int(gained), fmt_int(lost), ', {} shared'.format(fmt_int(shared)) if not isnan(shared) else '',
+                fmt_log2(strength)) if not isnan(gained) else 'summed strength log2 {}'.format(fmt_log2(strength))
+            if contacts['explains']:
+                verb = 'strengthen' if not isnan(strength) and strength > 0 else 'weaken'
+                clauses.append('its own contacts {} ({}){}'.format(verb, counts, nearest_tag if nearest_level ==
+                                                                  'contacts' else ''))
+            elif not isnan(strength) and abs(strength) >= threshold:
+                clauses.append('its own contacts change against the expression change ({})'.format(counts))
+            else:
+                clauses.append('its own contacts change little ({})'.format(counts))
+        if not clauses:
+            return ''
+        return 'At {}, {}.'.format(where, '; '.join(clauses))
+
+    def state_sentence(self, rows, nearest):
+        state = rows.get('promoter_state')
+        if state is None:
+            return ''
+        a_state, b_state, note = parse_transition(state['transition'])
+        if not a_state:
+            return ''
+        a, b = self.run.names
+        kind = '{}s'.format(self.run.kind) if self.run.kind != 'condition' else 'conditions'
+        subject = 'The promoter' if len(self.fragments) == 1 else 'This fragment'
+        nearest_here = nearest is not None and nearest['level'] == 'promoter_state'
+        if state['result'] == 'poised in both' or (state['explains'] and a_state == b_state):
+            trigger = 'the trigger of its {} is not among the measured layers'.format(
+                'activation' if self.rna > 0 else 'silencing')
+            if nearest_here:
+                trigger = 'this poised state is the nearest level that accounts for the change, and ' + trigger
+            if a_state == 'bivalent':
+                return '{} carries both an activating and a repressive mark in both {} (bivalent); {}.'.format(
+                    subject, kind, trigger)
+            return '{} is {} in both {}; {}.'.format(subject, a_state, kind, trigger)
+        if a_state != b_state:
+            return '{} changes from {} in {} to {} in {}{}, {}{}.'.format(
+                subject, a_state, esc(a), b_state, esc(b), ' ({})'.format(readable_note(note)) if note else '',
+                transition_verdict(state['result'], state['explains']),
+                '; this is the nearest level that explains it' if nearest_here else '')
+        return '{} is {} in both {}.'.format(subject, a_state, kind)
+
+    def step_sentence(self, node, rows, nearest):
+        """The nearest explaining level (when not at the promoter) and the strongest supported explanation."""
+        best = self.best(rows)
+        out = []
+        nearest_said = nearest is not None and (nearest['level'] in ('promoter_marks', 'contacts', 'promoter_state') or
+                                                cascade_level(nearest['level']) == getattr(self, 'known_level', None))
+        if nearest is None:
+            return ['None of the measured levels explains the change.']
+        if best is not None:
+            lead = 'The strongest supported explanation'
+            if best['level'] == nearest['level']:
+                lead = 'The nearest level that explains the change, and the strongest supported one,'
+            elif not nearest_said:
+                out.append('The nearest level that explains the change is {}.'.format(level_phrase(nearest['level'])))
+            where = 'at the direct partners' if best['level'] == 'step1' else \
+                '{} steps away'.format(level_hops(best['level']))
+            values = best['mark_values'] or {}
+            marks = best['concordant_marks'] or [m for m in values if abs(values[m]) >= self.run.chromatin_threshold]
+            across = 'across the {} nodes there'.format(fmt_int(best['nodes'])) if not isnan(best['nodes']) else \
+                'across these nodes'
+            sentence = '{} lies {}: {} {}'.format(lead, where, marks_phrase(values, marks), across)
+            mark, value = strongest_change(best)
+            if best.get('strongest_node') and mark and not isnan(value) and \
+                    abs(value) >= self.run.chromatin_threshold:
+                sentence += ', most strongly at {} ({} log2 {}, about {}-fold)'.format(
+                    self.place(best['strongest_node'], node), mark, fmt_log2(value), fold(value))
+            sentence += ', beyond the change at distance-matched mirror loci (P = {}, q = {}).'.format(
+                fmt_pq(best['p']), fmt_pq(best['q']))
+            out.append(sentence)
+            if not isnan(best.get('support')):
+                ci = str(best.get('support_ci') or '')
+                out.append('In the nucleus, nodes {} apart in the graph are closer than distance-matched pairs '
+                           '(3D support {}{}; 0.5 means no relation).'.format(
+                               'one step' if best['level'] == 'step1' else '{} steps'.format(level_hops(best['level'])),
+                               sig(best['support'], 2), ', interval {}'.format(ci.replace('-', ' to '))
+                               if ci and ci != 'NA' else ''))
+            learned = self.learned_note(best)
+            if learned:
+                out.append('Under the mark roles learned from these data, this step {}.'.format(learned))
+            return out
+        if not nearest_said:
+            out.append('The nearest level that explains the change is {}.'.format(level_phrase(nearest['level'])))
+        weak = self.best(rows, require_beyond=False)
+        if weak is not None:
+            out.append('{} explain the change significantly (P = {}, q = {}), but distance-matched mirror loci change '
+                       'the same way, so the graph adds no support beyond genomic distance.'.format(
+                           capitalise(level_phrase(weak['level'])), fmt_pq(weak['p']), fmt_pq(weak['q'])))
+        else:
+            steps = [r for lv, r in rows.items() if is_step(lv) and r['explains']]
+            tested = [r for r in steps if not isnan(r['p']) or not isnan(r['q'])]
+            if tested:
+                top = min(tested, key=lambda r: (float(r['q']) if not isnan(r['q']) else 2.0, r['order']))
+                out.append('The strongest of the explaining steps away from the promoter, {}, does not reach '
+                           'significance (P = {}, q = {}{}).'.format(
+                               level_phrase(top['level']), fmt_pq(top['p']), fmt_pq(top['q']),
+                               '; the change also exceeds that at distance-matched mirror loci'
+                               if truthy(top.get('beyond_mirror')) else ''))
+            elif steps:
+                out.append('{} explain the change without a per-gene test.'.format(
+                    capitalise(join_words([level_phrase(r['level']) for r in steps]))))
+            else:
+                out.append('No step away from the promoter explains the change.')
+        return out
+
+    def learned_note(self, row, plural=False):
+        """How the result of a level differs under the learned roles, as a verb phrase ('' when it does not)."""
+        learned = row.get('learned_explains')
+        if isnan(learned) or learned is None:
+            return ''
+        if bool(learned) != bool(row['explains']):
+            if learned:
+                return 'also explain{} the gene'.format('' if plural else 's')
+            return '{} not explain the gene because {}'.format('do' if plural else 'does', self.learned_reason(row))
+        if row['explains'] and significant(row) and not isnan(row.get('learned_q')) and \
+                float(row['learned_q']) >= 0.05:
+            return '{} not significant (q = {})'.format('are' if plural else 'is', fmt_pq(row['learned_q']))
+        return ''
+
+    def learned_reason(self, row):
+        result = str(row.get('learned_result') or '')
+        if row['level'] == 'contacts':
+            return 'the own contacts show no consistent association with expression in these data'
+        if result == 'not callable':
+            return 'the chromatin states cannot be called with these roles'
+        declared, learned = sign_map(row.get('signs_declared')), sign_map(row.get('signs_learned'))
+        reasons = []
+        for mark in declared:
+            if mark in learned and learned[mark] != declared[mark]:
+                if learned[mark] == 0:
+                    reasons.append('{} shows no consistent association with expression at this level'.format(mark))
+                else:
+                    reasons.append('{} behaves as {} mark at this level'.format(
+                        mark, 'an activating' if learned[mark] > 0 else 'a repressive'))
+        if reasons:
+            return join_words(reasons)
+        return 'the marks change {}'.format('against the expression change' if result == 'discordant' else
+                                           'below the threshold' if result == 'below threshold' else result)
+
+    def fragments_sentence(self):
+        if len(self.fragments) < 2:
+            return ''
+        items = []
+        for node, rows in self.fragments:
+            nearest = self.nearest(rows)
+            best = self.best(rows)
+            first = 'is first explained by {}'.format(level_phrase(nearest['level'])) if nearest is not None else \
+                'is not explained'
+            control = 'passes the distance control {}'.format(
+                'at the direct partners' if best['level'] == 'step1' else '{} steps away'.format(
+                    level_hops(best['level']))) if best is not None else 'passes no distance control'
+            items.append((self.fragment_name(node), first, control))
+        if len({(f, c) for _, f, c in items}) == 1:
+            return 'The {} promoter fragments of {} give the same result.'.format(number_word(len(items)), self.g())
+        parts = ['{} {} and {}'.format(name, first, control) for name, first, control in items]
+        return 'The {} promoter fragments of {} differ: {}.'.format(number_word(len(items)), self.g(),
+                                                                   '; '.join(parts))
+
+    def glance(self, known_level=None):
+        """The 'at a glance' paragraph; `known_level` (cascade level of a card group) drops the sentence that would
+        repeat the group heading."""
+        self.known_level = known_level
+        sentences = [self.expression_sentence()]
+        if not self.fragments:
+            return ' '.join(sentences)
+        node, rows = self.fragments[0]
+        nearest = self.nearest(rows)
+        sentences.append(self.promoter_sentence(node, rows, nearest))
+        sentences.append(self.state_sentence(rows, nearest))
+        sentences += self.step_sentence(node, rows, nearest)
+        sentences.append(self.fragments_sentence())
+        return ' '.join(s for s in sentences if s)
+
+    # ladder ---------------------------------------------------------------------------------------------------------
+    def ladder(self):
+        if not self.fragments:
+            return None
+        levels = sorted({lv for _, rows in self.fragments for lv in rows}, key=level_order)
+        columns = [(self.column_label(node), rows) for node, rows in self.fragments]
+        support = {}
+        node, rows = self.fragments[0]
+        for lv, row in rows.items():
+            if is_step(lv) and not isnan(row.get('support')):
+                support[lv] = sig(row['support'], 2)
+        return ladder_figure(columns, levels, support)
+
+    # evidence -------------------------------------------------------------------------------------------------------
+    def what_changed(self, row, node):
+        level = row['level']
+        threshold = self.run.chromatin_threshold
+        a, b = self.run.names
+        if level == 'contacts':
+            gained, lost, shared, strength = row['contacts']
+            if isnan(gained):
+                return esc(row.get('all_changes') or '')
+            return '{} gained, {} lost, {} shared; summed strength log2 {}'.format(
+                fmt_int(gained), fmt_int(lost), fmt_int(shared), fmt_log2(strength))
+        if level in ('promoter_state', 'step1_state'):
+            transition = row['transition']
+            if not transition or transition in ('no poised fragment', 'states not callable'):
+                return 'no poised partner' if 'poised' in str(transition or row['result']) else 'not callable'
+            text = state_text(transition, (esc(a), esc(b)))
+            _, _, note = parse_transition(transition)
+            if note:
+                text += ' ({})'.format(readable_note(note))
+            if level == 'step1_state' and row.get('state_fragment'):
+                text += ' at {}'.format(self.place(row['state_fragment'], node))
+                count = transition_count(row.get('detail_raw'))
+                if count:
+                    text += '; {} of {} partners'.format(*count)
+            if row['result'] == 'poised in both':
+                text += '; poised, trigger not measured'
+            elif not row['explains'] and parse_transition(transition)[0] != parse_transition(transition)[1]:
+                result = str(row['result'] or '')
+                text += '; {}'.format('not supported by the mark changes' if 'not supported' in result else
+                                      'no poised state' if 'without a poised state' in result else
+                                      'against the expression change' if 'not concordant' in result else result)
+            return text
+        values = row['mark_values'] or {}
+        if row['explains'] and row['concordant_marks']:
+            text = ', '.join('{} {}'.format(m, fmt_log2(values[m])) for m in row['concordant_marks'] if m in values)
+            if level != 'promoter_marks':
+                n = row.get('n_concordant')
+                if row.get('strongest_node') and not isnan(n) and int(n) >= 1:
+                    others = int(n) - 1
+                    text += ' at {}{}'.format(self.place(row['strongest_node'], node),
+                                              ' and {} other node{}'.format(others, '' if others == 1 else 's')
+                                              if others else '')
+                elif not isnan(row.get('nodes')):
+                    text += ' over {} nodes'.format(fmt_int(row['nodes']))
+            return text
+        listing = ', '.join('{} {}'.format(m, fmt_log2(v)) for m, v in values.items() if not isnan(v))
+        large = [m for m, v in values.items() if not isnan(v) and abs(v) >= threshold]
+        if large:
+            return 'against the expression change: {}'.format(', '.join('{} {}'.format(m, fmt_log2(values[m]))
+                                                                       for m in large))
+        return 'all below log2 {:g}{}'.format(threshold, ' ({})'.format(listing) if listing else '')
+
+    def evidence_frame(self, node, rows, with_support):
+        out = []
+        classes = []
+        for lv in sorted(rows, key=level_order):
+            row = rows[lv]
+            control = 'n.a.'
+            if is_step(lv) and not isnan(row.get('beyond_mirror')):
+                control = 'passed' if truthy(row['beyond_mirror']) else 'not passed'
+            entry = {'Level': level_label(lv), 'Explains': 'yes' if row['explains'] else 'no',
+                     'What changed': self.what_changed(row, node), 'P': fmt_pq(row['p']), 'q': fmt_pq(row['q']),
+                     'Distance control': control}
+            if with_support:
+                support = ''
+                if level_hops(lv) > 0 and not isnan(row.get('support')):
+                    ci = str(row.get('support_ci') or '')
+                    support = '{}{}'.format(sig(row['support'], 2), ' ({})'.format(ci.replace('-', ' to '))
+                                            if ci and ci != 'NA' else '')
+                entry['3D support'] = support
+            out.append(entry)
+            classes.append(('explains' if row['explains'] else 'muted') + (' supported' if supported(row) else ''))
+        return pd.DataFrame(out), classes
+
+    def learned_items(self, rows):
+        """Sentences on the levels whose result differs under the learned roles, levels with the same difference
+        grouped ('the nodes 2 and 3 steps away do not explain the gene because ...')."""
+        groups = {}
+        for lv in sorted(rows, key=level_order):
+            key = self.learned_note(rows[lv], plural=True)
+            if key:
+                groups.setdefault(re.sub(r'\(q = [^)]*\)', '', key), []).append(lv)
+        items = []
+        for key, levels in groups.items():
+            steps = [level_hops(lv) for lv in levels if is_step(lv)]
+            subjects = [level_phrase(lv) for lv in levels if not is_step(lv)]
+            if steps:
+                subjects.append('the nodes {} {} away'.format(join_words([str(k) for k in steps]),
+                                                             'step' if steps == [1] else 'steps'))
+            plural = len(levels) > 1 or not levels[0].endswith('state')
+            note = self.learned_note(rows[levels[0]], plural=plural)
+            if len(levels) > 1:
+                note = re.sub(r' \(q = [^)]*\)', ' (q = {})'.format(', '.join(fmt_pq(rows[lv]['learned_q'])
+                                                                         for lv in levels)), note)
+                note = note.replace('at this level', 'at these levels')
+            items.append('{} {}'.format(join_words(subjects), note))
+        return items
 
 
 # --------------------------------------------------------------------------------------------------------------------
 # report builder
 
 class Report:
-    def __init__(self, run, args, keep_figures):
+    def __init__(self, run, args, keep_figures, places):
         self.run = run
         self.args = args
         self.keep_figures = keep_figures
+        self.places = places
 
-    # shared blocks ------------------------------------------------------------------------------------------------
-    def gene_figures(self, doc, gene, nodes, rows):
-        """Arcs and neighbourhood graph of a gene, the explaining nodes highlighted."""
+    def story(self, gene, nodes=None):
+        if nodes is None:
+            nodes, _ = self.run.gene_nodes(gene)
+        return GeneStory(self.run, self.places, gene, nodes)
+
+    def title_block(self, title, subtitle, kicker):
+        return ('<p class="kicker">{}</p><h1>{}</h1><p class="subtitle">{}</p><p class="date">{}</p>'.format(
+            kicker, title, subtitle, datetime.date.today().isoformat()))
+
+    def glance_block(self, story, doc, caption_extra='', arcs=None, known_level=None):
+        """The 'at a glance' paragraph with the ladder next to it; in a card of the main report (`arcs`: a function
+        returning the markup of the arcs figure) the paragraph above, the ladder and the arcs below side by side."""
+        fig = story.ladder()
+        text = '<p class="glance">{}</p>'.format(story.glance(known_level))
+        if fig is None:
+            doc.html('<div class="glance-grid single">{}</div>'.format(text))
+            if arcs is not None:
+                doc.html(arcs(), text='')
+            return
+        cols = len(story.fragments)
+        first = getattr(doc, 'first_ladder', None)
+        if not first:
+            doc.first_ladder = doc.figure_count + 1
+        caption = 'Explanation ladder of {}, read as Figure {}.'.format(story.g(), first) if first else ('Explanation ladder of {g}{f}: each row is a level, from the promoter (top) outwards. Filled '
+                   'marker: the level explains the expression change; open: it does not; blue ring: significant '
+                   '(q &lt; 0.05) and beyond distance-matched mirror loci.{s}{x}'.format(
+                       g=story.g(), f=', one column per promoter fragment' if cols > 1 else '',
+                       s=' 3D support at the right: how much closer graph neighbours at this step are in the nucleus '
+                         'than distance-matched pairs (0.5: no relation).' if any(
+                           is_step(lv) and not isnan(r.get('support')) for _, rows in story.fragments
+                           for lv, r in rows.items()) else '', x=caption_extra))
+        figure = doc.figure_markup([fig], caption, cls='ladder')
+        if arcs is not None:
+            doc.html('{}<div class="card-figs">{}{}</div>'.format(text, figure, arcs()), text=plain_text(text))
+            return
+        doc.html('<div class="glance-grid">{}{}</div>'.format(text, figure), text=plain_text(text))
+
+    def arcs_markup(self, doc, gene, nodes, story):
+        hood = self.gene_neighbourhood(gene, nodes, story)
+        if hood is None or hood['sub'].number_of_edges() == 0:
+            return '<p class="note">No interactions of {} to draw.</p>'.format(gene_span(gene))
+        return doc.figure_markup([arcs_figure(self.run, hood['sub'], hood['seeds'], hood['explaining'])],
+                                 self.arcs_caption(gene, hood['sub'], doc), cls='arcs')
+
+    # gene figures -----------------------------------------------------------------------------------------------
+    def gene_neighbourhood(self, gene, nodes, story):
         run = self.run
         seeds = [n for n in nodes if n in run.graph]
         if not seeds:
-            doc.p('The promoter of {} is not in the union graph.'.format(gene_span(gene)), cls='note')
-            return [], {}
-        direction = np.sign(float(rows['rna_log2FC'].iloc[0])) if len(rows) and not isnan(rows['rna_log2FC'].iloc[0]) \
-            else 1.0
+            return None
+        rows = run.levels[run.levels['node'].isin(nodes)]
+        direction = np.sign(story.rna) if not isnan(story.rna) else 1.0
         levels = rows.loc[rows['explains'], 'level'].tolist() if len(rows) else []
         found, which = explaining_nodes(run, seeds, levels, direction)
         explaining = [n for k in sorted(found) for n in found[k]]
         hops = max([level_hops(lv) for lv in levels] + [1])
         sub = neighbourhood_subgraph(run, seeds, hops, explaining, self.args.maxNodes)
         explaining = [n for n in explaining if n in sub]
-        if sub.number_of_edges() == 0:
-            doc.p('No interactions of {} in either condition.'.format(gene_span(gene)), cls='note')
-            return explaining, which
-        steps = sorted(found)
-        what = '; '.join('step {}: {}'.format(k, ', '.join('{} ({} {})'.format(
-            first_gene(run.graph.nodes[n].get('genes', '')) or n, which[n][1], fmt_num(which[n][2], signed=True))
-            for n in found[k] if n in sub)) for k in steps if any(n in sub for n in found[k]))
-        doc.figure([arcs_figure(run, sub, seeds, explaining)],
-                   'Interactions around {g} in {a} (top), {b} (middle) and their change (bottom; gained in {b} above '
-                   'the axis in red, lost below in blue, shared in grey; line width by interaction strength relative '
-                   'to the calling threshold). Squares on the axis: baited promoters, the promoter of {g} in black; '
-                   'open purple circles: explaining nodes. {n} nodes, {e} interactions{r}.'.format(
-                       g=gene_span(gene), a=esc(run.names[0]), b=esc(run.names[1]), n=sub.number_of_nodes(),
-                       e=sub.number_of_edges(), r=' (reduced neighbourhood)' if sub.number_of_nodes() >=
-                       self.args.maxNodes else ''))
-        mark = None
-        for lv in sorted(levels, key=level_order, reverse=True):
-            row = rows[rows['level'] == lv].iloc[0]
-            names = [m for m in run.marks if isinstance(row['changes'], str) and m in row['changes']]
-            if names:
-                mark = names[0]
-                break
-        mark = mark or (run.marks[0] if run.marks else None)
-        doc.figure(neighbourhood_figures(run, sub, seeds, explaining, mark, self.args.maxLog2),
-                   'Neighbourhood graph of {g} up to {h} step{s} on one layout: interactions in {a} and in {b} (grey, '
-                   'width by strength), the change of the interactions (shared: log2 change {b} / {a}, gained and lost '
-                   'dashed) and the expression change of the promoters (squares) with the change of {m} at the other '
-                   'ends (circles). Black outline: promoter of {g}; purple outline: explaining nodes ({w}).'.format(
-                       g=gene_span(gene), h=hops, s='' if hops == 1 else 's', a=esc(run.names[0]),
-                       b=esc(run.names[1]), m=esc(mark or 'the mark'),
-                       w=esc(what) if what else 'none at a step; the gene is explained at its promoter'), cols=2)
-        return explaining, which
+        return dict(seeds=seeds, sub=sub, explaining=explaining, found=found, which=which, hops=hops, levels=levels,
+                    rows=rows)
 
-    def hub_block(self, doc, gene, nodes, draw=True):
-        """Hub of a gene: its promoter, the partners and the other promoters contacting these partners, in A and B."""
-        run = self.run
-        graph = run.graph
-        seeds = [n for n in nodes if n in graph]
-        if not seeds:
+    def arcs_caption(self, gene, sub, doc=None):
+        a, b = (esc(n) for n in self.run.names)
+        first = getattr(doc, 'first_arcs', None) if doc is not None else None
+        if first:
+            return 'Interactions around {g}, drawn as in Figure {f}; {n} nodes and {e} interactions.'.format(
+                g=gene_span(gene), f=first, n=sub.number_of_nodes(), e=sub.number_of_edges())
+        if doc is not None:
+            doc.first_arcs = doc.figure_count + 1
+        return ('Interactions around {g} in {a} (top), in {b} (middle) and their change (bottom: gained in {b} above '
+                'the axis in red, lost below in blue, shared in grey). Black squares: the promoter of {g}; open purple '
+                'circles: nodes that carry the explanation. Line width scales with interaction strength; {n} nodes and '
+                '{e} interactions{r}.'.format(g=gene_span(gene), a=a, b=b, n=sub.number_of_nodes(),
+                                              e=sub.number_of_edges(), r=', reduced to the strongest partners and the '
+                                              'paths to the explaining nodes' if sub.number_of_nodes() >=
+                                              self.args.maxNodes else ''))
+
+    def gene_figures(self, doc, gene, nodes, story, arcs_only=False):
+        hood = self.gene_neighbourhood(gene, nodes, story)
+        if hood is None:
+            doc.p('The promoter of {} is not in the graph.'.format(gene_span(gene)), cls='note')
             return
+        sub, seeds, explaining = hood['sub'], hood['seeds'], hood['explaining']
+        if sub.number_of_edges() == 0:
+            doc.p('{} has no interactions in either {}.'.format(gene_span(gene), self.run.kind), cls='note')
+            return
+        doc.figure([arcs_figure(self.run, sub, seeds, explaining)], self.arcs_caption(gene, sub))
+        if arcs_only:
+            return
+        mark = None
+        for lv in sorted(hood['levels'], key=level_order, reverse=True):
+            row = hood['rows'][hood['rows']['level'] == lv].iloc[0]
+            if row.get('concordant_marks'):
+                mark = row['concordant_marks'][0]
+                break
+        mark = mark or (self.run.marks[0] if self.run.marks else None)
+        named = []
+        for k in sorted(hood['found']):
+            items = ['{} ({} {})'.format(self.places.label(n, seeds[0], gene), hood['which'][n][1],
+                                         fmt_log2(hood['which'][n][2])) for n in hood['found'][k] if n in sub][:3]
+            if items:
+                named.append('{}: {}'.format('direct partners' if k == 1 else '{} steps away'.format(k),
+                                             join_words(items)))
+        a, b = (esc(n) for n in self.run.names)
+        hops = hood['hops']
+        doc.figure(neighbourhood_figures(self.run, sub, seeds, explaining, mark, self.args.maxLog2),
+                   'Neighbourhood of {g} up to {h} step{s}, drawn on one layout: interactions in {a} and in {b}, their '
+                   'change, and the expression change of promoters (squares) with the change of {m} at other ends '
+                   '(circles). Purple outline: nodes that carry the explanation{w}.'.format(
+                       g=gene_span(gene), h=hops, s='' if hops == 1 else 's', a=a, b=b, m=esc(mark or 'the mark'),
+                       w=' ({})'.format('; '.join(named)) if named else ''), cols=2, cls='compact')
+
+    # hub and community ------------------------------------------------------------------------------------------
+    def gene_list(self, nodes, values=True, limit=8):
+        graph = self.run.graph
+        seen, items = set(), []
+        for n in nodes:
+            names = gene_names(graph.nodes[n].get('genes', ''))
+            if not names or names[0] in seen:
+                continue
+            seen.add(names[0])
+            value = graph.nodes[n].get('rna_log2FC')
+            if values and value is not None and not isnan(value):
+                items.append('{} {}'.format(gene_span(names[0]), fmt_log2(value)))
+            else:
+                items.append(gene_span(names[0]))
+        more = len(items) - limit
+        items = items[:limit]
+        if more > 0:
+            items.append('{} more'.format(more))
+        return join_words(items), len(seen)
+
+    def hub_members(self, seeds):
+        graph = self.run.graph
         members = {}
         for which, excluded in (('A', 'gained'), ('B', 'lost')):
             partners = {w for s in seeds for w in graph.neighbors(s)
                         if graph.edges[s, w].get('status', 'shared') != excluded}
             promoters = {p for w in partners for p in graph.neighbors(w)
                          if graph.nodes[p].get('bait') and graph.edges[w, p].get('status', 'shared') != excluded}
-            members[which] = (partners, (promoters | {w for w in partners if graph.nodes[w].get('bait')}) - set(seeds))
-        promoters_a, promoters_b = members['A'][1], members['B'][1]
-        partners_a, partners_b = members['A'][0], members['B'][0]
+            members[which] = (partners, (promoters | {w for w in partners if graph.nodes[w].get('bait')}) -
+                              set(seeds))
+        return members
+
+    def hub_block(self, doc, gene, nodes, draw=True, prose=True):
+        """Hub of a gene in prose: its partners, the other promoters contacting them, which change with it, which
+        left or joined; then the side-by-side figure."""
+        run = self.run
+        graph = run.graph
+        seeds = [n for n in nodes if n in graph]
+        if not seeds:
+            return
+        members = self.hub_members(seeds)
+        (partners_a, promoters_a), (partners_b, promoters_b) = members['A'], members['B']
         all_promoters = promoters_a | promoters_b
-        rna = {n: graph.nodes[n].get('rna_log2FC') for n in all_promoters}
         differential = set(run.classes['node'])
-        direction = np.sign(float(graph.nodes[seeds[0]].get('rna_log2FC', 0) or 0))
-        same = sorted((n for n in all_promoters if n in differential and rna[n] is not None
-                       and np.sign(float(rna[n])) == direction), key=lambda n: -abs(float(rna[n])))
-        opposite = sorted((n for n in all_promoters if n in differential and rna[n] is not None
-                           and np.sign(float(rna[n])) == -direction), key=lambda n: -abs(float(rna[n])))
-        left = sorted(promoters_a - promoters_b, key=lambda n: node_middle(graph, n))
-        joined = sorted(promoters_b - promoters_a, key=lambda n: node_middle(graph, n))
+        value = graph.nodes[seeds[0]].get('rna_log2FC')
+        direction = np.sign(float(value)) if value is not None and not isnan(value) else 1.0
 
-        def names_of(items, with_value=True):
-            if not items:
-                return 'none'
-            out = []
-            for n in items:
-                label = first_gene(graph.nodes[n].get('genes', '')) or n
-                value = rna.get(n, graph.nodes[n].get('rna_log2FC'))
-                if with_value and value is not None and not isnan(value):
-                    cls = 'up' if float(value) > 0 else 'down'
-                    out.append('{} <span class="{}">{}</span>'.format(gene_span(label), cls,
-                                                                       fmt_num(value, signed=True)))
-                else:
-                    out.append(gene_span(label))
-            return ', '.join(out)
-
-        verb = 'up' if direction > 0 else 'down'
-        doc.html('<dl class="lists">'
-                 '<dt>Hub</dt><dd>{a} partners and {pa} other promoters in {na}; {b} partners and {pb} other promoters '
-                 'in {nb} ({g} {v}, log2 {fc}).</dd>'
-                 '<dt>Same direction as {g} (differential promoters of the hub)</dt><dd>{same}</dd>'
-                 '<dt>Opposite direction</dt><dd>{opp}</dd>'
-                 '<dt>Left the hub in {nb}</dt><dd>{left}</dd>'
-                 '<dt>Joined the hub in {nb}</dt><dd>{joined}</dd></dl>'.format(
-                     a=len(partners_a), pa=len(promoters_a), b=len(partners_b), pb=len(promoters_b),
-                     na=esc(run.names[0]), nb=esc(run.names[1]), g=gene_span(gene), v=verb,
-                     fc=fmt_num(graph.nodes[seeds[0]].get('rna_log2FC'), signed=True),
-                     same=names_of(same[:25]) + (' and {} more'.format(len(same) - 25) if len(same) > 25 else ''),
-                     opp=names_of(opposite[:25]) + (' and {} more'.format(len(opposite) - 25)
-                                                    if len(opposite) > 25 else ''),
-                     left=names_of(left[:30]) + (' and {} more'.format(len(left) - 30) if len(left) > 30 else ''),
-                     joined=names_of(joined[:30]) + (' and {} more'.format(len(joined) - 30)
-                                                     if len(joined) > 30 else '')))
+        def rna(n):
+            v = graph.nodes[n].get('rna_log2FC')
+            return float(v) if v is not None and not isnan(v) else np.nan
+        same = sorted((n for n in all_promoters if n in differential and not isnan(rna(n)) and
+                       np.sign(rna(n)) == direction), key=lambda n: -abs(rna(n)))
+        opposite = sorted((n for n in all_promoters if n in differential and not isnan(rna(n)) and
+                           np.sign(rna(n)) == -direction), key=lambda n: -abs(rna(n)))
+        left = sorted(promoters_a - promoters_b, key=lambda n: -abs(rna(n)) if not isnan(rna(n)) else 0)
+        joined = sorted(promoters_b - promoters_a, key=lambda n: -abs(rna(n)) if not isnan(rna(n)) else 0)
+        a, b = (esc(n) for n in run.names)
+        g = gene_span(gene)
+        text = ['In {a}, the promoter of {g} contacts {pa:,} fragments, which in turn contact {xa:,} other promoters; '
+                'in {b}, {pb:,} fragments and {xb:,} other promoters.'.format(
+                    a=a, b=b, g=g, pa=len(partners_a), xa=len(promoters_a), pb=len(partners_b), xb=len(promoters_b))]
+        same_text, n_same = self.gene_list(same)
+        opposite_text, n_opposite = self.gene_list(opposite)
+        if n_same or n_opposite:
+            parts = []
+            if n_same:
+                parts.append('{} {} in the same direction as {} ({})'.format(
+                    number_word(n_same), 'changes' if n_same == 1 else 'change', g, same_text))
+            if n_opposite:
+                parts.append('{} in the opposite direction ({})'.format(number_word(n_opposite), opposite_text))
+            text.append('Among the differential promoters of this hub, {}.'.format('; '.join(parts)))
+        else:
+            text.append('No other promoter of the hub is differential.')
+        left_text, n_left = self.gene_list(left, values=False)
+        joined_text, n_joined = self.gene_list(joined, values=False)
+        moves = []
+        if n_left:
+            moves.append('{} promoter{} {} the hub in {} ({})'.format(number_word(n_left), '' if n_left == 1 else 's',
+                                                                   'leaves' if n_left == 1 else 'leave', b, left_text))
+        if n_joined:
+            moves.append('{} {} {}'.format(number_word(n_joined), 'joins' if n_joined == 1 else 'join',
+                                           'it ({})'.format(joined_text) if n_left else
+                                           'the hub in {} ({})'.format(b, joined_text)))
+        if moves:
+            text.append(capitalise(join_words(moves)) + '.')
+        if prose:
+            doc.p(' '.join(text))
         if not draw:
             return
         nodes_drawn = set(seeds) | partners_a | partners_b | all_promoters
@@ -1483,127 +2414,39 @@ class Report:
                               '{}: hub of {}'.format(run.names[0], gene), '{}: hub of {}'.format(run.names[1], gene),
                               self.args.maxLog2)
         doc.figure(figures, 'Hub of {g} in {a} (left) and {b} (right) on one layout: the promoter of {g} (black '
-                            'outline), its partners and the other promoters contacting them. Promoters coloured by the '
-                            'expression change {b} / {a}; orange dotted outline: left the hub in {b}; green outline: '
-                            'joined the hub in {b}; faded: present only in the other condition.{r}'.format(
-                                g=gene_span(gene), a=esc(run.names[0]), b=esc(run.names[1]),
-                                r=' Reduced to the members named above and their partners.' if
-                                sub.number_of_nodes() >= self.args.maxNodes else ''), cols=2)
+                            'outline), its partners and the other promoters contacting them, coloured by the '
+                            'expression change. Orange dotted outline: left the hub in {b}; green outline: joined; '
+                            'faded: present in the other {k} only.{r}'.format(
+                                g=g, a=a, b=b, k=run.kind, r=' Reduced to the named promoters and their partners.'
+                                if sub.number_of_nodes() >= self.args.maxNodes else ''), cols=2, cls='compact')
 
-    def community_rows(self, side, community):
+    def community_name(self, members):
+        """A community named by its differential gene with the largest expression change."""
         table = self.run.gene_communities
+        rows = table[table['node'].isin(members)]
+        if 'differential' in rows:
+            diff = rows[rows['differential'].map(truthy)]
+            rows = diff if len(diff) else rows
+        rows = rows.assign(abs_fc=rows['rna_log2FC'].abs()).sort_values('abs_fc', ascending=False)
+        for genes in rows['genes']:
+            names = gene_names(genes)
+            if names:
+                return names[0]
+        return ''
+
+    def coherence(self, community_a, community_b):
+        table = self.run.community_expression
         if table is None:
             return None
-        column = 'community_a' if side == 'A' else 'community_b'
-        return table[table[column] == community]
+        hit = table[(table['community_a'] == community_a) & (table['community_b'] == community_b)]
+        return hit.iloc[0] if len(hit) else None
 
-    def community_block(self, doc, community_a, community_b, focus=(), info=None, draw=True):
-        """Members of a community in A and its counterpart in B: expression, marks, left and joined, figure."""
-        run = self.run
-        table = run.gene_communities
-        if table is None:
-            doc.p('No community table (<code>{}_gene_community_changes.tsv</code>).'.format(esc(run.name)), cls='note')
-            return
-        members_a = set(table.loc[table['community_a'] == community_a, 'node']) if community_a >= 0 else set()
-        members_b = set(table.loc[table['community_b'] == community_b, 'node']) if community_b >= 0 else set()
-        rows = table[table['node'].isin(members_a | members_b)].copy()
-        rows['in'] = np.where(rows['node'].isin(members_a) & rows['node'].isin(members_b), 'both',
-                              np.where(rows['node'].isin(members_a), 'left in {}'.format(run.names[1]),
-                                       'joined in {}'.format(run.names[1])))
-        rows['gene'] = rows['genes'].map(first_gene)
-        mean = rows['rna_log2FC'].mean()
-        direction = np.sign(mean) if not isnan(mean) else 1.0
-        diff = rows['differential'].map(truthy) if 'differential' in rows else rows['rna_log2FC'].abs() >= \
-            run.rna_threshold
-        same = rows[diff & (np.sign(rows['rna_log2FC']) == direction)].sort_values('rna_log2FC', key=np.abs,
-                                                                                   ascending=False)
-        opposite = rows[diff & (np.sign(rows['rna_log2FC']) == -direction)].sort_values('rna_log2FC', key=np.abs,
-                                                                                        ascending=False)
-
-        def listing(frame, limit=25):
-            if not len(frame):
-                return 'none'
-            items = ['{} <span class="{}">{}</span>'.format(gene_span(r.gene or r.node), 'up' if r.rna_log2FC > 0
-                                                             else 'down', fmt_num(r.rna_log2FC, signed=True))
-                     for r in frame.head(limit).itertuples()]
-            return ', '.join(items) + (' and {} more'.format(len(frame) - limit) if len(frame) > limit else '')
-
-        left = rows[rows['in'].str.startswith('left')]
-        joined = rows[rows['in'].str.startswith('joined')]
-
-        def plain(frame, limit=30):
-            names = [g for g in frame['gene'] if g]
-            return ', '.join(gene_span(g) for g in names[:limit]) + (' and {} more'.format(len(names) - limit)
-                                                                    if len(names) > limit else '') if names else 'none'
-
-        transition = info.get('transition', '') if info else ''
-        doc.html('<dl class="lists"><dt>Members</dt><dd>{na} community {ca}: {a} promoters; {nb} community {cb}: '
-                 '{b} promoters; {both} in both; transition: {t}; mean expression change {m}.</dd>'
-                 '<dt>Same direction as the community mean (differential)</dt><dd>{same}</dd>'
-                 '<dt>Opposite direction</dt><dd>{opp}</dd><dt>Left in {nb}</dt><dd>{left}</dd>'
-                 '<dt>Joined in {nb}</dt><dd>{joined}</dd></dl>'.format(
-                     na=esc(run.names[0]), nb=esc(run.names[1]), ca=community_a if community_a >= 0 else 'none',
-                     cb=community_b if community_b >= 0 else 'none', a=len(members_a), b=len(members_b),
-                     both=len(members_a & members_b), t=esc(transition or 'not recorded'),
-                     m=fmt_num(mean, signed=True), same=listing(same), opp=listing(opposite), left=plain(left),
-                     joined=plain(joined)))
-        # member table with expression and promoter mark changes
-        features = run.features.set_index('node') if run.features is not None else None
-        show = rows.sort_values('rna_log2FC', key=np.abs, ascending=False)
-        frame = pd.DataFrame({'gene': show['gene'], 'promoter fragment': show['node'], 'membership': show['in'],
-                              'expression log2FC': show['rna_log2FC'],
-                              'differential': show['differential'].map(lambda v: 'yes' if truthy(v) else 'no')
-                              if 'differential' in show else ''})
-        if features is not None:
-            for mark in run.marks:
-                column = mark + '_promoter'
-                if column in features:
-                    frame['{} promoter'.format(mark)] = features[column].reindex(show['node']).to_numpy()
-        numeric = ['expression log2FC'] + ['{} promoter'.format(m) for m in run.marks]
-        doc.table(frame, 'Promoters of the community, by absolute expression change (up to 30 shown): membership in {} '
-                         'and {}, expression log2 fold change {} / {}, and the log2 change of the marks at the '
-                         'promoter.'.format(esc(run.names[0]), esc(run.names[1]), esc(run.names[1]),
-                                            esc(run.names[0])),
-                  formats={c: (lambda v: fmt_num(v, signed=True)) for c in numeric}, numeric=numeric, max_rows=30)
-        if not draw:
-            return
-        graph = run.graph
-        baits = [n for n in members_a | members_b if n in graph]
-        if not baits:
-            return
-        # promoters of the community and the other ends that connect at least two of them (or the promoter's
-        # strongest partner if it has no shared one)
-        counts = {}
-        for n in baits:
-            for w in graph.neighbors(n):
-                if not graph.nodes[w].get('bait'):
-                    counts[w] = counts.get(w, 0) + 1
-        connectors = sorted((w for w, c in counts.items() if c >= 2), key=lambda w: (-counts[w], w))
-        nodes = set(baits) | set(connectors[:max(0, self.args.maxNodes - len(baits))])
-        if len(baits) > self.args.maxNodes:
-            keep = set(focus) | set(same['node'].head(12)) | set(opposite['node'].head(12)) | \
-                set(left['node'].head(12)) | set(joined['node'].head(12))
-            nodes = keep | {w for w in connectors if sum(graph.has_edge(w, p) for p in keep) >= 2}
-        sub = ordered_subgraph(graph, nodes)
-        sub = ordered_subgraph(sub, [n for n in sub.nodes if sub.degree[n] > 0])
-        if sub.number_of_edges() == 0:
-            doc.p('The promoters of the community share no interacting fragment in the union graph.', cls='note')
-            return
-        positions = separate(spread_layout(sub, aspect=1.2), sub, min_distance=0.06)
-        figures = hub_figures(run, sub, positions, (members_a | set(n for n in sub if not sub.nodes[n].get('bait')))
-                              & set(sub.nodes), (members_b | set(n for n in sub if not sub.nodes[n].get('bait')))
-                              & set(sub.nodes), set(focus),
-                              '{}: community {}'.format(run.names[0], community_a if community_a >= 0 else 'none'),
-                              '{}: community {}'.format(run.names[1], community_b if community_b >= 0 else 'none'),
-                              self.args.maxLog2, members_label='community')
-        doc.figure(figures, 'Community in {a} (left) and its counterpart in {b} (right) on one layout: member promoters '
-                            '(squares, coloured by the expression change {b} / {a}) and the other ends shared by at '
-                            'least two of them, with the interactions of each condition. Orange dotted outline: '
-                            'promoters that left the community in {b}; green outline: promoters that joined; faded: '
-                            'member in the other condition only.{r}'.format(
-                                a=esc(run.names[0]), b=esc(run.names[1]),
-                                r=' Reduced to the named members and their shared other ends.'
-                                if len(baits) > self.args.maxNodes else ''), cols=2)
+    def transition_phrase(self, transition):
+        b = esc(self.run.names[1])
+        return {'stable': 'stays stable in {}'.format(b), 'split': 'splits in {}'.format(b),
+                'merged': 'merges with other communities in {}'.format(b),
+                'remodelled': 'is remodelled in {}'.format(b), 'dissolved': 'dissolves in {}'.format(b),
+                'formed': 'forms in {}'.format(b)}.get(str(transition), '')
 
     def gene_community_text(self, doc, gene, nodes):
         run = self.run
@@ -1614,289 +2457,490 @@ class Report:
             doc.p('{} is not assigned to a community.'.format(gene_span(gene)), cls='note')
             return None
         r = rows.iloc[0]
+        a, b = (esc(n) for n in run.names)
+        g = gene_span(gene)
+        status = {'kept': 'stays in its community between {} and {}'.format(a, b),
+                  'switch': 'moves to another community between {} and {}'.format(a, b),
+                  'lost': 'belongs to a community in {} but to none in {}'.format(a, b),
+                  'gained': 'belongs to no community in {} and joins one in {}'.format(a, b)}.get(
+                      str(r.get('status')), 'has community status {}'.format(esc(r.get('status'))))
+        sizes = []
+        if not isnan(r.get('size_a')) and int(r['size_a']) > 0:
+            sizes.append('{:,} promoters in {}'.format(int(r['size_a']), a))
+        if not isnan(r.get('size_b')) and int(r['size_b']) > 0:
+            sizes.append('{:,} in {}'.format(int(r['size_b']), b))
+        text = '{} {}{}'.format(g, status, ' ({}'.format(', '.join(sizes)) if sizes else '')
+        if not isnan(r.get('member_jaccard')) and sizes:
+            text += '; {:.0f}% of the members shared)'.format(100 * float(r['member_jaccard']))
+        elif sizes:
+            text += ')'
+        text += '.'
+        transition = r.get('community_a_transition')
+        phrase = self.transition_phrase(transition) if not isnan(transition) else ''
+        if phrase:
+            text += ' The {} community {}.'.format(a, phrase)
+        coherent = self.coherence(r.get('community_a'), r.get('community_b'))
+        if coherent is not None and not isnan(coherent.get('coherence_q')):
+            q = float(coherent['coherence_q'])
+            text += ' The expression of its {:,} measured member genes changes {} (mean log2 {}, q = {}).'.format(
+                int(coherent['n_genes']), 'coherently' if q < 0.1 else 'no more coherently than in random gene sets',
+                fmt_log2(coherent['mean_rna_log2FC']), fmt_pq(q))
 
-        def genes(value, limit=30):
-            names = [g for g in str(value).split(',') if g and g != 'nan']
+        def listing(value, limit=12):
+            names = [x for x in str(value).split(',') if x and x != 'nan'] if not isnan(value) else []
+            names = [x for x in names if not x.startswith(IGNORED_GENE_PREFIXES)] or names
             if not names:
-                return 'none'
-            text = ', '.join(gene_span(g) for g in names[:limit])
-            return text + (' and {} more'.format(len(names) - limit) if len(names) > limit else '')
-
-        doc.p('Community of {g}: {s} (community {ca} of {na}, {sa} promoters; community {cb} of {nb}, {sb} promoters; '
-              'member Jaccard {j}; transition of the {na} community: {t}). Genes that joined its community in {nb}: '
-              '{jo}. Genes that left: {le}.'.format(
-                  g=gene_span(gene), s=esc(r.get('status', '')), ca=fmt_int(r.get('community_a')),
-                  cb=fmt_int(r.get('community_b')), na=esc(run.names[0]), nb=esc(run.names[1]),
-                  sa=fmt_int(r.get('size_a')), sb=fmt_int(r.get('size_b')), j=fmt_num(r.get('member_jaccard')),
-                  t=esc(r.get('community_a_transition', '') if not isnan(r.get('community_a_transition')) else
-                        'none'), jo=genes(r.get('joined_genes')), le=genes(r.get('left_genes'))))
+                return ''
+            shown = [gene_span(x) for x in names[:limit]]
+            if len(names) > limit:
+                shown.append('{} more'.format(len(names) - limit))
+            return join_words(shown)
+        joined, left = listing(r.get('joined_genes')), listing(r.get('left_genes'))
+        if joined:
+            text += ' Joined in {}: {}.'.format(b, joined)
+        if left:
+            text += ' Left in {}: {}.'.format(b, left)
+        doc.p(text)
         return r
 
-    def gene_finding(self, doc, gene, nodes, anchor=None, figures=True, hub=True, level_heading=4):
-        """Explanation of a gene: ranked levels, evidence, arcs, neighbourhood, hub."""
-        run = self.run
-        rows = run.levels[run.levels['node'].isin(nodes)]
-        for k, node in enumerate(nodes):
-            part = rows[rows['node'] == node]
-            if not len(part):
-                continue
-            genes = part['genes'].iloc[0]
-            first = run.first_level().get(node, '')
-            label = 'promoter fragment <span class="mono">{}</span> ({})'.format(esc(node), esc(genes))
-            doc.html('<p>{}: expression log2 fold change {} / {} {}; first level of the cascade: {}. {} level{} '
-                     'explain{}.'
-                     '</p>'.format(label, esc(run.names[1]), esc(run.names[0]),
-                                   fmt_num(part['rna_log2FC'].iloc[0], signed=True), esc(first or 'none'),
-                                   int(part['explains'].sum()), '' if int(part['explains'].sum()) == 1 else 's',
-                                   's' if int(part['explains'].sum()) == 1 else ''))
-            doc.html(ranked_list(part, run.names))
-            classes = run.classes.set_index('node')
-            if node in classes.index:
-                for column, title in (('explanation_detail', 'egaDifferential (declared roles)'),
-                                      ('explanation_detail_learned', 'egaDifferential (learned roles)')):
-                    value = classes.loc[node, column] if column in classes else np.nan
-                    if isinstance(value, str) and value:
-                        doc.p('{}: {}'.format(esc(title), esc(value)), cls='note')
-        if figures:
-            self.gene_figures(doc, gene, nodes, rows)
-        if hub:
-            self.hub_block(doc, gene, nodes, draw=figures)
+    def community_members(self, community_a, community_b):
+        table = self.run.gene_communities
+        members_a = set(table.loc[table['community_a'] == community_a, 'node']) if community_a >= 0 else set()
+        members_b = set(table.loc[table['community_b'] == community_b, 'node']) if community_b >= 0 else set()
+        rows = table[table['node'].isin(members_a | members_b)].copy()
+        rows['in'] = np.where(rows['node'].isin(members_a) & rows['node'].isin(members_b), 'both',
+                              np.where(rows['node'].isin(members_a), 'left', 'joined'))
+        rows['gene'] = rows['genes'].map(first_gene)
+        return members_a, members_b, rows
 
-    # main report ----------------------------------------------------------------------------------------------------
+    def community_block(self, doc, community_a, community_b, focus=(), info=None, draw=True):
+        """A community in prose (members, coherent change, same and opposite direction, left and joined) and the
+        side-by-side figure; the member table goes to the appendix."""
+        run = self.run
+        if run.gene_communities is None:
+            doc.p('No community table in the run outputs.', cls='note')
+            return
+        members_a, members_b, rows = self.community_members(community_a, community_b)
+        a, b = (esc(n) for n in run.names)
+        mean = rows['rna_log2FC'].mean()
+        direction = np.sign(mean) if not isnan(mean) else 1.0
+        diff = rows['differential'].map(truthy) if 'differential' in rows else \
+            rows['rna_log2FC'].abs() >= run.rna_threshold
+        same = rows[diff & (np.sign(rows['rna_log2FC']) == direction)].sort_values('rna_log2FC', key=np.abs,
+                                                                                   ascending=False)
+        opposite = rows[diff & (np.sign(rows['rna_log2FC']) == -direction)].sort_values('rna_log2FC', key=np.abs,
+                                                                                        ascending=False)
+
+        def listing(frame, values=True, limit=10):
+            names, seen = [], set()
+            for r in frame.itertuples():
+                label = gene_names(r.genes)
+                if not label or label[0] in seen:
+                    continue
+                seen.add(label[0])
+                names.append('{} {}'.format(gene_span(label[0]), fmt_log2(r.rna_log2FC)) if values and
+                             not isnan(r.rna_log2FC) else gene_span(label[0]))
+            more = len(names) - limit
+            return join_words(names[:limit] + (['{} more'.format(more)] if more > 0 else [])), len(names)
+        transition = (info or {}).get('transition', '')
+        phrase = self.transition_phrase(transition)
+        text = ['The community has {:,} promoters in {} and {:,} in {} ({:,} in both){}.'.format(
+            len(members_a), a, len(members_b), b, len(members_a & members_b),
+            '; it {}'.format(phrase) if phrase else '')]
+        coherent = self.coherence(community_a, community_b)
+        if coherent is not None and not isnan(coherent.get('coherence_q')):
+            q = float(coherent['coherence_q'])
+            text.append('The expression of its {:,} measured member genes changes {} (mean log2 {}, P = {}, q = {}); '
+                        '{:.0f}% of its interactions are rewired.'.format(
+                            int(coherent['n_genes']), 'coherently' if q < 0.1 else
+                            'no more coherently than random gene sets of the same size',
+                            fmt_log2(coherent['mean_rna_log2FC']), fmt_pq(coherent['coherence_p']), fmt_pq(q),
+                            100 * float(coherent['rewired_fraction'])))
+        same_text, n_same = listing(same)
+        opposite_text, n_opposite = listing(opposite)
+        if n_same or n_opposite:
+            text.append('Differential members change {} ({}){}.'.format(
+                'up' if direction > 0 else 'down', same_text or 'none',
+                '; {:,} change the other way ({})'.format(n_opposite, opposite_text) if n_opposite else
+                '; none changes the other way'))
+        left_text, n_left = listing(rows[rows['in'] == 'left'], values=False)
+        joined_text, n_joined = listing(rows[rows['in'] == 'joined'], values=False)
+        moves = []
+        if n_left:
+            moves.append('{} left in {}'.format(left_text, b))
+        if n_joined:
+            moves.append('{} joined'.format(joined_text))
+        if moves:
+            text.append(capitalise(join_words(moves, 'and')) + '.')
+        doc.p(' '.join(text))
+        if draw:
+            self.community_figure(doc, members_a, members_b, same, opposite, rows, focus, community_a, community_b)
+
+    def community_figure(self, doc, members_a, members_b, same, opposite, rows, focus, community_a, community_b):
+        run = self.run
+        graph = run.graph
+        baits = [n for n in members_a | members_b if n in graph]
+        if not baits:
+            return
+        counts = {}
+        for n in baits:
+            for w in graph.neighbors(n):
+                if not graph.nodes[w].get('bait'):
+                    counts[w] = counts.get(w, 0) + 1
+        connectors = sorted((w for w, c in counts.items() if c >= 2), key=lambda w: (-counts[w], w))
+        nodes = set(baits) | set(connectors[:max(0, self.args.maxNodes - len(baits))])
+        if len(baits) > self.args.maxNodes:
+            keep = set(focus) | set(same['node'].head(12)) | set(opposite['node'].head(12)) | \
+                set(rows.loc[rows['in'] != 'both', 'node'].head(24))
+            nodes = keep | {w for w in connectors if sum(graph.has_edge(w, p) for p in keep) >= 2}
+        sub = ordered_subgraph(graph, nodes)
+        sub = ordered_subgraph(sub, [n for n in sub.nodes if sub.degree[n] > 0])
+        if sub.number_of_edges() == 0:
+            doc.p('The promoters of the community share no interacting fragment.', cls='note')
+            return
+        positions = separate(spread_layout(sub, aspect=1.2), sub, min_distance=0.06)
+        others = set(n for n in sub if not sub.nodes[n].get('bait'))
+        name = self.community_name(members_a | members_b)
+        a, b = run.names
+        figures = hub_figures(run, sub, positions, (members_a | others) & set(sub.nodes),
+                              (members_b | others) & set(sub.nodes), set(focus),
+                              '{}: community of {}'.format(a, name), '{}: community of {}'.format(b, name),
+                              self.args.maxLog2, members_label='community')
+        first = getattr(doc, 'first_community', None)
+        if first:
+            doc.figure(figures, 'Community of {} in {} (left) and {} (right), drawn as in Figure {}.'.format(
+                gene_span(name), esc(a), esc(b), first), cols=2, cls='compact')
+            return
+        doc.first_community = doc.figure_count + 1
+        doc.figure(figures, 'Community of {g} in {a} (left) and {b} (right) on one layout: member promoters (squares, '
+                            'coloured by the expression change) and the other ends shared by at least two of them. '
+                            'Orange dotted outline: left the community in {b}; green outline: joined; faded: member '
+                            'in the other {k} only.{r}'.format(g=gene_span(name), a=esc(a), b=esc(b), k=run.kind,
+                                                               r=' Reduced to the named members and their shared '
+                                                                 'other ends.' if len(baits) > self.args.maxNodes
+                                                               else ''), cols=2, cls='compact')
+
+    # gene report ------------------------------------------------------------------------------------------------
+    def gene_report(self, gene):
+        run = self.run
+        nodes, differential = run.gene_nodes(gene)
+        doc = Document('{}: {} vs {}'.format(gene, *run.names), self.keep_figures)
+        heading = self.title_block(gene_span(gene), esc(run.condition_title()), 'Gene report')
+        story = self.story(gene, nodes)
+        doc.section('glance', 'At a glance')
+        if not nodes:
+            doc.p('{} is not a baited promoter of the graph of this comparison.'.format(gene_span(gene)))
+            self.appendix(doc, genes=[])
+            return doc, heading
+        self.glance_block(story, doc)
+        doc.section('interactions', 'Interactions')
+        self.gene_figures(doc, gene, nodes, story)
+        if story.fragments:
+            doc.section('evidence', 'Evidence by level')
+            with_support = any(not isnan(r.get('support')) and level_hops(lv) > 0 for _, rows in story.fragments
+                               for lv, r in rows.items())
+            first_table = None
+            learned = {}
+            for node, rows in story.fragments:
+                if len(story.fragments) > 1:
+                    doc.heading(story.fragment_heading(node), level=3)
+                frame, classes = story.evidence_frame(node, rows, with_support)
+                a, b = (esc(n) for n in run.names)
+                if first_table is None:
+                    caption = ('Evidence for {g}{f}, from the promoter outwards. Mark changes are log2 fold changes '
+                               '{b} / {a}, at the promoter itself or taken over the nodes of a step; explains: the '
+                               'change agrees with the expression change by at least log2 {t:g}. P and q: per-gene '
+                               'permutation test of the step; distance control: the change exceeds that at '
+                               'distance-matched mirror loci.{s}'.format(
+                                   g=gene_span(gene), f=' at the {}'.format(story.fragment_name(node)[4:])
+                                   if len(story.fragments) > 1 else '', a=a, b=b, t=run.chromatin_threshold,
+                                   s=' 3D support: probability that graph neighbours at this step are closer in the '
+                                     'nucleus than distance-matched pairs.' if with_support else ''))
+                else:
+                    caption = 'As Table {}, for the {}.'.format(first_table, story.fragment_name(node)[4:])
+                number = doc.table(frame, caption, markup=tuple(frame.columns), escape=False,
+                                   nowrap=('Level', 'P', 'q', 'Distance control', 'Explains'),
+                                   long=('What changed',), row_classes=classes, cls='evidence')
+                first_table = first_table or number
+                for item in story.learned_items(rows):
+                    learned.setdefault(item, []).append(node)
+            if learned:
+                notes = []
+                for item, where in learned.items():
+                    if len(story.fragments) > 1:
+                        item = item[:-1] + '; {})' if item.endswith(')') else item + ' ({})'
+                        item = item.format('both fragments' if len(where) == len(story.fragments) == 2 else
+                                               'all fragments' if len(where) == len(story.fragments) else
+                                               join_words([story.fragment_name(n)[4:] for n in where]))
+                    notes.append(item)
+                doc.p('Under the mark roles learned from these data, {}.'.format('; '.join(notes)), cls='note')
+        doc.section('states', 'Chromatin states')
+        self.state_block(doc, story)
+        doc.section('hub', 'Hub and community')
+        self.hub_block(doc, gene, nodes, draw=False)
+        community = self.gene_community_text(doc, gene, nodes)
+        self.hub_block(doc, gene, nodes, prose=False)
+        self.appendix(doc, genes=[(gene, nodes, story)], community=community)
+        return doc, heading
+
+    def state_block(self, doc, story):
+        run = self.run
+        if not story.fragments:
+            doc.p('No chromatin states are called for {}: the gene is not differential.'.format(story.g()),
+                  cls='note')
+            return
+        a, b = (esc(n) for n in run.names)
+        items = []
+        described = set()
+        for node, rows in story.fragments:
+            sentences = []
+            for lv, where in (('promoter_state', 'Promoter'), ('step1_state', 'Direct partners')):
+                row = rows.get(lv)
+                if row is None:
+                    continue
+                transition = row['transition']
+                if not transition or transition in ('no poised fragment', 'states not callable'):
+                    sentences.append('{}: {}.'.format(where, 'no poised partner' if 'poised' in str(
+                        transition or row['result']) else 'states not callable'))
+                    continue
+                count = transition_count(row.get('detail_raw'))
+                fragment = row.get('state_fragment') if lv == 'step1_state' else ''
+                if fragment and (fragment, transition) in described:
+                    sentences.append('{}: the same {} element{}.'.format(
+                        where, parse_transition(transition)[0], ' ({} of {} partners)'.format(*count) if count else ''))
+                    continue
+                text = state_text(transition, (a, b))
+                _, _, note = parse_transition(transition)
+                if note:
+                    text += ' ({})'.format(readable_note(note))
+                if fragment:
+                    described.add((fragment, transition))
+                    text += ' at {}'.format(story.place(fragment, node))
+                    if count:
+                        text += ' ({} of {} partners)'.format(*count)
+                values = fold_values(row.get('detail_raw'))
+                if values:
+                    text += '; fold enrichment {} / {}: {}'.format(a, b, values)
+                if lv == 'promoter_state':
+                    text += self.rechip_text(node, transition)
+                sentence = '{}: {}.'.format(where, text)
+                alt = row.get('alt_transition')
+                if alt and alt != transition:
+                    sentence += ' On the strongest 1 kb window of the fragment the call is {}{}.'.format(
+                        state_text(alt, (a, b)), ', which explains the change' if truthy(row.get('alt_explains'))
+                        and not row['explains'] else '')
+                sentences.append(sentence)
+            if sentences:
+                title = story.fragment_heading(node) if len(story.fragments) > 1 else ''
+                items.append('<p>{}{}</p>'.format('<strong>{}.</strong> '.format(title) if title else '',
+                                                   ' '.join(sentences)))
+        doc.html('<div class="states">{}</div>'.format(''.join(items)))
+        doc.p('States are called from the presence of each mark on the fragment (fold enrichment over input of at '
+              'least {:g}, fragment mean); bivalent: an activating and a repressive mark together; poised enhancer: '
+              'an enhancer mark with the repressive mark. A poised state present in both {}s explains a change '
+              'whose trigger is not among the measured layers.{}'.format(
+                  run.command_value('--stateThreshold', 2.0), run.kind,
+                  ' Re-ChIP: sequential ChIP signal of both marks on the same fragment; a signal of at least 2 '
+                  'confirms the bivalent call.' if run.rechip is not None else ''), cls='note')
+
+    def rechip_text(self, node, transition):
+        run = self.run
+        if run.rechip is None or node not in run.rechip.index:
+            return ''
+        row = run.rechip.loc[node]
+        values = [row.get('reChIP_{}_mean'.format(n), np.nan) for n in run.names]
+        if any(isnan(v) for v in values):
+            return ''
+        a_state, b_state, _ = parse_transition(transition)
+        confirmed = [n for n, v, s in zip(run.names, values, (a_state, b_state)) if s == 'bivalent' and v >= 2]
+        bivalent = [n for s, n in zip((a_state, b_state), run.names) if s == 'bivalent']
+        tag = ''
+        if bivalent:
+            if len(confirmed) == len(bivalent):
+                tag = ' (bivalent confirmed)'
+            elif confirmed:
+                tag = ' (bivalent confirmed in {})'.format(esc(confirmed[0]))
+            else:
+                tag = ' (bivalent not confirmed)'
+        def value(v):
+            return '{:.0f}'.format(v) if v >= 10 else sig(v, 2)
+        return '; re-ChIP signal {} in {} and {} in {}{}'.format(value(values[0]), esc(run.names[0]), value(values[1]),
+                                                                 esc(run.names[1]), tag)
+
+    # main report ------------------------------------------------------------------------------------------------
     def main_report(self):
         run = self.run
-        a, b = run.names
-        doc = Document('{} vs {}: differential graph report'.format(a, b), self.keep_figures)
-        self.summary(doc)
+        doc = Document('{} vs {}: differential graph report'.format(*run.names), self.keep_figures)
+        heading = self.title_block(esc(run.condition_title()), 'Differential chromatin interaction graph',
+                                   'Comparison report')
+        self.key_findings(doc)
         self.cascade_section(doc)
-        findings = self.findings_section(doc)
-        self.hubs_section(doc, findings)
-        self.methods(doc)
-        return doc
+        cards = self.gene_cards(doc)
+        self.communities_section(doc)
+        self.appendix(doc, genes=cards, main=True)
+        return doc, heading
 
-    def summary(self, doc):
+    def level_table(self):
+        if run_has(self.run.level_counts):
+            return self.run.variant_rows(self.run.level_counts).set_index('level')
+        return None
+
+    def key_findings(self, doc):
         run = self.run
-        a, b = run.names
-        doc.section('summary', 'Summary of the comparison')
-        counts = run.edge_counts()
-        total_edges = sum(counts.values())
-        n_diff = len(run.classes)
+        a, b = (esc(n) for n in run.names)
+        doc.section('findings', 'Key findings')
+        bullets = []
+        n = len(run.classes)
         up = int((run.classes['rna_log2FC'] > 0).sum())
-        tested = len(run.features) if run.features is not None else np.nan
-        transitions = (run.community_summary or {}).get('transitions', {})
-        stats = [('{:,}'.format(n_diff), 'differential genes ({:,} up, {:,} down in {})'.format(up, n_diff - up, b)),
-                 (fmt_int(tested), 'promoters with an expression change'),
-                 ('{:,}'.format(counts.get('gained', 0)), 'interactions gained in {}'.format(b)),
-                 ('{:,}'.format(counts.get('lost', 0)), 'interactions lost in {}'.format(b)),
-                 ('{:,}'.format(counts.get('shared', 0)), 'interactions shared'),
-                 ('{:,}'.format(sum(transitions.values())) if transitions else '', 'community transitions')]
-        doc.html('<div class="stats">{}</div>'.format(''.join(
-            '<div class="stat"><div class="value">{}</div><div class="label">{}</div></div>'.format(esc(v), esc(t))
-            for v, t in stats if v)))
-        marks = run.declared_roles()
-        doc.p('Comparison of {a} (condition A) with {b} (condition B), output prefix <code>{p}</code>. The union graph '
-              'holds {e:,} interactions: {g:,} gained in {b}, {l:,} lost in {b} and {s:,} shared. Chromatin marks with '
-              'their declared roles: {m}. Differential genes: |log2 fold change| of at least {r:g}{pa}; mark changes '
-              'explain a gene from |log2 fold change| {c:g} on.'.format(
-                  a=esc(a), b=esc(b), p=esc(run.prefix), e=total_edges, g=counts.get('gained', 0),
-                  l=counts.get('lost', 0), s=counts.get('shared', 0),
-                  m=esc(', '.join('{} {}'.format(k, v) for k, v in marks.items() if k != 'contact')),
-                  r=run.rna_threshold, pa=' and the adjusted P threshold of the run' if run.command and
-                  '--padjColumn' in run.command else '', c=run.chromatin_threshold))
-        rows = []
-        if run.permutation:
-            perm = run.permutation
-            rows.append(('genes in the models (promoter, direct and indirect partners)', fmt_int(perm.get('n_genes'))))
-            rows.append(('R2 gain of the indirect level (observed)', fmt_num(perm.get('observed_indirect_delta_r2'), 5)))
-            rows.append(('R2 gain of the indirect level (permutations, mean)',
-                         fmt_num(perm.get('null_indirect_delta_r2_mean'), 5)))
-            rows.append(('empirical P of the indirect R2 gain', fmt_p(perm.get('empirical_p_delta_r2'))))
-            rows.append(('permutations', fmt_int(perm.get('n_permutations'))))
-            mirror = perm.get('mirror_comparison', {})
-            for level in ('direct', 'indirect', 'hop3'):
-                key = '{}_graph_minus_mirror'.format(level)
-                if key in mirror:
-                    rows.append(('R2 gain graph minus mirror, {} level (95% interval)'.format(level),
-                                 '{} ({} to {})'.format(fmt_num(mirror[key], 5), fmt_num(mirror.get(level + '_ci_low'), 5),
-                                                         fmt_num(mirror.get(level + '_ci_high'), 5))))
+        bullets.append('{:,} genes differ in expression between {} and {} by at least {:g}-fold (|log2| ≥ {:g}): '
+                       '{:,} are higher and {:,} lower in {}.'.format(n, a, b, 2 ** run.rna_threshold,
+                                                                     run.rna_threshold, up, n - up, b))
+        levels = self.level_table()
+        if levels is not None and 'genes_first' in levels:
+            first = levels['genes_first']
+
+            def count(lv):
+                return int(first.get(lv, 0)) if not isnan(first.get(lv, np.nan)) else 0
+            promoter = sum(count(lv) for lv in ('promoter_marks', 'promoter_contacts', 'promoter_state'))
+            direct = count('step1_marks') + count('step1_state')
+            poised = levels['first_poised_in_both'].get('promoter_state', np.nan) if 'first_poised_in_both' in \
+                levels else np.nan
+            steps = [lv for lv in levels.index if re.fullmatch(r'step\d+', str(lv)) and lv != 'step1']
+            far = join_words(['{} {:,}'.format('the nodes {} steps away for'.format(level_hops(lv)) if k == 0 else
+                                               '{} steps away for'.format(level_hops(lv)), count(lv))
+                              for k, lv in enumerate(steps)])
+            bullets.append('Taking the nearest level that explains each gene, the promoter accounts for {p:,} genes '
+                           '({pp:.0f}%): {m:,} through its histone marks, {c:,} through its own contacts and {s:,} '
+                           'through its chromatin state{po}. The direct partners account for {d:,} ({dp:.0f}%){f}; '
+                           '{u:,} genes remain unexplained.'.format(
+                               p=promoter, pp=100 * promoter / n if n else 0, m=count('promoter_marks'),
+                               c=count('promoter_contacts'), s=count('promoter_state'),
+                               po=' ({:,} of them bivalent or poised in both {}s)'.format(int(poised), run.kind)
+                               if not isnan(poised) else '', d=direct, dp=100 * direct / n if n else 0,
+                               f=', ' + far if far else '', u=count('none')))
+            parts = []
+            for lv in ['step1_marks'] + steps:
+                if lv not in levels.index:
+                    continue
+                r = levels.loc[lv]
+                parts.append('{} {:,} ({:,} passing the distance control, {} at q &lt; 0.05)'.format(
+                    'the histone marks of the direct partners explain' if lv == 'step1_marks' else
+                    'nodes {} steps away'.format(level_hops(lv)), int(r['genes_any']),
+                    int(r.get('any_beyond_mirror', 0) or 0),
+                    '{:,}'.format(int(r['any_q_lt_0.05'])) if not isnan(r.get('any_q_lt_0.05')) and
+                    int(r['any_q_lt_0.05']) else 'none'))
+            if parts:
+                bullets.append('Counting every level that explains a gene, {}.'.format(join_words(parts)))
+        strongest = self.strongest_cases()
+        if strongest:
+            bullets.append('The strongest cases supported by the graph are {}.'.format(join_words(
+                ['{} ({}, q = {})'.format(gene_span(g), 'direct partners' if lv == 'step1' else
+                                          '{} steps away'.format(level_hops(lv)), fmt_pq(q))
+                 for g, lv, q in strongest])))
+        bivalent = self.bivalent_sentence()
+        if bivalent:
+            bullets.append(bivalent)
+        communities = self.community_sentence()
+        if communities:
+            bullets.append(communities)
+        perm = run.permutation or {}
+        if perm.get('observed_indirect_delta_r2') is not None:
+            bullets.append('Across {:,} genes, adding the nodes 2 steps away to a regression of the expression change '
+                           'on the mark changes raises the explained variance by {} percentage points, against {} in '
+                           'permuted graphs (P = {}).'.format(
+                               int(perm.get('n_genes', 0)), sig(100 * perm['observed_indirect_delta_r2'], 2),
+                               sig(100 * perm.get('null_indirect_delta_r2_mean', np.nan), 2),
+                               fmt_pq(perm.get('empirical_p_delta_r2'))))
+        doc.html('<ul class="findings">{}</ul>'.format(''.join('<li>{}</li>'.format(x) for x in bullets)))
+
+    def strongest_cases(self, limit=3):
+        levels = self.run.levels
+        if not len(levels):
+            return []
+        part = levels[levels['level'].map(is_step) & levels['explains']]
+        part = part[part.apply(supported, axis=1)] if len(part) else part
+        if not len(part):
+            return []
+        part = part.assign(qf=part['q'].astype(float)).sort_values(['qf', 'order'])
+        out, seen = [], set()
+        for r in part.itertuples():
+            if r.gene in seen:
+                continue
+            seen.add(r.gene)
+            out.append((r.gene, r.level, r.qf))
+            if len(out) >= limit:
+                break
+        return out
+
+    def bivalent_sentence(self):
+        table = self.run.bivalent
+        if table is None or not len(table):
+            return ''
+        threshold = self.run.command_value('--stateThreshold', 2.0)
+        if 'threshold' in table and (table['threshold'] == threshold).any():
+            table = table[table['threshold'] == threshold]
+        table = table[(table['level'] == 'promoter') & table['transition'].str.contains('bivalent')]
+        b = esc(self.run.names[1])
+        stay = table[table['direction'] == 0]
+        changed = table[table['direction'] != 0].sort_values('genes', ascending=False).head(3)
+        parts = []
+        for r in changed.itertuples():
+            a_state, b_state, note = parse_transition(r.transition)
+            parts.append('{:,} change from {} to {}{} ({} with the expected expression change)'.format(
+                int(r.genes), a_state, b_state, ' by {}'.format(readable_note(note)) if note else '',
+                fmt_int(r.concordant) if not isnan(r.concordant) else 'none'))
+        stay_n = int(stay.loc[stay['transition'] == 'bivalent -> bivalent', 'genes'].sum()) if len(stay) else 0
+        if not parts and not stay_n:
+            return ''
+        text = 'At the promoters of differential genes, '
+        if stay_n:
+            text += '{:,} are bivalent in both {}s'.format(stay_n, self.run.kind)
+        if parts:
+            text += '{}in {} {}'.format('; ' if stay_n else '', b, join_words(parts))
+        return text + '.'
+
+    def community_sentence(self):
+        run = self.run
+        table = run.community_expression
         summary = run.community_summary or {}
-        if transitions:
-            rows.append(('community transitions', ', '.join('{} {:,}'.format(k, v) for k, v in transitions.items())))
-        if summary.get('gene_status'):
-            rows.append(('promoters by community fate', ', '.join('{} {:,}'.format(k, v)
-                                                                 for k, v in summary['gene_status'].items())))
-        if 'communities_tested' in summary:
-            rows.append(('community pairs tested for coordinated expression', fmt_int(summary['communities_tested'])))
-            rows.append(('coordinated community pairs (q < 0.1)',
-                         fmt_int(summary.get('coherent_community_pairs_q_lt_0.1'))))
-        switching = summary.get('switching_vs_differential', {})
-        if switching:
-            rows.append(('community switching vs differential expression: odds ratio (Fisher P)',
-                         '{} ({})'.format(fmt_num(switching.get('odds_ratio')), fmt_p(switching.get('fisher_p')))))
-        if rows:
-            doc.table(pd.DataFrame(rows, columns=['quantity', 'value']),
-                      'Graph-level tests and community changes of the run (<code>{n}_permutation.json</code>, '
-                      '<code>{n}_community_summary.json</code>).'.format(n=esc(run.name)), long=('value',))
-        if run.nested is not None and len(run.nested):
-            doc.table(run.nested, 'Nested regression models of the expression change on the mark changes at the '
-                                  'promoter, the direct partners and the indirect partners (<code>{}_nested_models.tsv'
-                                  '</code>).'.format(esc(run.name)),
-                      formats={'r2': lambda v: fmt_num(v, 4), 'delta_r2': lambda v: fmt_num(v, 5),
-                               'f_statistic': fmt_num, 'f_pvalue': fmt_p, 'n_genes': fmt_int},
-                      numeric=('n_genes', 'r2', 'n_parameters', 'delta_r2', 'f_statistic', 'f_pvalue'))
+        if table is None or not len(table) or 'coherence_q' not in table:
+            return ''
+        coordinated = table[table['coherence_q'] < 0.1]
+        tested = summary.get('communities_tested', len(table))
+        if not len(coordinated):
+            return 'None of {:,} matched community pairs changes expression coherently (q &lt; 0.1).'.format(tested)
+        items = []
+        for r in coordinated.head(4).itertuples():
+            members_a, members_b, _ = self.community_members(int(r.community_a), int(r.community_b))
+            name = self.community_name(members_a | members_b)
+            items.append('the community of {} ({:,} genes, mean log2 {}, {})'.format(
+                gene_span(name), int(r.n_genes), fmt_log2(r.mean_rna_log2FC),
+                self.transition_phrase(r.transition) or esc(r.transition)))
+        return 'Of {:,} matched community pairs, {} change{} expression coherently (q &lt; 0.1): {}.'.format(
+            tested, number_word(len(coordinated)), 's' if len(coordinated) == 1 else '', join_words(items))
 
     def cascade_section(self, doc):
         run = self.run
-        a, b = run.names
         doc.section('cascade', 'Explanation cascade')
-        doc.p('Every differential gene is explained at the first level with a concordant change: the promoter (mark '
-              'changes, the own interactions, the promoter chromatin state), step 1 (direct partners and their '
-              'chromatin states), then the nodes at exactly 2, 3, ... steps. The any-level view counts every level '
-              'with a concordant change, whatever its rank. Per-gene levels are read from <code>{}</code>.'.format(
-                  esc(run.levels_source)))
-        if run.cascade is not None:
-            fig, total = cascade_figure(run)
-            doc.figure([fig], 'Differential genes ({:,}) by the first level that explains their expression change '
-                              '(left, <code>{n}_explanation_cascade.tsv</code>) and by every level that explains it '
-                              '(right; a gene counts at each level with a concordant change). Percentages of all '
-                              'differential genes.'.format(total, n=esc(run.name)))
-            cascade = run.cascade.copy()
-            columns = [c for c in ('level', 'genes', 'genes_reaching', 'fraction_of_differential',
-                                   'fraction_of_remaining', 'beyond_mirror', 'p_lt_0.05', 'q_lt_0.1', 'q_lt_0.05',
-                                   'proximity_support', 'proximity_ci', 'median_nodes_tested') if c in cascade]
-            doc.table(cascade[columns], 'Explanation cascade: genes first explained at each level, genes reaching it '
-                                        '(not explained before), the fractions, genes beyond the mirror (the explaining '
-                                        'marks do not all change the same way at the mirrored loci), genes with a '
-                                        'per-gene permutation P below 0.05 and q below 0.1 and 0.05, the 3D proximity '
-                                        'support of the step with its interval, and the median number of nodes '
-                                        'tested.',
-                      formats={'fraction_of_differential': fmt_pct, 'fraction_of_remaining': fmt_pct,
-                               'beyond_mirror': fmt_int, 'p_lt_0.05': fmt_int, 'q_lt_0.1': fmt_int,
-                               'q_lt_0.05': fmt_int, 'proximity_support': fmt_num, 'median_nodes_tested': fmt_num,
-                               'genes': fmt_int, 'genes_reaching': fmt_int},
-                      numeric=('genes', 'genes_reaching', 'fraction_of_differential', 'fraction_of_remaining',
-                               'beyond_mirror', 'p_lt_0.05', 'q_lt_0.1', 'q_lt_0.05', 'proximity_support',
-                               'median_nodes_tested'))
-            if run.cascade_learned is not None:
-                learned = run.cascade_learned[[c for c in ('level', 'genes', 'fraction_of_differential',
-                                                           'beyond_mirror') if c in run.cascade_learned]]
-                merged = cascade[['level', 'genes']].merge(learned, on='level', how='outer',
-                                                           suffixes=(' (declared roles)', ' (learned roles)'))
-                doc.table(merged, 'The cascade under the declared mark roles and under the roles learned at every '
-                                  'level (<code>{}_explanation_cascade_learned.tsv</code>).'.format(esc(run.name)),
-                          formats={'genes (declared roles)': fmt_int, 'genes (learned roles)': fmt_int,
-                                   'fraction_of_differential': fmt_pct, 'beyond_mirror': fmt_int},
-                          numeric=('genes (declared roles)', 'genes (learned roles)', 'fraction_of_differential',
-                                   'beyond_mirror'))
-        if run.level_counts is not None and len(run.level_counts):
-            counts = run.variant_rows(run.level_counts)
-            columns = [c for c in ('rank', 'level', 'genes_any', 'genes_first', 'fraction_any', 'fraction_first',
-                                   'any_transition', 'any_poised_in_both', 'any_beyond_mirror', 'any_p_lt_0.05',
-                                   'any_q_lt_0.05', 'first_bh_q_lt_0.05', 'proximity_support', 'median_nodes_tested')
-                       if c in counts]
-            ints = [c for c in columns if c.startswith(('genes_', 'any_', 'first_'))]
-            doc.table(counts[columns], 'Genes explained at every level whatever the earlier levels (any) and genes '
-                                       'first explained there (first), with the state transitions and poised states, '
-                                       'the genes beyond the mirror and with P &lt; 0.05 and q &lt; 0.05 at any rank, '
-                                       'the 3D support and the median nodes tested (<code>{}_explanation_levels.tsv'
-                                       '</code>, declared roles, mean presence statistic).'.format(esc(run.name)),
-                      formats=dict({c: fmt_int for c in ints}, fraction_any=fmt_pct, fraction_first=fmt_pct,
-                                   proximity_support=fmt_num, median_nodes_tested=fmt_num),
-                      numeric=tuple(c for c in columns if c not in ('level',)))
-        doc.section('combinations', 'Level combinations', level=3)
-        combos, from_file = run.level_combinations()
-        if from_file:
-            doc.table(combos, 'The most frequent combinations of explaining levels per gene '
-                              '(<code>{}_explanation_combinations.tsv</code>, declared roles, mean presence statistic), '
-                              'first 15 rows.'.format(esc(run.name)), max_rows=15,
-                      formats={'genes': fmt_int, 'fraction_of_differential': fmt_pct},
-                      numeric=('rank', 'n_levels', 'genes', 'fraction_of_differential'))
-        else:
-            doc.table(combos, 'Combinations of explaining levels per differential gene (any rank), counted from the '
-                              'per-gene levels; genes up and down in {}. First 15 rows.'.format(esc(b)),
-                      formats={'genes': fmt_int, 'genes_up': fmt_int, 'genes_down': fmt_int,
-                               'fraction_of_differential': fmt_pct},
-                      numeric=('genes', 'genes_up', 'genes_down', 'fraction_of_differential'), max_rows=15)
-        if run.types is not None and len(run.types):
-            doc.table(run.types, 'Gene level and step 1 by explanation type, by mark (genes with the mark changing '
-                                 'concordantly, gained and lost) and by chromatin state transition '
-                                 '(<code>{}_explanation_types.tsv</code>).'.format(esc(run.name)),
-                      formats={c: fmt_int for c in ('genes', 'genes_up', 'genes_down', 'mark_gained', 'mark_lost')},
-                      numeric=('genes', 'genes_up', 'genes_down', 'mark_gained', 'mark_lost'))
-        if run.roles is not None and len(run.roles):
-            doc.section('roles', 'Mark roles per level', level=3)
-            doc.figure([roles_figure(run)], 'Association of every mark change with the expression change at the '
-                                            'promoter and at each step (Spearman rho with the chromosome block-'
-                                            'bootstrap interval, <code>{}_mark_roles.tsv</code>). Filled markers: the '
-                                            'role learned at this level equals the declared role; open markers: it '
-                                            'differs.'.format(esc(run.name)))
-            roles = run.roles
-            frame = pd.DataFrame({'mark': roles['mark'], 'level': roles['level'],
-                                  'versus': roles.get('versus', ''), 'declared': roles.get('declared_role', ''),
-                                  'learned': roles.get('learned_role', ''), 'genes': roles.get('n_genes', np.nan)})
-
-            def interval(value, low, high):
-                return '{} ({} to {})'.format(fmt_num(value), fmt_num(low), fmt_num(high)) if not isnan(value) else ''
-            for key, label in (('rho', 'rho (interval)'), ('concordance', 'concordance (interval)')):
-                if key in roles:
-                    frame[label] = [interval(v, lo, hi) for v, lo, hi in
-                                    zip(roles[key], roles[key + '_ci_low'], roles[key + '_ci_high'])]
-            if 'disagrees' in roles:
-                frame['differs'] = roles['disagrees'].map(lambda v: 'yes' if truthy(v) else 'no')
-            doc.table(frame, 'Declared and learned role of every mark per level (versus: the quantity the mark change '
-                             'is compared with), with the rank correlation and the concordance of strong changes and '
-                             'their chromosome block-bootstrap intervals (<code>{}_mark_roles.tsv</code>).'.format(
-                                 esc(run.name)),
-                      formats={'genes': fmt_int}, numeric=('genes',))
-        doc.section('states', 'Chromatin state transitions', level=3)
-        if run.state_transitions is not None and len(run.state_transitions):
-            table = run.state_transitions
-            if 'changed' in table:
-                table = table[table['changed'].map(truthy)]
-            if 'n_genes' in table:
-                table = table.sort_values('n_genes', ascending=False)
-            columns = [c for c in ('level', 'transition', 'n_fragments', 'n_genes', 'mean_rna_log2FC', 'ci_low',
-                                   'ci_high', 'n_up', 'n_down', 'concordance', 'label') if c in table]
-            doc.table(table[columns], 'Changed mark combinations (learned states) at the promoter (step 0) and at the '
-                                      'contacting fragments (step 1), by number of genes: fragments, genes, mean '
-                                      'expression change of the genes with its interval, genes up and down, and the '
-                                      'concordance (<code>{}_state_transitions.tsv</code>). First 20 rows.'.format(
-                                          esc(run.name)),
-                      formats={'n_fragments': fmt_int, 'n_genes': fmt_int, 'n_up': fmt_int, 'n_down': fmt_int,
-                               'mean_rna_log2FC': lambda v: fmt_num(v, signed=True),
-                               'ci_low': lambda v: fmt_num(v, signed=True), 'ci_high': lambda v: fmt_num(v, signed=True),
-                               'concordance': fmt_num},
-                      numeric=('n_fragments', 'n_genes', 'mean_rna_log2FC', 'ci_low', 'ci_high', 'n_up', 'n_down',
-                               'concordance'), max_rows=20)
-        if run.bivalent is not None and len(run.bivalent):
-            threshold = run.command_value('--stateThreshold', 2.0)
-            table = run.bivalent
-            if 'threshold' in table and (table['threshold'] == threshold).any():
-                table = table[table['threshold'] == threshold]
-            table = table.sort_values('genes', ascending=False) if 'genes' in table else table
-            doc.table(table, 'Declared states (bivalent promoter, poised enhancer) at the presence threshold {:g}: '
-                             'transitions at the promoter and at step 1 with the genes up and down and the concordant '
-                             'genes (<code>{}_bivalent_transitions.tsv</code>). First 20 rows.'.format(
-                                 threshold, esc(run.name)),
-                      formats={'threshold': fmt_num, 'genes': fmt_int, 'genes_up': fmt_int, 'genes_down': fmt_int,
-                               'concordant': fmt_int, 'supported_concordant': fmt_int,
-                               'fraction_concordant': fmt_pct, 'direction': fmt_int},
-                      numeric=('threshold', 'genes', 'genes_up', 'genes_down', 'concordant', 'supported_concordant',
-                               'fraction_concordant'), max_rows=20)
-        if run.edge_chromatin is not None and len(run.edge_chromatin):
-            doc.table(run.edge_chromatin, 'Mark change at the two ends of gained and lost interactions against shared '
-                                          'interactions of the same distance (egaExplain '
-                                          '<code>{}_edge_chromatin.tsv</code>).'.format(esc(run.name)),
-                      formats={'n': fmt_int, 'median_change': lambda v: fmt_num(v, 3, True),
-                               'shared_median_change': lambda v: fmt_num(v, 3, True), 'concordance_vs_shared': fmt_num,
-                               'mannwhitney_p_expected_direction': fmt_p},
-                      numeric=('n', 'median_change', 'shared_median_change', 'concordance_vs_shared',
-                               'mannwhitney_p_expected_direction'))
+        if run.cascade is None:
+            doc.p('The run has no cascade table.', cls='note')
+            return
+        doc.p('Each differential gene is assigned the nearest level that explains its expression change, from the '
+              'promoter outwards: the histone marks, own contacts and chromatin state of the promoter, then its direct '
+              'partners, then the nodes 2 and 3 steps away in the graph (left). The right panel counts every level '
+              'that explains a gene, so one gene can count at several levels. A level explains a gene when its marks, '
+              'contacts or chromatin state change in the direction expected from the expression change by at least '
+              'log2 {:g}; away from the promoter the change is taken over the nodes at that step.'.format(
+                  run.chromatin_threshold))
+        fig, total = cascade_figure(run)
+        doc.figure([fig], 'Differential genes ({:,}) by the nearest level that explains their expression change '
+                          '(left) and by every level that explains it (right), with the percentage of all '
+                          'differential genes.'.format(total))
 
     def select_findings(self):
-        """Per cascade level the genes with the strongest support: genes first explained there; beyond the mirror first,
-        then by q, P and the absolute expression change; at the gene level by the number of explaining levels and the
-        absolute expression change. One promoter per gene name."""
+        """Per cascade level the genes with the strongest support among those first explained there: beyond the
+        mirror first, then by q, P and the absolute expression change; at the promoter by the number of explaining
+        levels and the absolute expression change. One promoter per gene name."""
         run = self.run
         first = run.first_level()
         levels = run.levels
@@ -1920,18 +2964,13 @@ class Report:
             frame = pd.DataFrame(rows)
             if not len(frame):
                 continue
-            has_q = frame['q'].notna().any()
             if level == 'gene':
                 frame = frame.sort_values(['n_levels', 'rna'], ascending=[False, False])
-                rule = 'by the number of explaining levels, then by the absolute expression change'
-            elif has_q:
+            elif frame['q'].notna().any():
                 frame = frame.assign(nq=frame['q'].fillna(2), np_=frame['p'].fillna(2))
                 frame = frame.sort_values(['beyond', 'nq', 'np_', 'rna'], ascending=[False, True, True, False])
-                rule = 'beyond the mirror first, then by the q value of the per-gene permutation test'
             else:
                 frame = frame.sort_values(['beyond', 'n_levels', 'rna'], ascending=[False, False, False])
-                rule = 'beyond the mirror first, then by the number of explaining levels and the absolute expression ' \
-                       'change (no per-gene test of this step in the run outputs)'
             picked = []
             for row in frame.itertuples():
                 key = row.gene or row.node
@@ -1941,263 +2980,69 @@ class Report:
                 picked.append(row)
                 if len(picked) >= self.args.top:
                     break
-            significant = int((frame['q'] < 0.1).sum()) if has_q else None
-            chosen[level] = (picked, rule, len(frame), significant, int(frame['beyond'].sum()))
+            chosen[level] = picked
         return chosen
 
-    def findings_section(self, doc):
+    def gene_cards(self, doc):
         run = self.run
-        doc.section('findings', 'Major findings')
-        doc.p('For each level of the cascade, the {} genes with the strongest support among the genes first explained '
-              'there. Each gene lists every level in rank order with what changed, by how much, the per-gene P and q, '
-              'the mirror and the 3D support, followed by the interaction arcs, the neighbourhood graph with the '
-              'explaining nodes and its hub.'.format(self.args.top))
+        doc.section('genes', 'Genes')
         chosen = self.select_findings()
-        findings = []
-        for level, (picked, rule, n, significant, beyond) in chosen.items():
-            title = 'Gene level (promoter)' if level == 'gene' else 'Step {}'.format(level_hops(level))
-            doc.section('findings-' + level, title, level=3)
-            note = '{:,} genes first explained here; ranked {}.'.format(n, rule)
-            if significant is not None:
-                note += ' {:,} at q &lt; 0.1{}'.format(significant, '; none reach it, the best-ranked are shown.'
-                                                       if significant == 0 else '.')
-            if level != 'gene':
-                note += ' {:,} beyond the mirror.'.format(beyond)
-            doc.p(note, cls='note')
+        doc.p('For each level of the cascade, the {} gene{} with the strongest support among the genes first explained '
+              'there: beyond distance-matched mirror loci first, then by q value; at the promoter by the number of '
+              'levels that explain the gene and the size of the expression change. Each card links to the full gene '
+              'report.'.format(number_word(self.args.top), '' if self.args.top == 1 else 's'), cls='lead')
+        cards = []
+        for level, picked in chosen.items():
+            if not picked:
+                continue
+            title = 'Explained at the promoter' if level == 'gene' else ('Explained first at the direct partners'
+                                                                         if level == 'step1' else
+                                                                         'Explained first {} steps away'.format(
+                                                                             level_hops(level)))
+            doc.heading(title, level=3, cls='group')
             for row in picked:
-                nodes = [row.node]
-                doc.heading('{} ({} {})'.format(gene_span(row.gene or row.node), 'log2FC',
-                                                fmt_num(run.classes.set_index('node').loc[row.node, 'rna_log2FC'],
-                                                        signed=True)), level=4)
-                self.gene_finding(doc, row.gene or row.node, nodes, hub=False)
-                findings.append((row.gene or row.node, nodes))
-        return findings
+                gene = row.gene or row.node
+                nodes, _ = run.gene_nodes(gene)
+                nodes = [n for n in nodes if n in set(run.levels['node'])] or [row.node]
+                story = self.story(gene, nodes)
+                link = '{}_gene_{}.html'.format(slug(run.name), slug(gene))
+                doc.html('<article class="card"><h4>{} <a class="report-link" href="{}">gene report</a></h4>'.format(
+                    gene_span(gene), esc(link)), text=gene)
+                self.glance_block(story, doc, arcs=lambda: self.arcs_markup(doc, gene, nodes, story),
+                                  known_level=level if level != 'gene' else None)
+                doc.html('</article>', text='')
+                cards.append((gene, nodes, story))
+        return cards
 
-    def hubs_section(self, doc, findings):
+    def communities_section(self, doc):
         run = self.run
-        doc.section('hubs', 'Hubs and communities')
-        doc.p('Hubs of the genes above (the promoter, its partners and the other promoters contacting these partners) '
-              'and the communities with a coordinated expression change: which member genes change in the same '
-              'direction, which in the opposite direction, and which genes left or joined between {} and {}.'.format(
-                  esc(run.names[0]), esc(run.names[1])))
-        doc.section('hubs-genes', 'Hubs of the explained genes', level=3)
-        for gene, nodes in findings:
-            doc.heading('Hub of {}'.format(gene_span(gene)), level=4)
-            self.hub_block(doc, gene, nodes)
-            self.gene_community_text(doc, gene, nodes)
-        doc.section('communities', 'Coordinated communities', level=3)
+        doc.section('communities', 'Hubs and communities')
         table = run.community_expression
-        if table is None or not len(table):
-            doc.p('No community expression table in the run outputs.', cls='note')
+        if table is None or not len(table) or run.gene_communities is None:
+            doc.p('The run has no community tables.', cls='note')
             return
         coordinated = table[table['coherence_q'] < 0.1] if 'coherence_q' in table else table.head(0)
         show = coordinated if len(coordinated) else table.head(self.args.maxCommunities)
-        columns = [c for c in ('community_a', 'community_b', 'transition', 'n_genes', 'edges_shared', 'edges_lost',
-                               'edges_gained', 'rewired_fraction', 'mean_rna_log2FC', 'coherence_p', 'coherence_q')
-                   if c in show]
-        doc.table(show[columns], '{} (<code>{}_community_expression.tsv</code>): matched communities of {} and {}, '
-                                 'their transition, member genes, interactions shared, lost and gained, the rewired '
-                                 'fraction, the mean expression change and the coherence test against random gene sets '
-                                 'of the same size.'.format(
-                                     'Communities with a coordinated expression change (q &lt; 0.1)' if len(coordinated)
-                                     else 'No community reaches q &lt; 0.1; the {} with the lowest P are shown'.format(
-                                         len(show)), esc(run.name), esc(run.names[0]), esc(run.names[1])),
-                  formats={'rewired_fraction': fmt_pct, 'mean_rna_log2FC': lambda v: fmt_num(v, signed=True),
-                           'coherence_p': fmt_p, 'coherence_q': fmt_p},
-                  numeric=('community_a', 'community_b', 'n_genes', 'edges_shared', 'edges_lost', 'edges_gained',
-                           'rewired_fraction', 'mean_rna_log2FC', 'coherence_p', 'coherence_q'))
-        summaries = {}
-        if run.explain_communities is not None and len(run.explain_communities):
-            summaries = dict(zip(run.explain_communities['community'], run.explain_communities['summary']))
-        for k, row in enumerate(show.head(self.args.maxCommunities).itertuples()):
+        doc.p('Communities are groups of promoters that are densely connected through shared interacting fragments, '
+              'matched between {} and {}. {}'.format(
+                  esc(run.names[0]), esc(run.names[1]),
+                  'Shown are the communities whose genes change expression more coherently than random gene sets of '
+                  'the same size (q &lt; 0.1).' if len(coordinated) else 'No community reaches q &lt; 0.1 in the '
+                  'coherence test; the {} with the lowest P are shown.'.format(number_word(len(show)))), cls='lead')
+        for row in show.head(self.args.maxCommunities).itertuples():
             ca, cb = int(row.community_a), int(row.community_b)
-            doc.heading('Community {} of {} / {} of {} ({})'.format(ca, esc(run.names[0]), cb, esc(run.names[1]),
-                                                                    esc(row.transition)), level=4)
-            if cb in summaries:
-                doc.p('egaExplain: {}'.format(esc(summaries[cb])), cls='note')
+            members_a, members_b, _ = self.community_members(ca, cb)
+            name = self.community_name(members_a | members_b)
+            doc.html('<article class="card">', text='')
+            doc.heading('Community of {}'.format(gene_span(name)), level=3)
             self.community_block(doc, ca, cb, info={'transition': row.transition})
+            doc.html('</article>', text='')
 
-    def methods(self, doc):
-        run = self.run
-        doc.section('methods', 'Methods, parameters and versions')
-        doc.p('The report reads the outputs of egaDifferential and egaExplain listed in Table {} and draws the figures '
-              'from the union graph with the drawing functions of egaPlotDifferential (squares: baited promoters, '
-              'circles: other ends; line width: interaction strength relative to the calling threshold; interaction '
-              'change red-blue by log2 fold change, gained and lost dashed). Per-gene levels: {}. Thresholds of the '
-              'level calls: differential genes at |log2 fold change| {:g}, explaining mark changes at |log2 fold '
-              'change| {:g} ({}). The neighbourhood of a gene reaches its deepest explaining step and is reduced to at '
-              'most {} nodes (the promoter, its strongest partners and the paths to the explaining nodes); explaining '
-              'nodes at step k are the fragments at exactly k steps with a concordant change of at least the threshold '
-              '(log2 (B + 1) / (A + 1) of the node signals in the graph), the 12 strongest per step.'.format(
-                  doc.table_count + 1, esc(run.levels_source), run.rna_threshold, run.chromatin_threshold,
-                  'from the run log' if run.command else 'egaDifferential defaults, no command line in the run log',
-                  self.args.maxNodes))
-        rows = []
-        for label, path in sorted(run.used.items()):
-            try:
-                stamp = datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M')
-            except OSError:
-                stamp = ''
-            rows.append((label, path, stamp))
-        doc.table(pd.DataFrame(rows, columns=['file', 'path', 'modified']), 'Files read for this report and their '
-                                                                            'modification times.', long=('path',))
-        if run.command:
-            doc.p('Command line: <code>{}</code>'.format(esc(run.command)))
-        info = [line for line in run.log_lines if ' INFO: ' in line or 'WARNING' in line]
-        if info:
-            doc.table(pd.DataFrame({'run log': info[:40]}), 'Messages of the run log (<code>{}</code>), first 40 '
-                                                            'lines.'.format(esc(', '.join(run.log_paths))),
-                      long=('run log',))
-        else:
-            doc.p('No run log found (expected at <code>{}.log</code>; see --log).'.format(esc(run.prefix)), cls='note')
-        import scipy
-        versions = [('epigeneticgraphanalyzer (egaReport)', __version__), ('Python', platform.python_version()),
-                    ('numpy', np.__version__), ('pandas', pd.__version__), ('networkx', nx.__version__),
-                    ('matplotlib', matplotlib.__version__), ('scipy', scipy.__version__),
-                    ('report date', datetime.date.today().isoformat())]
-        doc.table(pd.DataFrame(versions, columns=['software', 'version']), 'Software versions used to write the '
-                                                                          'report.')
-
-    # gene and community reports -------------------------------------------------------------------------------------
-    def gene_report(self, gene):
-        run = self.run
-        nodes, differential = run.gene_nodes(gene)
-        doc = Document('{}: gene report, {} vs {}'.format(gene, *run.names), self.keep_figures)
-        doc.section('gene-summary', 'Summary')
-        if not nodes:
-            doc.p('{} is not a baited promoter of the union graph of this run.'.format(gene_span(gene)))
-            return doc
-        features = run.features.set_index('node') if run.features is not None else None
-        rows = []
-        for node in nodes:
-            data = run.graph.nodes[node] if node in run.graph else {}
-            counts = {'gained': 0, 'lost': 0, 'shared': 0}
-            if node in run.graph:
-                for w in run.graph.neighbors(node):
-                    counts[run.graph.edges[node, w].get('status', 'shared')] += 1
-            rna = data.get('rna_log2FC', features.loc[node, 'rna_log2FC'] if features is not None and node in
-                           features.index else np.nan)
-            rows.append(dict(fragment=node, genes=data.get('genes', ''), log2FC=rna, gained=counts['gained'],
-                             lost=counts['lost'], shared=counts['shared'],
-                             first_level=run.first_level().get(node, 'not differential')))
-        doc.table(pd.DataFrame(rows), 'Promoter fragments of {g}: genes on the fragment, expression log2 fold change '
-                                      '{b} / {a}, interactions gained, lost and shared, and the first explaining level.'
-                  .format(g=gene_span(gene), a=esc(run.names[0]), b=esc(run.names[1])),
-                  formats={'log2FC': lambda v: fmt_num(v, signed=True)},
-                  numeric=('log2FC', 'gained', 'lost', 'shared'))
-        if not differential:
-            doc.p('{} is not differential at the thresholds of the run; the levels are not evaluated.'.format(
-                gene_span(gene)), cls='note')
-        doc.section('gene-levels', 'Explanation by level')
-        level_nodes = [n for n in nodes if n in set(run.levels['node'])]
-        if level_nodes:
-            self.gene_finding(doc, gene, level_nodes, figures=False, hub=False)
-            declared = '; '.join('{} {}'.format(m, r) for m, r in run.declared_roles().items())
-            for node in level_nodes:
-                # one table per promoter fragment, so that the ranks of different fragments are not mixed
-                genes_here = run.graph.nodes[node].get('genes', '') if node in run.graph else ''
-                label = '{} (fragment {}{})'.format(gene, node, ', ' + genes_here if genes_here else '')
-                evidence_table(doc, run.levels[run.levels['node'] == node], label, run.names, declared)
-            extra = run.levels[run.levels['node'].isin(level_nodes)]['extra'] if 'extra' in run.levels else []
-            keys = sorted({k for e in extra if isinstance(e, dict) for k in e})
-            if keys:
-                frame = pd.DataFrame([dict(level=lv, **{k: e.get(k, '') for k in keys})
-                                      for lv, e in zip(run.levels.loc[run.levels['node'].isin(level_nodes),
-                                                                      'level_label'], extra)])
-                doc.table(frame, 'Further columns of the all-level table for {}.'.format(gene_span(gene)))
-        doc.section('gene-figures', 'Interactions and neighbourhood')
-        rows = run.levels[run.levels['node'].isin(nodes)]
-        self.gene_figures(doc, gene, nodes, rows)
-        doc.section('gene-states', 'Chromatin states')
-        self.state_block(doc, gene, nodes)
-        doc.section('gene-support', '3D support per step')
-        self.support_block(doc, gene, nodes)
-        doc.section('gene-hub', 'Hub and community')
-        self.hub_block(doc, gene, nodes)
-        community = self.gene_community_text(doc, gene, nodes)
-        if community is not None:
-            ca, cb = int(community.get('community_a', -1)), int(community.get('community_b', -1))
-            transition = community.get('community_a_transition', '')
-            self.community_block(doc, ca, cb, focus=nodes,
-                                 info={'transition': '' if isnan(transition) else transition})
-        self.methods(doc)
-        return doc
-
-    def state_block(self, doc, gene, nodes):
-        run = self.run
-        classes = run.classes.set_index('node')
-        rows = []
-        for node in nodes:
-            if node not in classes.index:
-                continue
-            r = classes.loc[node]
-            fields = {}
-            for column in classes.columns:
-                if not (column.startswith('promoter_') or column.startswith('step1_')):
-                    continue
-                match = re.fullmatch(r'(.*?)_(mean|max1kb)', column)
-                base, variant = (match.group(1), match.group(2)) if match else (column, 'value')
-                fields.setdefault(base, {})[variant] = r[column]
-            for base, values in fields.items():
-                rows.append(dict(fragment=node, field=base, **values))
-        if not rows:
-            doc.p('No chromatin state calls for {} (not differential, or states not callable).'.format(
-                gene_span(gene)), cls='note')
-            return
-        frame = pd.DataFrame(rows)
-        variants = [c for c in ('value', 'mean', 'max1kb') if c in frame]
-
-        def show(v):
-            if isinstance(v, (bool, np.bool_)):
-                return 'yes' if v else 'no'
-            if isinstance(v, (float, np.floating)) and not isnan(v):
-                return fmt_num(v)
-            return '' if isnan(v) else str(v)
-
-        fragments = list(dict.fromkeys(frame['fragment']))
-        table = {}
-        for row in frame.itertuples(index=False):
-            data = row._asdict()
-            for variant in variants:
-                label = data['field'] + ('' if variant == 'value' else ' ({})'.format(
-                    'mean' if variant == 'mean' else 'max 1 kb'))
-                value = data.get(variant)
-                if not isinstance(value, str) and isnan(value):
-                    continue
-                table.setdefault(label, {})[data['fragment']] = show(value)
-        out = pd.DataFrame([dict(field=k, **{f: v.get(f, '') for f in fragments}) for k, v in table.items()])
-        out = out[out[fragments].apply(lambda r: any(x != '' for x in r), axis=1)]
-        doc.table(out, 'Chromatin state calls of {} at the promoter and at the contacting fragments (step 1) from '
-                       '<code>{}_gene_classes.tsv</code>, one column per promoter fragment: mark signals per condition '
-                       '(suffix _A: {}, _B: {}), states, transition and whether it explains the expression change{}.'
-                  .format(gene_span(gene), esc(run.name), esc(run.names[0]), esc(run.names[1]),
-                          '; calls on the mean signal over the fragment and on the maximum over 1 kb windows'
-                          if len(variants) > 1 else ''), nowrap=('field',), long=tuple(fragments))
-
-    def support_block(self, doc, gene, nodes):
-        run = self.run
-        rows = run.levels[run.levels['node'].isin(nodes)]
-        steps = rows[rows['level'].str.fullmatch(r'step\d+', na=False)]
-        if not len(steps) and not run.support:
-            doc.p('The run has no 3D proximity support (egaDifferential without --proximitySupport).', cls='note')
-            return
-        frame = pd.DataFrame({'fragment': steps['node'], 'step': steps['level'].map(level_hops),
-                              'explains': steps['explains'].map({True: 'yes', False: 'no'}),
-                              'nodes': steps['nodes'], 'support': steps['support'], 'interval': steps['support_ci']})
-        if frame['support'].isna().all():
-            doc.p('The run has no 3D proximity support (egaDifferential without --proximitySupport); nodes per step '
-                  'below.', cls='note')
-            frame = frame.drop(columns=['support', 'interval'])
-        doc.table(frame, '3D support of every step for {}: probability that graph neighbours at this many steps are '
-                         'closer in the nucleus than distance-matched pairs (0.5 without relation; step curve of the '
-                         'run), the nodes at the step and whether the step explains the gene.'.format(gene_span(gene)),
-                  formats={'nodes': fmt_int, 'support': fmt_num}, numeric=('step', 'nodes', 'support'))
-
+    # community report -------------------------------------------------------------------------------------------
     def community_report(self, community, side):
         run = self.run
         doc = Document('Community {} ({}): {} vs {}'.format(community, run.names[0 if side == 'A' else 1],
                                                              *run.names), self.keep_figures)
-        doc.section('community', 'Community {} of {}'.format(community, run.names[0 if side == 'A' else 1]))
         table = run.community_expression
         info, ca, cb = {}, -1, -1
         if table is not None and len(table):
@@ -2207,10 +3052,6 @@ class Report:
                 row = hit.iloc[0]
                 ca, cb = int(row['community_a']), int(row['community_b'])
                 info = {'transition': row.get('transition', '')}
-                doc.table(hit, 'Expression coherence of the community (<code>{}_community_expression.tsv</code>).'
-                          .format(esc(run.name)),
-                          formats={'rewired_fraction': fmt_pct, 'mean_rna_log2FC': lambda v: fmt_num(v, signed=True),
-                                   'coherence_p': fmt_p, 'coherence_q': fmt_p})
         if ca < 0 and cb < 0 and run.gene_communities is not None:
             rows = self.community_rows(side, community)
             if rows is not None and len(rows):
@@ -2220,20 +3061,305 @@ class Report:
                 ca, cb = (community, partner) if side == 'A' else (partner, community)
                 transition = rows['community_a_transition'].dropna()
                 info = {'transition': transition.iloc[0] if len(transition) else ''}
+        name = ''
+        if (ca >= 0 or cb >= 0) and run.gene_communities is not None:
+            members_a, members_b, _ = self.community_members(ca, cb)
+            name = self.community_name(members_a | members_b)
+        heading = self.title_block('Community {}'.format(community) if not name else
+                                   'Community of {}'.format(gene_span(name)), esc(run.condition_title()),
+                                   'Community report')
+        doc.section('community', 'Community')
         if ca < 0 and cb < 0:
-            doc.p('Community {} not found in the run outputs.'.format(community))
-            return doc
-        if run.community_transitions is not None:
-            ct = run.community_transitions
-            hit = ct[((ct['side'] == 'A') & (ct['community_a'] == ca)) | ((ct['side'] == 'B') & (ct['community_b']
-                                                                                                 == cb))]
-            if len(hit):
-                doc.table(hit, 'Transition records of the community (<code>{}_community_transitions.tsv</code>).'.format(
-                    esc(run.name)), formats={'fraction_present_in_b': fmt_pct, 'fraction_present_in_a': fmt_pct,
-                                             'jaccard': fmt_num})
+            doc.p('Community {} is not found in the run outputs.'.format(community))
+            self.appendix(doc, genes=[])
+            return doc, heading
         self.community_block(doc, ca, cb, info=info)
-        self.methods(doc)
-        return doc
+        self.appendix(doc, genes=[], communities=[(ca, cb)])
+        return doc, heading
+
+    def community_rows(self, side, community):
+        table = self.run.gene_communities
+        if table is None:
+            return None
+        column = 'community_a' if side == 'A' else 'community_b'
+        return table[table[column] == community]
+
+    # appendix ---------------------------------------------------------------------------------------------------
+    def appendix(self, doc, genes=(), community=None, communities=(), main=False):
+        run = self.run
+        doc.begin_appendix()
+        a, b = run.names
+        doc.section('methods', 'Methods', level=3)
+        doc.p('Comparison of {a} (condition A) with {b} (condition B), outputs of egaDifferential under the prefix '
+              '<code>{p}</code>{e}. Differential genes: |log2 fold change| of at least {r:g}; a level explains a gene '
+              'when its mark change (log2 (B + 1) / (A + 1)), contact change or chromatin state transition agrees '
+              'with the expression change by at least log2 {c:g} ({src}). Mark roles declared: {roles}. The result '
+              'under the roles learned from the data is mentioned in the body only where it differs. P and q: '
+              'per-gene permutation test of a step against random nodes; distance control: the explaining marks '
+              'change more than at mirrored loci of the same genomic distance. Places are named by the gene of the '
+              'nearest baited promoter{s}. The neighbourhood of a gene reaches its deepest explaining step and is '
+              'reduced to at most {m} nodes; the nodes that carry the explanation at step k are the fragments at '
+              'exactly k steps with a concordant change of at least the threshold, the 12 strongest per step.{rc}'
+              .format(a=esc(a), b=esc(b), p=esc(run.prefix), e=', explanations of egaExplain under <code>{}</code>'
+                      .format(esc(run.explain_prefix)) if run.explain_prefix else '', r=run.rna_threshold,
+                      c=run.chromatin_threshold, src='thresholds from the run log' if run.command else
+                      'egaDifferential defaults; no command line in the run log',
+                      roles=esc(', '.join('{} {}'.format(k, v) for k, v in run.declared_roles().items()
+                                          if k != 'contact')),
+                      s='; upstream and downstream from the strand in <code>{}</code>'.format(
+                          esc(self.args.annotation)) if self.places.strands else
+                      '; without a gene annotation (--annotation) only the distance is given',
+                      m=self.args.maxNodes,
+                      rc=' Re-ChIP signal from <code>{}</code> (fragment mean; at least 2 confirms a bivalent call).'
+                      .format(esc(run.rechip_path)) if run.rechip is not None else ''))
+        for gene, nodes, story in genes:
+            self.appendix_gene(doc, gene, nodes, story)
+        if community is not None:
+            self.appendix_community(doc, int(community.get('community_a', -1)), int(community.get('community_b', -1)),
+                                    nodes=genes[0][1] if genes else ())
+        for ca, cb in communities:
+            self.appendix_community(doc, ca, cb)
+        if main:
+            self.appendix_run_tables(doc)
+        self.appendix_files(doc)
+
+    def appendix_gene(self, doc, gene, nodes, story):
+        run = self.run
+        doc.section('appendix-{}'.format(slug(gene)), 'Numbers for {}'.format(gene), level=3)
+        rows = []
+        first = run.first_level()
+        for node in nodes:
+            data = run.graph.nodes[node] if node in run.graph else {}
+            counts = {'gained': 0, 'lost': 0, 'shared': 0}
+            if node in run.graph:
+                for w in run.graph.neighbors(node):
+                    counts[run.graph.edges[node, w].get('status', 'shared')] += 1
+            rows.append({'fragment': node, 'genes': ', '.join(gene_names(data.get('genes', ''))),
+                         'expression log2': fmt_num(data.get('rna_log2FC', np.nan), signed=True),
+                         'gained': counts['gained'], 'lost': counts['lost'], 'shared': counts['shared'],
+                         'first level': first.get(node, 'not differential')})
+        doc.table(pd.DataFrame(rows), 'Promoter fragments of {}: coordinates, genes on the fragment, expression log2 '
+                                      'fold change {} / {}, interactions gained, lost and shared, and the first '
+                                      'explaining level (cascade name).'.format(gene_span(gene), esc(b_name(run)),
+                                                                                esc(run.names[0])),
+                  numeric=('expression log2', 'gained', 'lost', 'shared'), nowrap=('fragment',))
+        for node, levels in story.fragments:
+            frame = []
+            for lv in sorted(levels, key=level_order):
+                r = levels[lv]
+                frame.append({'level': lv, 'explains': 'yes' if r['explains'] else 'no',
+                              'changes (mirror)': r.get('all_changes') or '', 'nodes': fmt_int(r.get('nodes')),
+                              'concordant': fmt_int(r.get('n_concordant')),
+                              'strongest': '{}{}'.format(r.get('strongest_node') or '',
+                                                         ' ({})'.format(r.get('strongest_text'))
+                                                         if r.get('strongest_text') else ''),
+                              'P': fmt_p(r.get('p')), 'q': fmt_p(r.get('q')),
+                              'beyond mirror': '' if isnan(r.get('beyond_mirror')) else
+                              ('yes' if truthy(r['beyond_mirror']) else 'no'),
+                              'learned roles': '' if isnan(r.get('learned_explains')) else '{} ({}{})'.format(
+                                  'yes' if r['learned_explains'] else 'no',
+                                  r.get('learned_result') or '', ', q {}'.format(fmt_p(r['learned_q']))
+                                  if not isnan(r.get('learned_q')) else ''),
+                              'max 1 kb': '' if isnan(r.get('alt_explains')) or lv not in
+                              ('promoter_state', 'step1_state') else '{} ({})'.format(
+                                  'yes' if r['alt_explains'] else 'no',
+                                  r.get('alt_transition') or r.get('alt_result') or ''),
+                              '3D support': '{}{}'.format(fmt_num(r.get('support')), ' ({})'.format(r['support_ci'])
+                                                          if r.get('support_ci') and r['support_ci'] != 'NA' else '')
+                              if not isnan(r.get('support')) else ''})
+            frame = pd.DataFrame(frame)
+            frame = frame[[c for c in frame.columns if (frame[c] != '').any()]]
+            doc.table(frame, 'All levels of {} at fragment {} (declared roles, fragment mean), with the mark changes '
+                             'at the mirrored loci in brackets (states: calls with the fold enrichment {} / {} and '
+                             'the state fragment), the coordinates of the strongest node, the result under the '
+                             'learned roles and on the strongest 1 kb window, and the 3D support with its '
+                             'interval.'.format(gene_span(gene), esc(node), esc(run.names[0]), esc(run.names[1])),
+                      long=('changes (mirror)', 'strongest'), numeric=('nodes', 'concordant', 'P', 'q'),
+                      cls='full')
+
+    def appendix_community(self, doc, community_a, community_b, nodes=()):
+        run = self.run
+        if run.gene_communities is None or (community_a < 0 and community_b < 0):
+            return
+        members_a, members_b, rows = self.community_members(community_a, community_b)
+        doc.section('appendix-community-{}-{}'.format(community_a, community_b),
+                    'Community {} of {} and {} of {}'.format(community_a, run.names[0], community_b, run.names[1]),
+                    level=3)
+        show = rows.sort_values('rna_log2FC', key=np.abs, ascending=False)
+        frame = pd.DataFrame({'gene': show['genes'].map(lambda g: ', '.join(gene_names(g))),
+                              'fragment': show['node'], 'membership': show['in'],
+                              'expression log2': show['rna_log2FC'].map(lambda v: fmt_num(v, signed=True)),
+                              'differential': show['differential'].map(lambda v: 'yes' if truthy(v) else 'no')
+                              if 'differential' in show else ''})
+        features = run.features.set_index('node') if run.features is not None else None
+        if features is not None:
+            for mark in run.marks:
+                if mark + '_promoter' in features:
+                    frame['{} promoter'.format(mark)] = features[mark + '_promoter'].reindex(show['node']).map(
+                        lambda v: fmt_num(v, signed=True)).to_numpy()
+        doc.table(frame, 'Promoters of the community by absolute expression change (up to 40): membership (both, left '
+                         'in {b}, joined in {b}), expression log2 fold change {b} / {a} and the log2 change of the '
+                         'marks at the promoter.'.format(a=esc(run.names[0]), b=esc(run.names[1])), max_rows=40,
+                  numeric=tuple(c for c in frame.columns if c.endswith(('log2', 'promoter'))), nowrap=('fragment',))
+
+    def appendix_run_tables(self, doc):
+        run = self.run
+        doc.section('appendix-run', 'Run tables', level=3)
+        counts = run.edge_counts()
+        rows = [('differential genes', '{:,}'.format(len(run.classes))),
+                ('promoters with an expression change', fmt_int(len(run.features)) if run.features is not None else ''),
+                ('interactions gained in {}'.format(run.names[1]), '{:,}'.format(counts.get('gained', 0))),
+                ('interactions lost in {}'.format(run.names[1]), '{:,}'.format(counts.get('lost', 0))),
+                ('interactions shared', '{:,}'.format(counts.get('shared', 0)))]
+        perm = run.permutation or {}
+        for key, label in (('n_genes', 'genes in the models'), ('observed_indirect_delta_r2', 'R2 gain, 2 steps'),
+                           ('null_indirect_delta_r2_mean', 'R2 gain, 2 steps, permutations (mean)'),
+                           ('empirical_p_delta_r2', 'empirical P of the R2 gain'),
+                           ('n_permutations', 'permutations')):
+            if key in perm:
+                rows.append((label, fmt_num(perm[key], 5) if isinstance(perm[key], float) else str(perm[key])))
+        summary = run.community_summary or {}
+        if summary.get('transitions'):
+            rows.append(('community transitions', ', '.join('{} {:,}'.format(k, v)
+                                                             for k, v in summary['transitions'].items())))
+        if summary.get('gene_status'):
+            rows.append(('promoters by community fate', ', '.join('{} {:,}'.format(k, v)
+                                                                 for k, v in summary['gene_status'].items())))
+        doc.table(pd.DataFrame(rows, columns=['quantity', 'value']), 'Counts and graph-level tests of the run.',
+                  long=('value',))
+        if run.cascade is not None:
+            cascade = run.cascade
+            columns = [c for c in ('level', 'genes', 'genes_reaching', 'fraction_of_differential',
+                                   'fraction_of_remaining', 'beyond_mirror', 'p_lt_0.05', 'q_lt_0.1', 'q_lt_0.05',
+                                   'proximity_support', 'proximity_ci', 'median_nodes_tested') if c in cascade]
+            doc.table(cascade[columns], 'Explanation cascade (first explaining level).',
+                      formats={'fraction_of_differential': fmt_pct, 'fraction_of_remaining': fmt_pct,
+                               'beyond_mirror': fmt_int, 'p_lt_0.05': fmt_int, 'q_lt_0.1': fmt_int,
+                               'q_lt_0.05': fmt_int,
+                               'proximity_support': fmt_num, 'median_nodes_tested': fmt_num},
+                      numeric=tuple(c for c in columns if c != 'level'))
+        if run_has(run.level_counts):
+            counts = run.variant_rows(run.level_counts)
+            columns = [c for c in ('level', 'genes_any', 'genes_first', 'fraction_any', 'fraction_first',
+                                   'any_transition', 'any_poised_in_both', 'any_beyond_mirror', 'any_p_lt_0.05',
+                                   'any_q_lt_0.05', 'proximity_support') if c in counts]
+            ints = [c for c in columns if c.startswith(('genes_', 'any_', 'first_'))]
+            doc.table(counts[columns], 'Genes explained at every level (any) and first explained there (first), '
+                                       'declared roles, fragment mean.',
+                      formats=dict({c: fmt_int for c in ints}, fraction_any=fmt_pct, fraction_first=fmt_pct,
+                                   proximity_support=fmt_num, median_nodes_tested=fmt_num),
+                      numeric=tuple(c for c in columns if c != 'level'))
+        combos, from_file = run.level_combinations()
+        doc.table(combos, 'Most frequent combinations of explaining levels per gene (first 15).', max_rows=15,
+                  formats={'genes': fmt_int, 'fraction_of_differential': fmt_pct, 'genes_up': fmt_int,
+                           'genes_down': fmt_int},
+                  numeric=('rank', 'n_levels', 'genes', 'genes_up', 'genes_down', 'fraction_of_differential'))
+        if run_has(run.types):
+            doc.table(run.types, 'Explanation types at the promoter and at the direct partners.',
+                      formats={c: fmt_int for c in ('genes', 'genes_up', 'genes_down', 'mark_gained', 'mark_lost')},
+                      numeric=('genes', 'genes_up', 'genes_down', 'mark_gained', 'mark_lost'))
+        if run_has(run.roles):
+            doc.figure([roles_figure(run)], 'Association of every mark change with the expression change at the '
+                                            'promoter and at each step (Spearman rho with block-bootstrap interval). '
+                                            'Filled markers: learned role equals the declared role; open: it '
+                                            'differs.')
+            roles = run.roles
+            frame = pd.DataFrame({'mark': roles['mark'], 'level': roles['level'], 'versus': roles.get('versus', ''),
+                                  'declared': roles.get('declared_role', ''), 'learned': roles.get('learned_role', ''),
+                                  'rho': roles['rho'].map(fmt_num) if 'rho' in roles else '',
+                                  'genes': roles.get('n_genes', np.nan)})
+            doc.table(frame, 'Declared and learned role of every mark per level.', formats={'genes': fmt_int},
+                      numeric=('genes', 'rho'))
+        if run_has(run.state_transitions):
+            table = run.state_transitions
+            if 'changed' in table:
+                table = table[table['changed'].map(truthy)]
+            if 'n_genes' in table:
+                table = table.sort_values('n_genes', ascending=False)
+            columns = [c for c in ('level', 'transition', 'n_fragments', 'n_genes', 'mean_rna_log2FC', 'n_up',
+                                   'n_down', 'concordance') if c in table]
+            doc.table(table[columns], 'Changed mark combinations at the promoter (step 0) and the direct partners '
+                                      '(step 1), first 20 rows.', max_rows=20,
+                      formats={'n_fragments': fmt_int, 'n_genes': fmt_int, 'n_up': fmt_int, 'n_down': fmt_int,
+                               'mean_rna_log2FC': lambda v: fmt_num(v, signed=True), 'concordance': fmt_num},
+                      numeric=tuple(c for c in columns if c not in ('level', 'transition')))
+        if run_has(run.bivalent):
+            threshold = run.command_value('--stateThreshold', 2.0)
+            table = run.bivalent
+            if 'threshold' in table and (table['threshold'] == threshold).any():
+                table = table[table['threshold'] == threshold]
+            table = table.sort_values('genes', ascending=False) if 'genes' in table else table
+            doc.table(table, 'Declared states (bivalent promoter, poised enhancer) at the presence threshold {:g}, '
+                             'first 20 rows.'.format(threshold), max_rows=20,
+                      formats={'threshold': fmt_num, 'genes': fmt_int, 'genes_up': fmt_int, 'genes_down': fmt_int,
+                               'concordant': fmt_int, 'supported_concordant': fmt_int,
+                               'fraction_concordant': fmt_pct, 'direction': fmt_int},
+                      numeric=('threshold', 'genes', 'genes_up', 'genes_down', 'concordant', 'supported_concordant',
+                               'fraction_concordant'))
+        if run_has(run.community_expression):
+            table = run.community_expression.head(15)
+            columns = [c for c in ('community_a', 'community_b', 'transition', 'n_genes', 'edges_shared',
+                                   'edges_lost', 'edges_gained', 'rewired_fraction', 'mean_rna_log2FC', 'coherence_p',
+                                   'coherence_q') if c in table]
+            doc.table(table[columns], 'Matched communities with the lowest coherence P (first 15).',
+                      formats={'rewired_fraction': fmt_pct, 'mean_rna_log2FC': lambda v: fmt_num(v, signed=True),
+                               'coherence_p': fmt_p, 'coherence_q': fmt_p},
+                      numeric=tuple(c for c in columns if c != 'transition'))
+        if run_has(run.edge_chromatin):
+            doc.table(run.edge_chromatin, 'Mark change at the two ends of gained and lost interactions against shared '
+                                          'interactions of the same distance (egaExplain).',
+                      formats={'n': fmt_int, 'median_change': lambda v: fmt_num(v, 3, True),
+                               'shared_median_change': lambda v: fmt_num(v, 3, True),
+                               'concordance_vs_shared': fmt_num, 'mannwhitney_p_expected_direction': fmt_p},
+                      numeric=('n', 'median_change', 'shared_median_change', 'concordance_vs_shared',
+                               'mannwhitney_p_expected_direction'))
+
+    def appendix_files(self, doc):
+        run = self.run
+        doc.section('appendix-files', 'Files, parameters and versions', level=3)
+        rows = []
+        for label, path in sorted(run.used.items()):
+            try:
+                stamp = datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime('%Y-%m-%d %H:%M')
+            except OSError:
+                stamp = ''
+            rows.append((label, path, stamp))
+        doc.table(pd.DataFrame(rows, columns=['file', 'path', 'modified']), 'Files read for this report.',
+                  long=('path',))
+        parameters = [('levels read from', run.levels_source), ('expression threshold (|log2|)', run.rna_threshold),
+                      ('mark change threshold (|log2|)', run.chromatin_threshold),
+                      ('state presence threshold', run.command_value('--stateThreshold', 2.0)),
+                      ('largest neighbourhood drawn (nodes)', self.args.maxNodes),
+                      ('colour scale limit (log2)', self.args.maxLog2), ('genes per cascade level', self.args.top),
+                      ('gene annotation', self.args.annotation or 'none')]
+        doc.table(pd.DataFrame([(k, str(v)) for k, v in parameters], columns=['parameter', 'value']),
+                  'Parameters of the report.', long=('value',))
+        if run.command:
+            doc.p('Command line: <code>{}</code>'.format(esc(run.command)))
+        info = [line for line in run.log_lines if ' INFO: ' in line or 'WARNING' in line]
+        if info:
+            doc.table(pd.DataFrame({'run log': info[:40]}), 'Messages of the run log, first 40 lines.',
+                      long=('run log',))
+        import scipy
+        versions = [('epigeneticgraphanalyzer (egaReport)', __version__), ('Python', platform.python_version()),
+                    ('numpy', np.__version__), ('pandas', pd.__version__), ('networkx', nx.__version__),
+                    ('matplotlib', matplotlib.__version__), ('scipy', scipy.__version__),
+                    ('report date', datetime.date.today().isoformat())]
+        doc.table(pd.DataFrame(versions, columns=['software', 'version']), 'Software versions.')
+
+
+def run_has(table):
+    return table is not None and len(table) > 0
+
+
+def b_name(run):
+    return run.names[1]
+
+
+def level_short(level):
+    short = {'promoter_marks': 'promoter marks', 'contacts': 'contacts', 'promoter_state': 'promoter state',
+             'step1': 'step 1', 'step1_state': 'step 1 state'}
+    return short.get(level, 'step {}'.format(level_hops(level)) if re.fullmatch(r'step\d+', str(level)) else level)
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -2319,15 +3445,25 @@ def matplotlib_pdf(doc, pdf_path, heading):
         flush()
 
 
-def write_document(doc, path_stem, heading, meta, args):
+def write_document(doc, path_stem, heading, args, nav=True):
+    """HTML (appendix collapsed) and PDF (printed from a copy with the appendix open)."""
     html_path = path_stem + '.html'
     with open(html_path, 'w') as handle:
-        handle.write(doc.render(heading, meta))
+        handle.write(doc.render(heading, nav=nav))
     pdf_path = path_stem + '.pdf'
     engine = None
     if args.pdf in ('auto', 'chromium'):
         chromium = find_chromium(args.chromium)
-        if chromium and chromium_pdf(chromium, html_path, pdf_path):
+        printed = False
+        if chromium:
+            print_path = path_stem + '.print.html'
+            with open(print_path, 'w') as handle:
+                handle.write(doc.render(heading, nav=nav, print_version=True))
+            try:
+                printed = chromium_pdf(chromium, print_path, pdf_path)
+            finally:
+                os.remove(print_path)
+        if printed:
             engine = 'chromium'
         elif args.pdf == 'chromium':
             raise RuntimeError('Chromium could not print {}'.format(html_path))
@@ -2335,7 +3471,7 @@ def write_document(doc, path_stem, heading, meta, args):
             log.warning('Chromium not available or failed; writing the PDF with matplotlib (plain layout)')
     if engine is None and args.pdf in ('auto', 'matplotlib'):
         if doc.keep_figures:
-            matplotlib_pdf(doc, pdf_path, heading)
+            matplotlib_pdf(doc, pdf_path, plain_text(heading))
             engine = 'matplotlib'
         else:
             log.warning('no PDF for %s: figures were not kept for the matplotlib fallback', html_path)
@@ -2346,10 +3482,10 @@ def write_document(doc, path_stem, heading, meta, args):
     return html_path, (pdf_path if engine else None), engine
 
 
-def meta_block(run):
-    return ('<p>Output prefix <code>{}</code>; conditions {} (A) and {} (B).</p><p>Written {} with egaReport {}.</p>'
-            .format(esc(run.prefix), esc(run.names[0]), esc(run.names[1]), datetime.date.today().isoformat(),
-                    esc(__version__)))
+def report_genes(run, args):
+    """Genes whose strand is needed: the genes of the gene reports (the main report reads the strands of the
+    selected genes later)."""
+    return list(args.gene or [])
 
 
 def main(args=None):
@@ -2358,20 +3494,28 @@ def main(args=None):
     os.makedirs(args.outputDir, exist_ok=True)
     run = Run(args.prefix, args.explainPrefix, args.names, args.rnaThreshold, args.chromatinThreshold, args.log,
               args.name)
+    run.set_labels(args.labels)
+    run.read_rechip(args.rechip)
     log.info('%s: conditions %s, marks %s, %d differential genes, levels from %s', run.name, run.names, run.marks,
              len(run.classes), run.levels_source)
     # keep the figures for the matplotlib PDF when Chromium is not used or may fail
     chromium = find_chromium(args.chromium) if args.pdf in ('auto', 'chromium') else None
     keep = args.pdf == 'matplotlib' or (args.pdf == 'auto' and chromium is None)
-    report = Report(run, args, keep)
+    places = Places(run.graph)
+    report = Report(run, args, keep, places)
+    if args.annotation:
+        genes = report_genes(run, args)
+        if not args.gene and args.community is None:
+            genes = [row.gene or row.node for picked in report.select_findings().values() for row in picked]
+        places.strands = read_strands(args.annotation, genes)
+        log.info('strand of %d of %d genes from %s', len(places.strands), len(genes), args.annotation)
     outputs = []
     if args.gene:
         pages = []
         for gene in args.gene:
-            doc = report.gene_report(gene)
+            doc, heading = report.gene_report(gene)
             stem = os.path.join(args.outputDir, '{}_gene_{}'.format(slug(run.name), slug(gene)))
-            heading = 'Gene report: {} ({} vs {})'.format(gene_span(gene), esc(run.names[0]), esc(run.names[1]))
-            outputs.append(write_document(doc, stem, heading, meta_block(run), args))
+            outputs.append(write_document(doc, stem, heading, args, nav=False))
             pages.append((gene, os.path.basename(stem)))
         if len(pages) > 1:
             index = Document('{} vs {}: gene reports'.format(*run.names), keep)
@@ -2383,20 +3527,18 @@ def main(args=None):
             stem = os.path.join(args.outputDir, '{}_genes_index'.format(slug(run.name)))
             path = stem + '.html'
             with open(path, 'w') as handle:
-                handle.write(index.render('Gene reports: {} vs {}'.format(esc(run.names[0]), esc(run.names[1])),
-                                          meta_block(run)))
+                handle.write(index.render(report.title_block('Gene reports', esc(run.condition_title()),
+                                                             'Index'), nav=False))
             outputs.append((path, None, None))
     elif args.community is not None:
-        doc = report.community_report(args.community, args.communitySide)
+        doc, heading = report.community_report(args.community, args.communitySide)
         stem = os.path.join(args.outputDir, '{}_community_{}{}'.format(slug(run.name), args.communitySide,
                                                                        args.community))
-        outputs.append(write_document(doc, stem, 'Community report: {} ({} vs {})'.format(
-            args.community, esc(run.names[0]), esc(run.names[1])), meta_block(run), args))
+        outputs.append(write_document(doc, stem, heading, args, nav=False))
     else:
-        doc = report.main_report()
+        doc, heading = report.main_report()
         stem = os.path.join(args.outputDir, '{}_report'.format(slug(run.name)))
-        outputs.append(write_document(doc, stem, 'Differential graph report: {} vs {}'.format(
-            esc(run.names[0]), esc(run.names[1])), meta_block(run), args))
+        outputs.append(write_document(doc, stem, heading, args))
     for html_path, pdf_path, engine in outputs:
         sys.stdout.write('{}\n'.format(html_path))
         if pdf_path:
