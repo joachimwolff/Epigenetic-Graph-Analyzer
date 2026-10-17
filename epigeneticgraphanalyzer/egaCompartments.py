@@ -31,8 +31,9 @@ def parse_arguments(args=None):
                         help='name=role; roles active, enhancer, transcription (positive), repressive, '
                              'heterochromatin (negative), other (PC1 only)')
     parser.add_argument('--smooth', type=int, default=0, help='Running mean over 2 * smooth + 1 bins')
-    parser.add_argument('--genes', help='BED of genes (or TSS); the gene density orients the contact eigenvector '
-                                         'and the PC1 when no active role is declared')
+    parser.add_argument('--genes', help='BED of genes (or TSS); the gene density phases the contact eigenvector '
+                                         '(first of the 3 leading ones unless another correlates 1.5 times more '
+                                         'strongly) and orients the PC1 when no active role is declared')
     parser.add_argument('--interactions', '-i', nargs='*', default=[], help='Capture interaction files')
     parser.add_argument('--format', '-f', default='washu', help='Interaction format (see egaCreateGraph)')
     parser.add_argument('--scoreThreshold', type=float, default=None, help='Keep interactions with score >= this')
@@ -110,7 +111,8 @@ def contact_estimate(args, sizes, bins, genes_path):
         keep = (a < len(idx)) & (b < len(idx))
         weights = sub.score.fillna(1.0).values[keep]
         m = contacts_to_matrix(len(idx), a[keep], b[keep], weights)
-        v, _ = contact_eigenvector(m, orient_by=None if genes is None else genes[idx], min_contacts=args.minContacts)
+        v, _ = contact_eigenvector(m, orient_by=None if genes is None else genes[idx], min_contacts=args.minContacts,
+                                   n_candidates=1 if genes is None else 3)
         vec[idx] = v
     # onto the chromatin bins by midpoint
     mids = (bins.start.values + bins.end.values) // 2
