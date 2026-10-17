@@ -165,6 +165,31 @@ def test_places(run):
                                                                                markup=False))
 
 
+def test_places_name_element_classes(run):
+    data = egaReport.Run(run['prefix'])
+    graph = data.graph
+    lookup = data.element_lookup()
+    assert lookup and set(lookup) == set(graph.nodes)
+    places = egaReport.Places(graph, elements=lookup, names=data.names)
+    baits = [n for n, d in graph.nodes(data=True) if d.get('bait') and d.get('genes')]
+    stable = next(n for n in baits if lookup[n][0] == lookup[n][1])
+    gene = egaReport.gene_names(graph.nodes[stable]['genes'])[0]
+    adjective = egaReport.PROMOTER_ADJECTIVE[lookup[stable][0]]
+    assert places.label(stable, markup=False, article=True) == 'the {} promoter of {}'.format(adjective, gene)
+    changed = next(n for n in baits if lookup[n][0] != lookup[n][1])
+    assert re.search(r'promoter \(\w+ in cond1, \w+ in cond2\)$', places.label(changed, markup=False))
+    # an other end gaining H3K27ac: an element named by its class in each condition
+    gained = next(n for n, i in lookup.items() if i[0] == 'unmarked element' and i[1] == 'active enhancer')
+    label = places.label(gained, stable, gene, markup=False, article=True)
+    assert label.startswith('an element ') and 'unmarked element in cond1, active enhancer in cond2' in label, label
+    other = next(n for n, i in lookup.items() if i[0] == i[1] == 'unmarked element' and
+                 graph.nodes[n]['chrom'] == graph.nodes[stable]['chrom'])
+    assert places.label(other, stable, gene, markup=False, article=True).startswith('an unmarked element ')
+    text = egaReport.Report(data, None, False, places).class_counts_text(['active enhancer', 'active enhancer',
+                                                                         'unmarked element'])
+    assert text == 'two active enhancers and one unmarked element'
+
+
 def test_levels_fallback_matches_cascade(run, tmp_path):
     # without the all-level table the report derives the levels from the other outputs
     import glob

@@ -9,7 +9,8 @@ S24 explanation levels of the differentially expressed genes, first level and an
 the fragment mean and the maximum 1 kb window (analysis/16_hops_n.sh); S25 chromatin state transitions of the
 differentially expressed genes at three presence thresholds; S26 validation of the Md / PA2 bivalency calls against
 the sequential ChIP under both presence statistics (analysis/rechip_validation.py); S27 the most frequent
-combinations of explaining levels per comparison.
+combinations of explaining levels per comparison; S28 element classes of the fragments and their transitions with
+the expression change of the genes in contact, and the blind test of the role discovery (analysis/18_blind_roles.sh).
 
 Usage: python supplement_tables.py <results dir> <output dir>
 """
@@ -1175,11 +1176,116 @@ def s27():
           colsep='3pt')
 
 
+CLASS_ORDER = ('active promoter', 'bivalent promoter', 'poised promoter', 'primed promoter', 'repressed promoter',
+               'heterochromatin-like promoter', 'architectural promoter', 'promoter with marks of no role',
+               'unmarked promoter', 'active enhancer', 'primed enhancer', 'poised enhancer', 'enhancer-marked element',
+               'repressed element', 'heterochromatin-like element', 'architectural element',
+               'element with marks of no role', 'unmarked element')
+
+
+def s28():
+    """Element classes of the fragments and their transitions (<prefix>_element_classes.tsv,
+    <prefix>_element_transitions.tsv, declared roles, fragment mean) per comparison: table_s28.tex; roles learned per
+    level and element type for the tracks given without a role in the blind test (analysis/18_blind_roles.sh,
+    <results>/hops_n/blind/blind_roles.tsv): table_s28_blind.tex."""
+    rows = []
+    for label, prefix in CASCADE_COMPARISONS:
+        source = path(prefix + '_element_classes.tsv')
+        if not os.path.exists(source):
+            continue
+        t = pd.read_csv(source, sep='\t', keep_default_na=False, na_values=[''])
+        t = t[(t['roles'] == 'declared') & (t['presence'] == 'mean')]
+        names = list(dict.fromkeys(t['condition'].astype(str)))
+        ends = t[t['condition'].astype(str) == names[0]]
+        total = int(ends['other_end_fragments'].sum())
+        captured = int(ends.loc[ends['tss_status'] == 'baited promoter', 'other_end_fragments'].sum())
+        uncaptured = int(ends.loc[ends['tss_status'] == 'non-baited promoter', 'other_end_fragments'].sum())
+        rows.append(r'\multicolumn{6}{l}{\textbf{' + tex(label) + r'}: ' + integer(total) + ' other ends, ' +
+                    integer(captured + uncaptured) + ' ({:.0f}\\%) promoters ('.format(
+                        100 * (captured + uncaptured) / total if total else 0) + integer(captured) + ' captured, ' +
+                    integer(uncaptured) + r' not captured)} \\')
+        pivot = t.pivot_table(index='element_class', columns='condition', values='fragments', aggfunc='sum',
+                              fill_value=0)
+        ends_pivot = t.pivot_table(index='element_class', columns='condition', values='other_end_fragments',
+                                   aggfunc='sum', fill_value=0)
+        order = {c: k for k, c in enumerate(CLASS_ORDER)}
+        for cls in sorted(pivot.index, key=lambda c: (order.get(c, 99), c)):
+            rows.append(' & '.join(['', tex(cls)] + [integer(pivot.loc[cls].get(n, 0)) for n in names] +
+                                   [integer(ends_pivot.loc[cls].get(n, 0)) for n in names]) + r' \\')
+        transitions = path(prefix + '_element_transitions.tsv')
+        if os.path.exists(transitions):
+            moves = pd.read_csv(transitions, sep='\t', keep_default_na=False, na_values=[''])
+            moves = moves[(moves['roles'] == 'declared') & (moves['presence'] == 'mean') &
+                          moves['changed'].astype(str).eq('True')]
+            for step in (1, 3):
+                part = moves[(moves['step'] == step) & (moves['n_genes'] >= 20)].sort_values('n_genes',
+                                                                                             ascending=False).head(6)
+                if not len(part):
+                    continue
+                baseline = part['baseline_mean'].iloc[0]
+                rows.append(r'\multicolumn{6}{l}{\textit{Class transitions ' + tex(names[0]) + r' $\to$ ' +
+                            tex(names[1]) + ', step {} (all genes at this step: mean $\\log_2$ {})'.format(
+                                step, num(baseline, 2)) + r'}} \\')
+                for _, r in part.iterrows():
+                    rows.append(' & '.join(['', tex(r['class_A']) + r' $\to$ ' + tex(r['class_B']),
+                                            integer(r['n_fragments']), integer(r['n_genes']),
+                                            num(r['mean_rna_log2FC'], 2),
+                                            '{} to {}'.format(num(r['ci_low'], 2), num(r['ci_high'], 2))]) + r' \\')
+        rows.append(r'\midrule')
+    if rows:
+        table('table_s28.tex', 'p{0.3cm}>{\\raggedright\\arraybackslash}p{6.4cm}rrrr',
+              ' & Element class (A, B) & Fragments A & Fragments B & Other ends A & Other ends B \\\\ '
+              '& Transition & Fragments & Genes & Mean $\\log_2$ & 95\\% interval', rows[:-1],
+              'Element classes of the fragments of the union graph per comparison (declared mark roles, presence '
+              'at a fold enrichment of at least 2, fragment mean): a fragment holding an annotated transcription '
+              'start site is a promoter, captured (baited) or not; the class follows from the roles of the present '
+              'marks (active, bivalent, primed, repressed or unmarked promoter; active, primed or poised enhancer, '
+              'repressed or unmarked element). Other ends: fragments at the other end of a called interaction. '
+              'Class transitions: the most frequent changes of class between the conditions among the fragments '
+              'at step 1 (direct contact) and step 3 of the promoters of genes with an expression change (at '
+              'least 20 genes), with the number of fragments, of genes in contact and their mean $\\log_2$ '
+              'expression change B / A with a 95\\% chromosome block-bootstrap interval. Learned roles, the '
+              'maximum 1 kb window and steps 0 and 2 are in \\texttt{<prefix>\\_element\\_transitions.tsv}.',
+              'tab:s28', size=r'\scriptsize', long=True, colsep='3pt')
+    blind = path('hops_n', 'blind', 'blind_roles.tsv')
+    if not os.path.exists(blind):
+        return
+    t = pd.read_csv(blind, sep='\t', keep_default_na=False, na_values=[''])
+    shown = ('all', 'promoter', 'non-baited promoter', 'non-promoter element')
+    t = t[t['element_type'].isin(shown)]
+    level_order = {'promoter': 0, 'step1': 1, 'step2': 2, 'step3': 3}
+    rows = []
+    for mark, part in t.groupby('mark', sort=False):
+        first = True
+        part = part.assign(lo=part['level'].map(level_order),
+                           to=part['element_type'].map({k: i for i, k in enumerate(shown)}))
+        for _, r in part.sort_values(['lo', 'to']).iterrows():
+            rows.append(' & '.join([tex(mark) + ' ({})'.format(tex(r['expected_role'])) if first else '',
+                                    tex(r['level'].replace('step', 'step ')),
+                                    tex(r['element_type'].replace('all', 'all nodes')), integer(r['n_genes']),
+                                    num(r['rho'], 3), '{} to {}'.format(num(r['rho_ci_low'], 3),
+                                                                        num(r['rho_ci_high'], 3)),
+                                    tex(r['learned_role']), tex(r['verdict'])]) + r' \\')
+            first = False
+        rows.append(r'\midrule')
+    table('table_s28_blind.tex', 'p{2.6cm}llrrrll',
+          'Track (expected) & Level & Nodes & Genes & $\\rho$ & 95\\% interval & Learned role & Verdict', rows[:-1],
+          'Blind test of the role discovery, hESC / hNEC: Roadmap tracks of E008 and E009 given without a role '
+          '(role unknown) beside the declared H3K4me3 (active), H3K4me1 (enhancer) and H3K27me3 (repressive). Roles '
+          'learned at the promoter (step 0) and at steps 1 to 3, over all nodes of a step and separately over the '
+          'nodes that are promoters (captured or not), promoters that are not captured, and non-promoter elements: '
+          'Spearman $\\rho$ of the mark change with the expression change with a 95\\% chromosome block-bootstrap '
+          'interval; active or repressive when the interval excludes 0. Expected from the known biology: H3K9me3 '
+          'repressive, H3K36me3 transcription-associated (active); H2A.Z has no single expected sign. At the '
+          'promoter level the node is the captured promoter fragment of the gene, which covers mostly the promoter '
+          'and little of the gene body.', 'tab:s28blind', size=r'\scriptsize', long=True, colsep='3pt')
+
+
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
     for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
-                  s25, s26, s27):
+                  s25, s26, s27, s28):
         build()
         print(build.__name__, flush=True)
 
