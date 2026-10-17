@@ -98,76 +98,82 @@ def test_capture_insulation_dip_at_planted_boundary():
     assert ins.observed.sum() == pytest.approx(ins.expected.sum(), rel=0.1)
 
 
-def _toy_features(n_chrom=6, n_bins=200, res=25_000, seed=4):
-    """Several chromosomes with planted boundaries: insulation dip + reverse CTCF left / forward CTCF right of the
-    boundary, decoy CTCF sites elsewhere."""
+def _toy_evidence(n_chrom=4, n_bins=200, res=25_000, seed=4):
+    """Planted boundaries: insulation dip + reverse CTCF in the boundary bin and forward CTCF in the next bin.
+    Decoys: inward-facing CTCF pairs (forward left, reverse right) without a dip, and dips without CTCF."""
     rng = np.random.default_rng(seed)
-    bins, sites, truth = [], [], []
+    bins, sites, truth, dips = [], [], [], []
     for c in range(n_chrom):
         chrom = 'chr{}'.format(c + 1)
         b = pd.DataFrame({'chrom': chrom, 'start': np.arange(n_bins) * res})
         b['end'] = b.start + res
         bins.append(b)
-        bounds = np.sort(rng.choice(np.arange(10, n_bins - 10, 20), size=6, replace=False) + rng.integers(-3, 4, 6))
+        slots = rng.permutation(np.arange(8, n_bins - 8, 12))
+        bounds, ctcf_decoys, dip_decoys = np.sort(slots[:5]), slots[5:9], slots[9:13]
         truth.append((chrom, bounds))
-        for k in bounds:     # boundary: reverse site in the boundary bin, forward site in the next bin
+        dips.append((chrom, np.concatenate([bounds, dip_decoys])))
+        for k in bounds:
             sites.append((chrom, k * res + 12_000, 20.0, 6.0, True, '-'))
             sites.append((chrom, (k + 1) * res + 12_000, 20.0, 6.0, True, '+'))
-        for k in rng.integers(2, n_bins - 2, 6):      # decoys: same sites, inward-facing (forward left, reverse right)
+        for k in ctcf_decoys:
             sites.append((chrom, k * res + 12_000, 20.0, 6.0, True, '+'))
             sites.append((chrom, (k + 1) * res + 12_000, 20.0, 6.0, True, '-'))
     bins = pd.concat(bins, ignore_index=True)
     sites = pd.DataFrame(sites, columns=['chrom', 'summit', 'ctcf', 'cohesin', 'cohesin_bound', 'orientation'])
-    ins = pd.DataFrame({'observed': 20.0, 'expected': 20.0, 'expected_global': 20.0, 'observed_w': 20.0,
-                        'expected_w': 20.0, 'covered': True}, index=bins.index)
-    noise = rng.normal(0, 0.15, len(bins))
-    ins['insulation'] = noise
+    ins = pd.DataFrame({'insulation': rng.normal(0, 0.05, len(bins)), 'covered': True}, index=bins.index)
     labels = np.zeros(len(bins), dtype=bool)
     idx = bd.bin_index(bins)
-    for chrom, bounds in truth:
+    for (chrom, bounds), (_, d) in zip(truth, dips):
         first = idx[chrom][0]
         labels[first + bounds] = True
-        ins.loc[first + bounds, 'insulation'] -= 1.0
-    ins['insulation_w'] = ins.insulation
-    ins['insulation_global'] = ins.insulation
+        ins.loc[first + d, 'insulation'] -= 1.0
     return bins, sites, ins, labels
 
 
-def test_planted_boundary_found_on_held_out_chromosome():
-    bins, sites, ins, labels = _toy_features()
-    feats = bd.bin_features(bins, sites, ins, None, context_bp=25_000)
-    # the orientation pattern is highest at the planted boundaries
-    assert feats.flip.values[labels].mean() > 3 * feats.flip.values[~labels].mean()
+def test_planted_boundary_rules():
+    bins, sites, ins, labels = _toy_evidence()
     codes = bd.chrom_codes(bins)
-    train = codes < 4
-    test = ~train
-    model = bd.LogisticModel(bd.METHODS['combined']).fit(feats[train], labels[train])
-    score = model.predict(feats)
-    thr, f1_train = bd.best_threshold(score[train], np.flatnonzero(labels[train]), codes[train])
-    calls = bd.peak_calls(np.where(test, score, -np.inf), codes, thr)
-    m = bd.match_boundaries(calls, np.flatnonzero(labels & test), codes, tolerance=1)
-    assert m['recall'] >= 0.9 and m['precision'] >= 0.8
-    # CTCF without orientation cannot tell the planted boundaries from the inward-facing decoys
-    aps = {}
-    for method in ('ctcf_cohesin', 'ctcf_orientation'):
-        s = bd.LogisticModel(bd.METHODS[method]).fit(feats[train], labels[train]).predict(feats)
-        aps[method] = bd.average_precision(s[test], labels[test])
-    assert aps['ctcf_orientation'] > aps['ctcf_cohesin'] + 0.2
+    ev = bd.bin_evidence(bins, sites, ins, None, dip_prominence=0.3, ctcf_min=10)
+    truth = np.flatnonzero(labels)
+    res = {}
+    for rule in ('dip', 'ctcf', 'ctcf_pattern', 'dip_or_ctcf', 'dip_and_ctcf', 'dip_and_ctcf_pattern'):
+        flags, score = bd.rule_flags(ev, rule)
+        res[rule] = bd.match_boundaries(bd.calls_from_flags(flags, score, codes), truth, codes, tolerance=1)
+    # the planted boundaries (dip + convergent-boundary CTCF pattern) are all found and nothing else
+    assert res['dip_and_ctcf_pattern']['recall'] == 1.0 and res['dip_and_ctcf_pattern']['precision'] == 1.0
+    # each evidence alone also finds them but picks up its decoys
+    assert res['dip']['recall'] == 1.0 and res['dip']['precision'] < 0.7
+    assert res['ctcf']['recall'] == 1.0 and res['ctcf']['precision'] < 0.7
+    # the orientation pattern rejects the inward-facing decoys
+    assert res['ctcf_pattern']['precision'] > res['ctcf']['precision']
+    assert res['dip_or_ctcf']['n_called'] > res['dip_and_ctcf']['n_called']
 
 
 def test_orientation_pattern_sides():
-    """Reverse site in the bin, forward one bin to the right: flip pattern at the bin; the mirrored arrangement
-    (forward left, reverse right) is the inside-loop pattern."""
+    """Reverse site in the bin, forward one bin to the right: boundary pattern at the bin; the mirrored
+    arrangement (forward left, reverse right, the inside of a loop) is not."""
     res = 10_000
     bins = pd.DataFrame({'chrom': 'chr1', 'start': np.arange(20) * res})
     bins['end'] = bins.start + res
     sites = pd.DataFrame({'chrom': 'chr1', 'summit': [50_500, 61_000], 'ctcf': 10.0, 'cohesin': 5.0,
                           'cohesin_bound': True, 'orientation': ['-', '+']})
-    f = bd.bin_features(bins, sites, None, None, context_bp=res)
-    assert f.flip.iat[5] > 0 and f.antiflip.iat[5] == 0
-    swapped = sites.assign(orientation=['+', '-'])
-    g = bd.bin_features(bins, swapped, None, None, context_bp=res)
-    assert g.flip.iat[5] == 0 and g.antiflip.iat[5] > 0
+    ev = bd.bin_evidence(bins, sites)
+    assert ev.ctcf_pattern.iat[5] and ev.pattern_score.iat[5] == 10.0
+    assert not ev.ctcf_pattern.iat[3] and not ev.ctcf_pattern.iat[8]
+    swapped = bd.bin_evidence(bins, sites.assign(orientation=['+', '-']))
+    assert not swapped.ctcf_pattern.any() and swapped.ctcf.iat[5]
+    weak = bd.bin_evidence(bins, sites, ctcf_min=20)
+    assert not weak.ctcf.any()
+    unbound = bd.bin_evidence(bins, sites.assign(cohesin_bound=False))
+    assert not unbound.ctcf.any()
+
+
+def test_calls_from_flags_one_per_run():
+    codes = np.array([0] * 6 + [1] * 4)
+    flags = np.array([1, 1, 0, 1, 1, 1, 1, 1, 0, 0], dtype=bool)
+    score = np.array([1, 2, 0, 5, 3, 9, 4, 1, 0, 0], dtype=float)
+    # runs: [0, 1], [3, 4, 5] on chromosome 0 and [6, 7] on chromosome 1 (a run does not cross chromosomes)
+    assert list(bd.calls_from_flags(flags, score, codes)) == [1, 5, 6]
 
 
 def test_diamond_insulation_block_boundary():
@@ -213,7 +219,7 @@ def test_cli_capture_only(tmp_path):
     (tmp_path / 'ref.bed').write_text('chr1\t1000000\t1025000\n')
     prefix = str(tmp_path / 'out')
     egaBoundaries.main(['--nodes', str(tmp_path / 'n.tsv'), '--edges', str(tmp_path / 'e.tsv'), '--chromSizes',
-                        str(tmp_path / 'sizes'), '--binSize', '25000', '--minExpected', '3', '--prominence', '0.5',
+                        str(tmp_path / 'sizes'), '--binSize', '25000', '--minExpected', '3', '--dipProminence', '0.5',
                         '--reference', str(tmp_path / 'ref.bed'), '-o', prefix])
     calls = pd.read_csv(prefix + '_boundaries.bed', sep='\t', header=None)
     assert np.min(np.abs(calls[1].values - 1_000_000)) <= 25_000

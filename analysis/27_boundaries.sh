@@ -3,11 +3,12 @@
 #   boundaries_hic.py        diamond insulation of the 4DN mcool files (GM12878, K562, H1; 10 / 25 / 50 kb) and of the
 #                            Rubin et al. 2017 day matrices (50 kb, hg19); needs cooler (HICEXPLORER_PYTHON)
 #   boundaries_features.py   CTCF summits, cohesin at the summit, CTCF motif orientation (JASPAR MA0139.2), capture
-#                            insulation, convergent cohesin-CTCF loops among the graph edges, per-bin features
-#   boundaries_evaluate.py   logistic boundary callers (capture, CTCF + cohesin, + orientation, combined), cross-cell
-#                            and chromosome-split designs, precision / recall / F1 / AUPRC, bootstrap of the gain of
-#                            the contacts over CTCF, domain agreement
-#   boundaries_timecourse.py keratinocyte days 0 / 3 / 6: per-day boundaries, changes against Hi-C, expression
+#                            insulation, convergent cohesin-CTCF loops among the graph edges
+#   boundaries_evaluate.py   per-bin evidence (capture dip, cohesin-bound CTCF with its orientation pattern, loop
+#                            anchors) and rule-based calls with fixed thresholds (no fitted model): dip, CTCF, CTCF
+#                            pattern, dip OR / AND CTCF (pattern); precision / recall / F1 / AUPRC against Hi-C,
+#                            threshold grid, bootstrap of the change when the dip is added to CTCF, domain agreement
+#   boundaries_timecourse.py keratinocyte days 0 / 3 / 6: per-day rule calls, changes against Hi-C, expression
 #   figure_boundaries.py     one PDF per panel; table_boundaries.py: table_s35.tex
 # Inputs: <data_dir> = raw directory (motifs, annotation, domains, rubin2017_keratinocyte), <results_dir> with graphs/,
 # timecourse_rubin2017/ and compartments_domains/hic_reference/ (23_hic_reference.sh). Outputs: <results>/boundaries/.

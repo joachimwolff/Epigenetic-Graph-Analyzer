@@ -16,13 +16,14 @@ Three evidence sources per fixed genomic bin:
 * loops: graph edges whose left end carries a forward and whose right end a reverse cohesin-bound CTCF site
   (convergent pair, `classify_loops`).
 
-`bin_features` turns the three into per-bin features (site strength and counts, the orientation pattern of a
-boundary: reverse sites at and left of the bin, forward sites at and right of it, capture insulation and its local
-dip, convergent loop anchors and loops spanning the bin). `LogisticModel` is a plain L2-penalised logistic regression
-on z-scored features; `peak_calls` turns a per-bin score into boundary calls (local maxima above a threshold chosen on
-the training data, `best_threshold`). Evaluation: `match_boundaries` (precision, recall, F1 at a tolerance in bins),
-`average_precision`, `variation_of_information` and `local_rand` between domain partitions, and the diamond
-insulation of a Hi-C matrix (`diamond_insulation`) as reference.
+`bin_evidence` reports the three per bin, each on its own: the capture insulation dip (local minimum with a
+prominence threshold, value at or below a maximum), cohesin-bound CTCF within +-1 bin with its orientation pattern
+(reverse sites on the left, forward sites on the right), and convergent loop anchors. Boundaries are called by
+transparent rules with fixed, configurable thresholds (`RULES`, `rule_flags`, no fitted weights): 'dip', 'ctcf',
+'ctcf_pattern', 'loop_anchor', 'dip_or_ctcf', 'dip_and_ctcf', 'dip_or_ctcf_pattern', 'dip_and_ctcf_pattern'; one call
+per run of consecutive flagged bins (`calls_from_flags`). Evaluation: `match_boundaries` (precision, recall, F1 at a
+tolerance in bins), `average_precision` (AUPRC of a rule's score), `variation_of_information` and `local_rand`
+between domain partitions, and the diamond insulation of a Hi-C matrix (`diamond_insulation`) as reference.
 """
 
 import gzip
@@ -30,7 +31,7 @@ import logging
 
 import numpy as np
 import pandas as pd
-from scipy import ndimage, optimize, signal
+from scipy import ndimage, signal
 
 log = logging.getLogger(__name__)
 
@@ -503,7 +504,7 @@ def classify_loops(ends, sites, pad=1000, cohesin_only=True, return_ambiguous=Fa
 
 
 # ----------------------------------------------------------------------------------------------------------------
-# features
+# per-bin evidence
 
 def _count_in_bins(n, positions, res, weights=None):
     k = np.clip((np.asarray(positions) // res).astype(np.int64), 0, n - 1)
@@ -515,12 +516,13 @@ def _count_in_bins(n, positions, res, weights=None):
 def _max_in_bins(n, positions, res, values):
     k = np.clip((np.asarray(positions) // res).astype(np.int64), 0, n - 1)
     out = np.zeros(n)
-    np.maximum.at(out, k, values)
+    if len(k):
+        np.maximum.at(out, k, values)
     return out
 
 
 def _window_sum(x, left, right):
-    """sum of x[i - left .. i + right] (clipped at the ends)."""
+    """sum of x[i - left .. i + right] (clipped at the chromosome ends)."""
     cs = np.concatenate([[0.0], np.cumsum(x)])
     i = np.arange(len(x))
     lo = np.clip(i - left, 0, len(x))
@@ -528,169 +530,141 @@ def _window_sum(x, left, right):
     return cs[hi] - cs[lo]
 
 
-FEATURE_SETS = {
-    # bait / edge density only (no information on the side to which edges point)
-    'density': ['covered', 'log_expected', 'log_expected_global', 'bait_n'],
-    'insulation': ['insulation', 'insulation_w', 'insulation_global', 'insulation_dip'],
-    'ctcf': ['ctcf_max', 'ctcf_n', 'cb_n', 'cohesin_max', 'cb_window'],
-    'orientation': ['fwd_n', 'rev_n', 'rev_left', 'fwd_right', 'flip', 'antiflip'],
-    'loops': ['loop_left_anchor', 'loop_right_anchor', 'loop_cross', 'loop_strength'],
-}
-METHODS = {
-    'density': FEATURE_SETS['density'],
-    'capture': FEATURE_SETS['density'] + FEATURE_SETS['insulation'],
-    'ctcf_cohesin': FEATURE_SETS['ctcf'],
-    'ctcf_orientation': FEATURE_SETS['ctcf'] + FEATURE_SETS['orientation'],
-    'ctcf_orientation_density': FEATURE_SETS['ctcf'] + FEATURE_SETS['orientation'] + FEATURE_SETS['density'],
-    'combined': FEATURE_SETS['ctcf'] + FEATURE_SETS['orientation'] + FEATURE_SETS['density'] +
-    FEATURE_SETS['insulation'] + FEATURE_SETS['loops'],
-}
+DEFAULTS = {'dip_prominence': 0.3, 'dip_max': 0.0, 'ctcf_min': 10.0, 'window_bins': 1}
 
 
-def bin_features(bins, sites=None, insulation=None, loops=None, context_bp=50000):
-    """Per-bin features (see FEATURE_SETS). sites: chrom, summit, ctcf, cohesin, cohesin_bound, orientation.
-    insulation: output of capture_insulation. loops: chrom, left_mid, right_mid, cls, strength (convergent loops are
-    used). context_bp sets the window (in bins: max(1, context_bp / bin size)) of the orientation pattern, the site
-    sum and the insulation dip."""
-    out = pd.DataFrame(index=bins.index)
-    cols = {c: np.zeros(len(bins)) for s in FEATURE_SETS.values() for c in s}
+def bin_evidence(bins, sites=None, insulation=None, loops=None, dip_prominence=0.3, dip_max=0.0, ctcf_min=10.0,
+                 window_bins=1):
+    """The three evidence sources per bin, each on its own (no weights, no fitting).
+
+    Capture dip: `capture_insulation` (log2 observed / expected spanning edges, NaN where not covered) is a local
+    minimum with prominence >= dip_prominence and value <= dip_max (`dip`); `dip_score` = -insulation.
+    CTCF / cohesin (cohesin-bound sites with CTCF enrichment >= ctcf_min): `ctcf_n`, `ctcf_strength` (summed
+    enrichment; score) and `ctcf` (at least one site) in the bin itself; `ctcf_near` / `ctcf_strength_near` the same
+    within +-window_bins bins (used to combine with a dip); orientation: `rev_left` reverse
+    sites in bins i - window .. i, `fwd_right` forward sites in i .. i + window ('both' counts as either),
+    `ctcf_pattern` = both present (reverse on the left, forward on the right), `pattern_score` = min of the strongest
+    reverse-left and forward-right site.
+    Loops: `loop_anchor` = number of convergent cohesin-CTCF loops (graph edges) with an end within +-window bins,
+    `loop_anchor_score` = their summed CTCF enrichment, `loop_cross` = convergent loops spanning the bin.
+    """
+    n_all = len(bins)
+    cols = {c: np.zeros(n_all) for c in ('capture_insulation', 'covered', 'dip_score', 'ctcf_n', 'ctcf_strength',
+                                         'ctcf_n_near', 'ctcf_strength_near', 'rev_left', 'fwd_right',
+                                         'pattern_score', 'loop_anchor', 'loop_anchor_score',
+                                         'loop_cross')}
+    cols['capture_insulation'][:] = np.nan
+    dip = np.zeros(n_all, dtype=bool)
+    w = int(window_bins)
+    codes = chrom_codes(bins)
+    if insulation is not None:
+        v = np.where(insulation.covered.values, insulation.insulation.values, np.nan)
+        cols['capture_insulation'][:] = v
+        cols['covered'][:] = insulation.covered.values
+        lowest = np.nanmax(v) if np.isfinite(v).any() else 0.0
+        cols['dip_score'][:] = np.where(np.isfinite(v), -v, -lowest - 1)
+        mins = local_minima(v, codes, prominence=dip_prominence)
+        dip[mins[v[mins] <= dip_max]] = True
     for chrom, (first, n, res) in bin_index(bins).items():
         sl = slice(first, first + n)
-        w = max(1, int(round(context_bp / res)))
         if sites is not None:
-            g = sites[sites.chrom == chrom]
-            cb = g[g.cohesin_bound]
-            cols['ctcf_max'][sl] = np.log2(1 + _max_in_bins(n, g.summit.values, res, g.ctcf.values))
-            cols['ctcf_n'][sl] = np.log1p(_count_in_bins(n, g.summit.values, res))
-            cols['cb_n'][sl] = np.log1p(_count_in_bins(n, cb.summit.values, res))
-            coh = np.nan_to_num(g.cohesin.values) if len(g) else np.zeros(0)
-            cols['cohesin_max'][sl] = np.log2(1 + _max_in_bins(n, g.summit.values, res, coh))
-            cols['cb_window'][sl] = np.log1p(_window_sum(_count_in_bins(n, cb.summit.values, res, cb.ctcf.values),
-                                                         w, w))
-            fwd = _count_in_bins(n, cb.summit.values, res, cb.orientation.isin(['+', 'both']).values.astype(float))
-            rev = _count_in_bins(n, cb.summit.values, res, cb.orientation.isin(['-', 'both']).values.astype(float))
-            cols['fwd_n'][sl] = np.log1p(fwd)
-            cols['rev_n'][sl] = np.log1p(rev)
-            rl, fr = _window_sum(rev, w, 0), _window_sum(fwd, 0, w)
-            fl, rr = _window_sum(fwd, w, 0), _window_sum(rev, 0, w)
-            cols['rev_left'][sl] = np.log1p(rl)
-            cols['fwd_right'][sl] = np.log1p(fr)
-            cols['flip'][sl] = np.log1p(rl) * np.log1p(fr)
-            cols['antiflip'][sl] = np.log1p(fl) * np.log1p(rr)
-        if insulation is not None:
-            ins = insulation.iloc[sl]
-            v = ins.insulation.values
-            cov = ins.covered.values.astype(bool)
-            filled = np.where(cov, v, 0.0)
-            cols['insulation'][sl] = filled
-            cols['insulation_w'][sl] = np.where(cov, ins.insulation_w.values, 0.0)
-            cols['insulation_global'][sl] = np.where(cov, np.nan_to_num(ins.insulation_global.values), 0.0)
-            cols['covered'][sl] = cov.astype(float)
-            cols['log_expected'][sl] = np.log1p(ins.expected.values)
-            cols['log_expected_global'][sl] = np.log1p(ins.expected_global.values)
-            if 'baits' in ins:
-                cols['bait_n'][sl] = np.log1p(ins.baits.values)
-            # dip: insulation minus the mean of the flanks (bins i-2w..i-1 and i+1..i+2w)
-            flank_sum = _window_sum(filled, 2 * w, 2 * w) - filled
-            flank_n = _window_sum(cov.astype(float), 2 * w, 2 * w) - cov
-            with np.errstate(invalid='ignore', divide='ignore'):
-                dip = np.where(cov & (flank_n > 0), filled - flank_sum / np.maximum(flank_n, 1), 0.0)
-            cols['insulation_dip'][sl] = dip
+            g = sites[(sites.chrom == chrom) & sites.cohesin_bound & (sites.ctcf >= ctcf_min)]
+            pos, strength = g.summit.values, g.ctcf.values
+            cnt = _count_in_bins(n, pos, res)
+            st = _count_in_bins(n, pos, res, strength)
+            cols['ctcf_n'][sl] = cnt
+            cols['ctcf_strength'][sl] = st
+            cols['ctcf_n_near'][sl] = _window_sum(cnt, w, w)
+            cols['ctcf_strength_near'][sl] = _window_sum(st, w, w)
+            is_f = g.orientation.isin(['+', 'both']).values
+            is_r = g.orientation.isin(['-', 'both']).values
+            fwd = _count_in_bins(n, pos[is_f], res)
+            rev = _count_in_bins(n, pos[is_r], res)
+            cols['rev_left'][sl] = _window_sum(rev, w, 0)
+            cols['fwd_right'][sl] = _window_sum(fwd, 0, w)
+            fmax = _max_in_bins(n, pos[is_f], res, strength[is_f])
+            rmax = _max_in_bins(n, pos[is_r], res, strength[is_r])
+            rl = np.array([rmax[max(0, i - w):i + 1].max() for i in range(n)]) if n else rmax
+            fr = np.array([fmax[i:i + w + 1].max() for i in range(n)]) if n else fmax
+            cols['pattern_score'][sl] = np.minimum(rl, fr)
         if loops is not None:
             g = loops[(loops.chrom == chrom) & (loops.cls == 'convergent')]
-            cols['loop_left_anchor'][sl] = np.log1p(_count_in_bins(n, g.left_mid.values, res))
-            cols['loop_right_anchor'][sl] = np.log1p(_count_in_bins(n, g.right_mid.values, res))
+            anchors = _count_in_bins(n, g.left_mid.values, res) + _count_in_bins(n, g.right_mid.values, res)
+            cols['loop_anchor'][sl] = _window_sum(anchors, w, w)
             st = _count_in_bins(n, g.left_mid.values, res, g.strength.values) + \
                 _count_in_bins(n, g.right_mid.values, res, g.strength.values)
-            cols['loop_strength'][sl] = np.log1p(st)
+            cols['loop_anchor_score'][sl] = _window_sum(st, w, w)
             diff = np.zeros(n + 1)
             if len(g):
                 _add_spans(diff, g.left_mid.values.astype(float) + res, g.right_mid.values.astype(float) - res,
                            np.ones(len(g)), res)
-            cols['loop_cross'][sl] = np.log1p(np.cumsum(diff)[:n])
-    for c, v in cols.items():
-        out[c] = v
+            cols['loop_cross'][sl] = np.cumsum(diff)[:n]
+    out = pd.DataFrame(cols, index=bins.index)
+    out['covered'] = out.covered > 0
+    out['dip'] = dip
+    out['ctcf'] = out.ctcf_n > 0
+    out['ctcf_near'] = out.ctcf_n_near > 0
+    out['ctcf_pattern'] = (out.rev_left > 0) & (out.fwd_right > 0)
+    out['loop'] = out.loop_anchor > 0
     return out
 
 
+def _pct_rank(x):
+    x = np.asarray(x, dtype=float)
+    return pd.Series(x).rank(pct=True, method='average').values
+
+
+RULES = {
+    # name: (description, flag function, score function); evidence = bin_evidence table
+    'dip': ('capture insulation dip', lambda e: e.dip.values, lambda e: e.dip_score.values),
+    'ctcf': ('cohesin-bound CTCF in the bin', lambda e: e.ctcf.values, lambda e: e.ctcf_strength.values),
+    'ctcf_pattern': ('cohesin-bound CTCF, reverse on the left and forward on the right',
+                     lambda e: e.ctcf_pattern.values, lambda e: e.pattern_score.values),
+    'loop_anchor': ('anchor of a convergent cohesin-CTCF loop (graph edge)', lambda e: e.loop.values,
+                    lambda e: e.loop_anchor_score.values),
+    'dip_or_ctcf': ('dip OR CTCF', None, None),
+    'dip_and_ctcf': ('dip AND CTCF', None, None),
+    'dip_or_ctcf_pattern': ('dip OR CTCF pattern', None, None),
+    'dip_and_ctcf_pattern': ('dip AND CTCF pattern', None, None),
+}
+
+
+def rule_flags(evidence, rule):
+    """Boolean flag per bin and a score (for AUPRC) of a rule. AND: a dip bin with CTCF within +-window bins
+    (`ctcf_near`) or with the orientation pattern (which spans the neighbouring bins itself); OR: union of the dip
+    and the CTCF (in the bin) or pattern flags. Combined scores: the minimum (AND) or maximum (OR) of the percentile
+    ranks of the two component scores (unweighted)."""
+    e = evidence
+    if RULES[rule][1] is not None:
+        return np.asarray(RULES[rule][1](e), dtype=bool), np.asarray(RULES[rule][2](e), dtype=float)
+    op, other = ('and', rule.split('_and_')[1]) if '_and_' in rule else ('or', rule.split('_or_')[1])
+    f_dip, s_dip = rule_flags(e, 'dip')
+    f_c, s_c = rule_flags(e, other)
+    if op == 'and' and other == 'ctcf':
+        f_c, s_c = e.ctcf_near.values, e.ctcf_strength_near.values
+    r_dip, r_c = _pct_rank(s_dip), _pct_rank(s_c)
+    if op == 'and':
+        return f_dip & f_c, np.minimum(r_dip, r_c)
+    return f_dip | f_c, np.maximum(r_dip, r_c)
+
+
+def calls_from_flags(flags, score, codes):
+    """One boundary per run of consecutive flagged bins (same chromosome): the bin with the highest score."""
+    flags = np.asarray(flags, dtype=bool)
+    idx = np.flatnonzero(flags)
+    if len(idx) == 0:
+        return idx
+    codes = np.asarray(codes)
+    new = np.concatenate([[True], (np.diff(idx) > 1) | (codes[idx[1:]] != codes[idx[:-1]])])
+    run = np.cumsum(new) - 1
+    s = np.nan_to_num(np.asarray(score, dtype=float)[idx], nan=-np.inf)
+    order = np.lexsort((-s, run))
+    first = np.concatenate([[True], run[order][1:] != run[order][:-1]])
+    return np.sort(idx[order][first])
+
+
 # ----------------------------------------------------------------------------------------------------------------
-# model and calls
-
-class LogisticModel:
-    """L2-penalised logistic regression on z-scored features (z-scores from the data the model is applied to, so a
-    model transfers between cell types and assays of different scale)."""
-
-    def __init__(self, features, l2=1.0):
-        self.features = list(features)
-        self.l2 = l2
-        self.coef = None
-        self.intercept = None
-
-    @staticmethod
-    def standardise(x):
-        x = np.asarray(x, dtype=float)
-        mu = np.nanmean(x, axis=0)
-        sd = np.nanstd(x, axis=0)
-        sd[~(sd > 0)] = 1.0
-        return np.nan_to_num((x - mu) / sd)
-
-    def _matrix(self, table):
-        return self.standardise(table[self.features].values)
-
-    def fit(self, table, y):
-        x = self._matrix(table)
-        y = np.asarray(y, dtype=float)
-        n, p = x.shape
-
-        def loss(beta):
-            z = beta[0] + x @ beta[1:]
-            nll = np.sum(np.logaddexp(0, z) - y * z)
-            pr = 1.0 / (1.0 + np.exp(-z))
-            grad = np.concatenate([[np.sum(pr - y)], x.T @ (pr - y)])
-            reg = 0.5 * self.l2 * np.sum(beta[1:] ** 2)
-            grad[1:] += self.l2 * beta[1:]
-            return nll + reg, grad
-
-        p0 = np.clip(y.mean(), 1e-6, 1 - 1e-6)
-        beta0 = np.zeros(p + 1)
-        beta0[0] = np.log(p0 / (1 - p0))
-        res = optimize.minimize(loss, beta0, jac=True, method='L-BFGS-B')
-        self.intercept, self.coef = float(res.x[0]), res.x[1:]
-        self.loglik = -float(np.sum(np.logaddexp(0, res.x[0] + x @ res.x[1:]) - y * (res.x[0] + x @ res.x[1:])))
-        return self
-
-    def decision(self, table):
-        return self.intercept + self._matrix(table) @ self.coef
-
-    def predict(self, table):
-        return 1.0 / (1.0 + np.exp(-self.decision(table)))
-
-    def to_dict(self):
-        return {'features': self.features, 'l2': self.l2, 'intercept': self.intercept,
-                'coef': [float(c) for c in self.coef]}
-
-    @classmethod
-    def from_dict(cls, d):
-        m = cls(d['features'], d.get('l2', 1.0))
-        m.intercept = d['intercept']
-        m.coef = np.asarray(d['coef'], dtype=float)
-        return m
-
-
-def peak_calls(score, codes, threshold, radius=1):
-    """Bins whose score is >= threshold and the maximum within +-radius bins of the same chromosome."""
-    score = np.asarray(score, dtype=float)
-    out = []
-    for c in np.unique(codes):
-        idx = np.flatnonzero(codes == c)
-        v = np.nan_to_num(score[idx], nan=-np.inf)
-        mx = ndimage.maximum_filter1d(v, 2 * radius + 1, mode='constant', cval=-np.inf)
-        k = np.flatnonzero((v >= mx) & (v >= threshold))
-        if len(k) > 1:
-            k = k[np.concatenate([[True], np.diff(k) > radius])]
-        out.append(idx[k])
-    return np.sort(np.concatenate(out)) if out else np.array([], dtype=np.int64)
-
+# evaluation
 
 def match_boundaries(called, reference, codes, tolerance=1, mask=None):
     """Precision (called within `tolerance` bins of a reference boundary), recall (reference boundaries within
@@ -720,19 +694,6 @@ def match_boundaries(called, reference, codes, tolerance=1, mask=None):
     f1 = 2 * precision * recall / (precision + recall) if precision + recall > 0 else 0.0
     return {'n_called': int(len(c)), 'n_reference': int(len(r)), 'precision': float(precision),
             'recall': float(recall), 'f1': float(f1)}
-
-
-def best_threshold(score, reference, codes, tolerance=1, radius=1, n_grid=60):
-    """Threshold of `peak_calls` that maximises F1 against the reference (training data)."""
-    score = np.asarray(score, dtype=float)
-    finite = score[np.isfinite(score)]
-    grid = np.unique(np.quantile(finite, np.linspace(0.5, 0.999, n_grid)))
-    best = (-1.0, grid[0])
-    for t in grid:
-        f1 = match_boundaries(peak_calls(score, codes, t, radius), reference, codes, tolerance)['f1']
-        if f1 > best[0]:
-            best = (f1, t)
-    return best[1], best[0]
 
 
 def average_precision(score, label):

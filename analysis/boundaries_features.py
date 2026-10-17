@@ -1,4 +1,4 @@
-"""Per-bin boundary features of every data set (27_boundaries.sh, after boundaries_hic.py).
+"""Per-bin inputs of the boundary rules for every data set (27_boundaries.sh, after boundaries_hic.py).
 
 Data sets (graph, CTCF and cohesin ChIP, genome):
   GM12878  GM_chicago graph (hg19, nodes lifted to GRCh38 by midpoint), ENCODE CTCF + RAD21 (GRCh38)
@@ -8,11 +8,10 @@ Data sets (graph, CTCF and cohesin ChIP, genome):
 CTCF sites: summits of the CTCF signal (100 bp windows, smoothed over 300 bp, local maximum within +-500 bp,
 >= 10 x the genome-wide mean and >= 4 x the mean over +-10 kb), cohesin enrichment = maximum of the cohesin signal
 within +-200 bp of the summit over its genome-wide mean (cohesin-bound: >= 3 and >= 2 x its mean over +-10 kb),
-CTCF motif = JASPAR 2024 MA0139.2,
-best hit within +-150 bp on either strand at P < 1e-4 (exact score distribution, uniform background).
-Per resolution (10, 25, 50 kb): capture insulation (mirror and global null), convergent cohesin-CTCF loops among the
-graph edges (end = node interval +- 1 kb), per-bin features (boundaries.bin_features) and the Hi-C insulation track
-of the same cell / day (boundaries_hic.py) for the labels.
+CTCF motif = JASPAR 2024 MA0139.2, best hit within +-150 bp on either strand at P < 1e-4 (exact score distribution,
+uniform background). Convergent cohesin-CTCF loops among the graph edges (end = node interval +- 1 kb).
+Per resolution (10, 25, 50 kb): capture insulation (mirror and global null) and the Hi-C insulation track of the same
+cell / day (boundaries_hic.py) as reference.
 
 Usage: python boundaries_features.py <raw dir> <results dir> [threads]
 Output: <results>/boundaries/cache/sites_<set>.tsv.gz, tables/sites_qc.tsv, tables/loop_orientation.tsv,
@@ -190,11 +189,7 @@ def main():
                 continue
             bins = make_bins(sizes[s['assembly']], res)
             ins = bd.capture_insulation(bins, et)
-            feats = bd.bin_features(bins, st, ins, loops)
-            raw = ins[['observed', 'expected', 'expected_global', 'observed_w', 'expected_w', 'baits']]
-            table = pd.concat([bins, raw,
-                               feats], axis=1)
-            table['capture_insulation'] = ins.insulation.values
+            table = pd.concat([bins, ins], axis=1)
             hic_path = os.path.join(hic_dir, '{}_{}kb.tsv.gz'.format(s['hic'], res // 1000))
             if os.path.exists(hic_path):
                 hic = pd.read_csv(hic_path, sep='\t')
