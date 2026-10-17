@@ -156,8 +156,11 @@ def cell_difference_panel():
     axes[1].set_ylabel('Switches confirmed by Hi-C')
     axes[0].set_ylim(0, 0.65)
     axes[1].set_ylim(0, 0.6)
-    axes[0].legend(frameon=False, fontsize=6, loc='upper left')
-    axes[1].legend(frameon=False, fontsize=6, loc='upper right')
+    handles, labels = axes[0].get_legend_handles_labels()
+    h2, l2 = axes[1].get_legend_handles_labels()
+    fig.legend(handles + h2, labels + l2, frameon=False, fontsize=6.5, loc='upper center', ncol=3,
+               bbox_to_anchor=(0.5, 0.0))
+    fig.tight_layout()
     save(fig, 'cell_differences.pdf')
 
 
@@ -179,7 +182,8 @@ def example_track(cell='H1', set_name='H1_encode_hg38', graph='H1_jung', chrom='
         tracks.append(('Capture eigenvector (250 kb)', c.capture_eig_score.values, c.start.values))
     fig, axes = plt.subplots(len(tracks), 1, figsize=(6.5, 0.75 * len(tracks)), sharex=True)
     for ax, (label, values, starts) in zip(axes, tracks):
-        sd = np.nanstd(values)
+        lo_q, hi_q = np.nanpercentile(values, [10, 90]) if np.isfinite(values).any() else (0, 1)
+        sd = (hi_q - lo_q) / 2.56                       # robust SD (outliers at the centromere)
         v = np.clip(np.where(np.isfinite(values), values / (sd if sd > 0 else 1), 0), -3, 3)
         ax.fill_between(starts / 1e6, 0, v, where=v > 0, color='#c8443f', lw=0, step='post')
         ax.fill_between(starts / 1e6, 0, v, where=v <= 0, color='#2a78d6', lw=0, step='post')
@@ -211,13 +215,13 @@ def capture_panels():
                 if len(sub):
                     ax.plot(sub.resolution / 1e6, sub.auc, marker='o', ms=4, lw=1.5, color=colour[g], label=g)
             ax.set_title(title, fontsize=8)
-            ax.set_xscale('log')
             ax.set_xticks([0.25, 0.5, 1.0])
             ax.set_xticklabels(['0.25', '0.5', '1'])
+            ax.set_xlim(0.15, 1.1)
             ax.axhline(0.5, color=GREY, lw=0.8, ls='--')
             ax.set_xlabel('Bin size (Mb)')
         axes[0].set_ylabel('AUC for Hi-C compartment A')
-        axes[-1].legend(frameon=False, fontsize=6.5, loc='lower right')
+        axes[-1].legend(frameon=False, fontsize=6.5, loc='center left', bbox_to_anchor=(1.02, 0.5))
         save(fig, 'capture_auc_{}.pdf'.format(scope))
     fig, ax = plt.subplots(figsize=(2.6, 2.0))
     for g in graphs:
@@ -225,9 +229,9 @@ def capture_panels():
             'resolution')
         if len(sub):
             ax.plot(sub.resolution / 1e6, sub.coverage, marker='o', ms=4, lw=1.5, color=colour[g], label=g)
-    ax.set_xscale('log')
     ax.set_xticks([0.25, 0.5, 1.0])
     ax.set_xticklabels(['0.25', '0.5', '1'])
+    ax.set_xlim(0.15, 1.1)
     ax.set_ylim(0, 1)
     ax.set_xlabel('Bin size (Mb)')
     ax.set_ylabel('Bins with a capture estimate')
@@ -250,7 +254,7 @@ def domain_panels():
     ax.set_yticklabels(labels)
     ax.invert_yaxis()
     ax.set_xlabel('Community boundaries near TAD boundaries\n(observed / expected)')
-    ax.legend(frameon=False, fontsize=6.5, loc='lower right')
+    ax.legend(frameon=False, fontsize=6.5, loc='upper center', bbox_to_anchor=(0.4, -0.22), ncol=2)
     save(fig, 'domains_boundary_enrichment.pdf')
     s = pd.read_csv(os.path.join(cc.TABLES, 'domains_spans.tsv'), sep='\t')
     for unit, name in (('community', 'domains_communities_within_tad.pdf'),
@@ -265,7 +269,7 @@ def domain_panels():
         ax.invert_yaxis()
         ax.set_xlim(0, 1)
         ax.set_xlabel('{} spans without a TAD boundary'.format('Community' if unit == 'community' else 'Hub'))
-        ax.legend(frameon=False, fontsize=6.5, loc='lower right')
+        ax.legend(frameon=False, fontsize=6.5, loc='upper center', bbox_to_anchor=(0.4, -0.25), ncol=2)
         save(fig, name)
     e = pd.read_csv(os.path.join(cc.TABLES, 'domains_edges.tsv'), sep='\t')
     fig, ax = plt.subplots(figsize=(3.6, 0.3 * len(e) + 0.6))
@@ -277,7 +281,7 @@ def domain_panels():
     ax.invert_yaxis()
     ax.set_xlim(0, 1)
     ax.set_xlabel('Edges crossing a TAD boundary')
-    ax.legend(frameon=False, fontsize=6.5, loc='lower right')
+    ax.legend(frameon=False, fontsize=6.5, loc='upper center', bbox_to_anchor=(0.4, -0.25), ncol=2)
     save(fig, 'domains_edges_crossing.pdf')
 
 
@@ -349,7 +353,7 @@ def switch_panels():
         ax.set_xticklabels([c.replace('_vs_', ' vs ') for c in sub.comparison])
         ax.set_ylim(0, 1)
         ax.set_ylabel('Expression change concordant')
-        ax.legend(frameon=False, fontsize=6, loc='lower right')
+        ax.legend(frameon=False, fontsize=6.5, loc='center left', bbox_to_anchor=(1.02, 0.5))
         save(fig, 'switch_concordance.pdf')
 
 
