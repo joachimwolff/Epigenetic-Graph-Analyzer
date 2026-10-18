@@ -65,7 +65,9 @@ def main():
             compartment, tad_id = domain_annotation(data.bins, *domains[name])
         all_pairs = []
         for label, edges in sets.items():
-            frame = pd.DataFrame([(u, v, union.nodes[u]['chrom'], abs(middle[u] - middle[v])) for u, v in edges
+            # sorted: iterating the set itself follows Python's per-process string hashing, which made the sampled
+            # pairs and their controls differ between runs
+            frame = pd.DataFrame([(u, v, union.nodes[u]['chrom'], abs(middle[u] - middle[v])) for u, v in sorted(edges)
                                   if union.nodes[u]['chrom'] == union.nodes[v]['chrom']],
                                  columns=['node_a', 'node_b', 'chrom', 'distance'])
             frame = frame[frame['distance'] <= MAX_DISTANCE]
