@@ -380,15 +380,16 @@ def summarize_against_controls(test_values, control_values, control_index, n_tes
 
 
 def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offset=None, seed=0,
-                   coverage_matched=0, compartment=None, tad_id=None):
+                   coverage_matched=0, compartment=None, tad_id=None, return_controls=False):
     """Metrics of test pairs and their matched controls; returns (per-pair table, summary table).
 
     coverage_matched > 0 additionally matches controls on that many coverage classes of their ends; `compartment`
     and `tad_id` (per bin, see domain_annotation) on the compartments of the ends and on whether both ends share a
     topological domain. The per-pair table holds the concordance of every pair (<metric>_concordance).
+    With return_controls, the matched control pairs (bin_a, bin_b, test_index) are returned as a third element.
     """
     if len(pairs) == 0:
-        return pairs, pd.DataFrame()
+        return (pairs, pd.DataFrame(), pd.DataFrame()) if return_controls else (pairs, pd.DataFrame())
     if max_offset is None:
         max_offset = int(pairs['offset'].max())
     test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset)
@@ -429,7 +430,23 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
                                                         remap[controls['test_index'].to_numpy()[keep]],
                                                         len(sub_index))
                 rows.append(dict(set=label, pair_class=pair_class, stratum=stratum, metric=metric, **summary))
+    if return_controls:
+        return table, pd.DataFrame(rows), controls
     return table, pd.DataFrame(rows)
+
+
+def cooccurrence_rates(data, bin_a, bin_b):
+    """Absolute co-occurrence of bin pairs in the multi-way groups (SPRITE clusters, GAM tubes, Pore-C reads).
+
+    Returns per pair the number of groups containing both ends, whether there is at least one such group, and the
+    share of the groups containing one end that also contain the other (mean over both ends). Unweighted groups.
+    """
+    n_ab = data.cooccurrence(bin_a, bin_b, weighted=False)
+    n_a = data.coverage(bin_a, weighted=False)
+    n_b = data.coverage(bin_b, weighted=False)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        share = 0.5 * (np.where(n_a > 0, n_ab / n_a, 0.0) + np.where(n_b > 0, n_ab / n_b, 0.0))
+    return dict(groups_both=n_ab, together=(n_ab > 0).astype(float), share=share)
 
 
 def _offset_bucket(offset, exact=16, ratio=1.2):

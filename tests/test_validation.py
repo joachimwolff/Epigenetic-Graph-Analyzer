@@ -260,3 +260,23 @@ def test_sprite_on_fragments(tmp_path):
     hub_pairs = {(h[2][0], h[2][2]) for h in hubs}
     is_hub = np.array([(a, b) in hub_pairs for a, b in zip(table['node_a'], table['node_b'])])
     assert (table.loc[is_hub, 'cooc'] > table.loc[is_hub, 'cooc_control']).mean() > 0.9
+
+
+def test_cooccurrence_rates_counts_groups_with_both_ends():
+    import scipy.sparse as sp
+    from epigeneticgraphanalyzer.validation import cooccurrence_rates
+
+    class Data:
+        # bins x groups: bin 0 in groups 0,1,2; bin 1 in groups 0,1; bin 2 in group 3
+        incidence = sp.csr_matrix(np.array([[1, 1, 1, 0], [1, 1, 0, 0], [0, 0, 0, 1]], dtype=float))
+
+        def cooccurrence(self, a, b, weighted=True):
+            return np.asarray(self.incidence[a].multiply(self.incidence[b]).sum(axis=1)).ravel()
+
+        def coverage(self, bins, weighted=True):
+            return np.asarray(self.incidence[bins].sum(axis=1)).ravel()
+
+    rates = cooccurrence_rates(Data(), np.array([0, 0]), np.array([1, 2]))
+    assert rates['groups_both'].tolist() == [2, 0]
+    assert rates['together'].tolist() == [1.0, 0.0]
+    assert np.allclose(rates['share'], [0.5 * (2 / 3 + 2 / 2), 0.0])

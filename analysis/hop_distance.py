@@ -5,7 +5,10 @@ range are sampled within 2 Mb; each set is compared with control pairs at the sa
 same pools of graph loci and the same coverage classes of the multi-way data (the matched controls of the pair
 validation, concordance of NPMI). With --compartments and --domains, controls also match the A/B compartments of both
 ends and whether both ends lie in the same topological domain. The 95% interval of the concordance comes from a
-block bootstrap over chromosomes, so that pairs sharing nodes and regions stay together.
+block bootstrap over chromosomes, so that pairs sharing nodes and regions stay together. Next to the concordance,
+the absolute co-occurrence of test and control pairs is reported: the share of pairs found together in at least one
+group (SPRITE cluster, GAM tube, Pore-C read), the mean share of the groups containing one end that also contain the
+other, and the mean number of groups containing both ends.
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
            [--coverageClasses 5] [--compartments BED] [--domains BED] [--bootstrap 1000]
@@ -21,8 +24,8 @@ from epigeneticgraphanalyzer.genome import LiftOver
 from epigeneticgraphanalyzer.graph import read_graph
 from epigeneticgraphanalyzer.indirect import pair_class
 from epigeneticgraphanalyzer.multiway import MultiwayData
-from epigeneticgraphanalyzer.validation import (LocusPools, block_bootstrap, domain_annotation, map_nodes_to_bins,
-                                                  pairs_to_bins, validate_pairs)
+from epigeneticgraphanalyzer.validation import (LocusPools, block_bootstrap, cooccurrence_rates, domain_annotation,
+                                                  map_nodes_to_bins, pairs_to_bins, validate_pairs)
 
 MAX_DISTANCE = 2000000
 MAX_STEPS = 5
@@ -96,9 +99,12 @@ def main():
         if len(subset) > n_pairs:
             subset = subset.sample(n=n_pairs, random_state=steps)
         subset = subset.reset_index(drop=True)
-        table, summary = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
-                                        max_offset=max_offset, seed=steps, coverage_matched=args.coverageClasses,
-                                        compartment=compartment, tad_id=tad_id)
+        table, summary, controls = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
+                                                  max_offset=max_offset, seed=steps,
+                                                  coverage_matched=args.coverageClasses, compartment=compartment,
+                                                  tad_id=tad_id, return_controls=True)
+        test_rates = cooccurrence_rates(data, table['bin_a'].to_numpy(), table['bin_b'].to_numpy())
+        control_rates = cooccurrence_rates(data, controls['bin_a'].to_numpy(), controls['bin_b'].to_numpy())
         low, high = block_bootstrap(table['npmi_concordance'].to_numpy(), table['chrom'].to_numpy(),
                                     n_boot=args.bootstrap, seed=steps)
         row = summary[(summary['metric'] == 'npmi') & (summary['pair_class'] == 'all') &
@@ -106,7 +112,13 @@ def main():
         results.append(dict(steps=steps, pairs_available=int((pairs['steps'] == steps).sum()), n=int(row['n']),
                             median_distance=float(subset['distance'].median()),
                             concordance=float(row['fraction_above_control']), ci_low=low, ci_high=high,
-                            mean_npmi=float(row['test_mean']), mean_npmi_control=float(row['control_mean'])))
+                            mean_npmi=float(row['test_mean']), mean_npmi_control=float(row['control_mean']),
+                            together=float(test_rates['together'].mean()),
+                            together_control=float(control_rates['together'].mean()),
+                            share=float(test_rates['share'].mean()),
+                            share_control=float(control_rates['share'].mean()),
+                            groups_both=float(test_rates['groups_both'].mean()),
+                            groups_both_control=float(control_rates['groups_both'].mean())))
         print(results[-1], flush=True)
     pd.DataFrame(results).to_csv(args.output, sep='\t', index=False)
 
