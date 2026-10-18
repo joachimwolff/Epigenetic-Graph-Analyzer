@@ -16,6 +16,7 @@
 #      for the coverage- and domain-matched designs
 #   B12 GAM window collisions: graph pairs in the same or adjacent 30 kb windows (gam_windows.py), GAM step curves
 #      without pairs at offset 0 or 1 (hop_distance.py --minOffset 2 --rates)
+#   B13 liftover of graph nodes to the multi-way assembly (liftover_report.py)
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -232,4 +233,16 @@ if [[ "$stage" == all || "$stage" == B12 ]]; then
         done
     done
     wait
+fi
+
+if [[ "$stage" == all || "$stage" == B13 ]]; then
+    # liftover of the graph nodes: hg19 -> hg38 (hESC, H1 on GAM), hg38 -> hg19 (K562, virtual capture GM12878 on
+    # the HindIII multi-way data)
+    o="$out/B13_liftover"
+    mkdir -p "$o"
+    run "$o/liftover_hg19ToHg38.tsv" "$o/liftover_hg19ToHg38.log" "$py" "$here/liftover_report.py" "$chain" \
+        "$o/liftover_hg19ToHg38.tsv" "hESC=$hesc" "H1=$h1"
+    run "$o/liftover_hg38ToHg19.tsv" "$o/liftover_hg38ToHg19.log" "$py" "$here/liftover_report.py" \
+        "$data/annotation/hg38ToHg19.over.chain.gz" "$o/liftover_hg38ToHg19.tsv" \
+        "K562_dmso=$results/k562/K562_dmso.graphml" "VC_GM12878=$results/virtual_capture/graphs/VC_GM12878.graphml"
 fi
