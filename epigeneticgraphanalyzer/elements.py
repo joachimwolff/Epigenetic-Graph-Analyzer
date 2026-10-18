@@ -402,7 +402,9 @@ def stratified_features(features, operators, mark_vectors, mask, pseudo_count=1.
     for level in operators.levels:
         H_a, H_b, _ = operators.level(level)
         out['n_' + level] = (step_pattern(operators, level) @ weight)[rows].astype(int)
-        for mark, (vector_a, vector_b) in mark_vectors.items():
+        for mark, vectors in mark_vectors.items():
+            # signals of the step feature (contact term: their mean in both conditions)
+            vector_a, vector_b = operators.step_vectors(*vectors)
             a = (H_a @ (vector_a * weight))[rows]
             b = (H_b @ (vector_b * weight))[rows]
             out['{}_{}'.format(mark, level)] = np.log2((b + pseudo_count) / (a + pseudo_count))
