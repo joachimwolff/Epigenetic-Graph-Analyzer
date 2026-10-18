@@ -28,6 +28,7 @@ from .egaCreateGraph import load_tss
 from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .structural import (add_sv_edges, breakpoint_calls, flag_sv_edges, read_copy_number, read_structural_variants,
                          read_sv_contacts, read_trans_calls, structural_genes, sv_edge_table, sv_status)
+from .egaTadCrossing import add_tad_arguments, tad_kwargs
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
 
 log = logging.getLogger(__name__)
@@ -187,7 +188,9 @@ def parse_arguments(args=None):
                         help='Worker processes for the bigWig reads of the mirrored loci, the per-gene permutation '
                              'test and the community coherence test (default: the available cores, at most 32); '
                              'results do not depend on it')
-    parser.add_argument('--outputPrefix', '-o', required=True)
+    add_tad_arguments(parser)
+    parser.add_argument('--outputPrefix', '-o', required=True,
+                        help='Output prefix; with --tads also <prefix>_tad_crossing_* (egaTadCrossing)')
     return parser.parse_args(args)
 
 
@@ -629,6 +632,11 @@ def main(args=None):
     if sv_edges is not None and len(sv_edges):
         # the junction contacts as edges sv=True, kept out of the cis graph used by the other levels
         write_graph(add_sv_edges(graph, sv_edges), ensure_parent(prefix + '_union_sv.graphml'))
+    if args.tads:
+        # boundaries crossed by the union edges: written next to the run, the other outputs are not changed
+        from .tads import run_for_prefix
+        run_for_prefix(prefix, args.tads, prefix + '_tad_crossing', graph=graph, names=[name_a, name_b],
+                       **tad_kwargs(args))
 
 
 if __name__ == '__main__':

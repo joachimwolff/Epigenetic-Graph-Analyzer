@@ -217,3 +217,6 @@ ul.plain li { margin: 0.25rem 0; }
   header.top { position: static; }
   .controls, #suggest { display: none; }
 }
+
+.tad-boundary { stroke: var(--ink); stroke-opacity: 0.55; stroke-width: 0.8; stroke-dasharray: 3 3; }
+.tad-boundary.strong { stroke-width: 1.8; }

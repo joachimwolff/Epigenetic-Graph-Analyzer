@@ -67,6 +67,7 @@ from .egaPlotDifferential import (IGNORED_GENE_PREFIXES, INK, STATUS_COLORS,  # 
                                   draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, mark_change, separate,
                                   place_labels, shape_handles, spread_layout, status_handles, width_handles)
 from .egaPlotRegion import ordered_subgraph  # noqa: E402
+from .egaTadCrossing import add_tad_arguments, tad_kwargs  # noqa: E402
 from .graph import read_graph  # noqa: E402
 
 log = logging.getLogger(__name__)
@@ -139,6 +140,7 @@ def parse_arguments(args=None):
     parser.add_argument('--pdf', choices=('auto', 'chromium', 'matplotlib', 'none'), default='auto',
                         help='PDF engine: Chromium headless (auto: if available), matplotlib, or no PDF')
     parser.add_argument('--chromium', default=None, help='Chromium executable (default: snap or PATH)')
+    add_tad_arguments(parser)
     parser.add_argument('--outputDir', '-o', required=True, help='Output directory')
     return parser.parse_args(args)
 
@@ -187,6 +189,10 @@ def fmt_p(value):
     if value < 0.001:
         return '{:.1e}'.format(value)
     return '{:.3g}'.format(value)
+
+
+def fmt_mb_tads(pos):
+    return '{:.3f} Mb'.format(pos / 1e6)
 
 
 def fmt_pct(value):
@@ -407,6 +413,7 @@ class Run:
                  logs=None, name=None):
         self.prefix = prefix
         self.name = name or os.path.basename(prefix)
+        self.tad_analysis = None  # egaTadCrossing analysis with --tads (set_tads)
         if explain_prefix is None:
             candidate = os.path.join(os.path.dirname(prefix), 'explain', os.path.basename(prefix))
             explain_prefix = candidate if os.path.exists(candidate + '_genes.tsv') else None
@@ -476,6 +483,12 @@ class Run:
         self.levels_variant = None
         self.level_counts = self.table('_explanation_levels.tsv')
         self.levels, self.levels_source = self.build_levels()
+
+    def set_tads(self, args):
+        """TAD boundaries crossed by the contacts (--tads); nothing changes without them."""
+        if getattr(args, 'tads', None):
+            from .tads import Analysis
+            self.tad_analysis = Analysis(self.prefix, args.tads, graph=self.graph, names=self.names, **tad_kwargs(args))
 
     def set_labels(self, labels):
         if labels:
@@ -1319,6 +1332,7 @@ def arcs_figure(run, sub, seeds, explaining):
         ax.text(0.0, 0.98, '{}: {} interactions'.format(names[0 if which == 'A' else 1], count),
                 transform=ax.transAxes, fontsize=7, va='top', color=INK)
     draw_arcs(axes[2], sub, names, priority=set(seeds))
+    boundaries = tad_lines(run, sub, axes, span, pad)
     for ax in axes:
         for n in explaining:
             if n in middle:
@@ -1332,9 +1346,33 @@ def arcs_figure(run, sub, seeds, explaining):
                plt.Line2D([0], [0], color=STATUS_COLORS['shared'], lw=2, label='shared')] + width_handles() + \
         [plt.Line2D([0], [0], marker='s', ls='', color=INK, ms=4, label='baited promoter'),
          plt.Line2D([0], [0], marker='o', ls='', mfc='white', mec=EXPLAINING, mew=1.2, ms=5, label='explaining node')]
+    if boundaries:
+        handles.append(plt.Line2D([0], [0], color=BOUNDARY_COLOR, lw=1.4, ls=BOUNDARY_DASH,
+                                  label='TAD boundary (thick: strongest decile)'))
     axes[2].legend(handles=handles, loc='upper center', bbox_to_anchor=(0.5, -0.5), fontsize=6, frameon=False,
                    ncol=4, handlelength=2.2, columnspacing=1.2)
     return fig
+
+
+BOUNDARY_COLOR = '#5f5e58'
+BOUNDARY_DASH = (0, (2, 2))
+
+
+def tad_lines(run, sub, axes, span, pad):
+    """Vertical lines at the TAD boundaries of the drawn span (--tads); the number of boundaries drawn."""
+    analysis = getattr(run, 'tad_analysis', None)
+    if analysis is None:
+        return 0
+    chroms = {d.get('chrom') for _, d in sub.nodes(data=True)}
+    if len(chroms) != 1:
+        return 0
+    found = analysis.tads.region(chroms.pop(), span[0] - pad, span[1] + pad)
+    found = found[found['strength_pct'].fillna(1.0) >= analysis.min_strength_pct]
+    for pos, pct in zip(found['pos'], found['strength_pct']):
+        strong = np.isfinite(pct) and pct >= 0.9
+        for ax in axes:
+            ax.axvline(pos, color=BOUNDARY_COLOR, lw=1.4 if strong else 0.6, ls=BOUNDARY_DASH, zorder=0)
+    return len(found)
 
 
 def graph_panel_legend(fig, ax, mode, names, mark, max_log2, highlight=True):
@@ -2453,10 +2491,12 @@ class Report:
         return ('Interactions around {g} in {a} (top), in {b} (middle) and their change (bottom: gained in {b} above '
                 'the axis in red, lost below in blue, shared in grey). Black squares: the promoter of {g}; open purple '
                 'circles: nodes that carry the explanation. Line width scales with interaction strength; {n} nodes and '
-                '{e} interactions{r}.'.format(g=gene_span(gene), a=a, b=b, n=sub.number_of_nodes(),
-                                              e=sub.number_of_edges(), r=', reduced to the strongest partners and the '
-                                              'paths to the explaining nodes' if sub.number_of_nodes() >=
-                                              self.args.maxNodes else ''))
+                '{e} interactions{r}.{t}'.format(g=gene_span(gene), a=a, b=b, n=sub.number_of_nodes(),
+                                                 e=sub.number_of_edges(), r=', reduced to the strongest partners and '
+                                                 'the paths to the explaining nodes' if sub.number_of_nodes() >=
+                                                 self.args.maxNodes else '',
+                                                 t=' Dashed vertical lines: TAD boundaries (thick: strongest decile).'
+                                                 if self.run.tad_analysis is not None else ''))
 
     def gene_figures(self, doc, gene, nodes, story, arcs_only=False):
         hood = self.gene_neighbourhood(gene, nodes, story)
@@ -2818,6 +2858,7 @@ class Report:
         self.glance_block(story, doc)
         doc.section('interactions', 'Interactions')
         self.gene_figures(doc, gene, nodes, story)
+        self.tad_block(doc, gene, nodes, story)
         if story.fragments:
             doc.section('evidence', 'Evidence by level')
             with_support = any(not isnan(r.get('support')) and level_hops(lv) > 0 for _, rows in story.fragments
@@ -2866,6 +2907,78 @@ class Report:
         self.hub_block(doc, gene, nodes, prose=False)
         self.appendix(doc, genes=[(gene, nodes, story)], community=community)
         return doc, heading
+
+    def tad_block(self, doc, gene, nodes, story=None):
+        """Contacts of the promoter that cross TAD boundaries (--tads): sentence, table per status, the genome-wide
+        rank of the promoter."""
+        analysis = self.run.tad_analysis
+        if analysis is None:
+            return
+        seeds = [n for n in nodes if n in analysis.genes]
+        if not seeds:
+            return
+        story = story or self.story(gene, nodes)
+        a, b = (esc(n) for n in self.run.names)
+        doc.section('boundaries', 'Domain boundaries')
+        ranking = analysis.promoter_table()
+        tested = ranking[['gained_p', 'lost_p']].notna().any(axis=1).sum()
+        for node in seeds:
+            row = analysis.crossing.gene_row(node, gene)
+            infos = row['_infos']
+            if len(seeds) > 1:
+                doc.heading(story.fragment_heading(node), level=3)
+            text = row['sentence'].split(': ', 1)[1] if row['sentence'] else 'No contacts.'
+            doc.p('{}: {}'.format(gene_span(gene), esc(text)))
+            cells = []
+            for status, cond in (('gained', b), ('lost', a), ('shared', '{} and {}'.format(a, b))):
+                info = infos.get(status) or {}
+                if not info.get('n'):
+                    continue
+                boundary = ''
+                if info.get('boundary'):
+                    rank = info.get('boundary_rank')
+                    boundary = '{}:{} ({} of {} contacts{})'.format(
+                        esc(info['partner_chrom']), esc(fmt_mb_tads(info['boundary_pos'])), info['boundary_edges'],
+                        info['crossing'], ', strength rank {} of {}'.format(int(rank), len(analysis.tads))
+                        if rank is not None and np.isfinite(rank) else '')
+                region = ''
+                if info.get('partner_start') is not None:
+                    region = '{}:{:.3f}-{:.3f} Mb'.format(esc(info['partner_chrom']), info['partner_start'] / 1e6,
+                                                         info['partner_end'] / 1e6)
+                    named = info.get('partner_region_counts') or {}
+                    if named:
+                        region += ' ({})'.format(esc(', '.join('{} {}'.format(k, v) for k, v in named.items())))
+                cells.append('<tr><td class="key">{}</td><td>{}</td><td class="num">{}</td><td class="num">{}</td>'
+                             '<td class="num">{}</td><td>{}</td><td>{}</td></tr>'.format(
+                                 status, cond, info['n'], info['crossing'], info['within'], boundary, region))
+            if cells:
+                doc.html('<div class="table-wrap"><div class="table-scroll"><table><thead><tr><th>Status</th>'
+                         '<th>Called in</th><th class="num">Contacts</th><th class="num">Crossing a boundary</th>'
+                         '<th class="num">Within own domain</th><th>Boundary crossed by most</th>'
+                         '<th>Partners beyond it</th></tr></thead><tbody>{}</tbody></table></div></div>'.format(
+                             ''.join(cells)))
+            hit = ranking[ranking['node'] == node]
+            if len(hit):
+                r = hit.iloc[0]
+                parts = []
+                for status in ('gained', 'lost'):
+                    p = r['{}_p'.format(status)]
+                    if np.isfinite(p):
+                        parts.append('{} contacts: rank {} (odds ratio {}, P {}, q {})'.format(
+                            status, int(r['{}_rank'.format(status)]), fmt_num(r['{}_odds_ratio'.format(status)], 1),
+                            fmt_p(p), fmt_p(r['{}_q'.format(status)])))
+                if parts:
+                    doc.p('Enrichment among the boundary-crossing contacts against the other contacts of the '
+                          'promoter, genome-wide among {} promoters: {}.'.format(int(tested), '; '.join(parts)))
+        tads = analysis.tads
+        doc.p('Boundaries: {} ({}, {} boundaries{}). A contact crosses a boundary when the boundary midpoint lies '
+              'between the midpoints of its two fragments; the boundary named is the strongest one crossed by at '
+              'least half of the crossing contacts of a status (strength rank 1: the strongest boundary; strong: '
+              'top decile). Enrichment: one-sided Fisher test of the status among the crossing against the '
+              'non-crossing contacts of the promoter, Benjamini-Hochberg over the promoters.'.format(
+                  esc(os.path.basename(str(tads.source))), esc(tads.fmt), len(tads),
+                  ', counted at or above strength percentile {:g}'.format(100 * analysis.min_strength_pct)
+                  if analysis.min_strength_pct > 0 else ''), cls='note')
 
     def state_block(self, doc, story):
         run = self.run
@@ -3859,6 +3972,7 @@ def main(args=None):
               args.name)
     run.set_labels(args.labels)
     run.read_rechip(args.rechip)
+    run.set_tads(args)
     log.info('%s: conditions %s, marks %s, %d differential genes, levels from %s', run.name, run.names, run.marks,
              len(run.classes), run.levels_source)
     # keep the figures for the matplotlib PDF when Chromium is not used or may fail

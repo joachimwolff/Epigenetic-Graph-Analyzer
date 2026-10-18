@@ -30,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from ._cli import base_parser, setup_logging
+from .egaTadCrossing import add_tad_arguments
 from ._version import __version__
 from . import egaReport as report
 from .egaPlotDifferential import IGNORED_GENE_PREFIXES
@@ -81,6 +82,7 @@ def parse_arguments(args=None):
     parser.add_argument('--chromatinThreshold', type=float, default=None, help='As egaReport')
     parser.add_argument('--log', nargs='*', default=None, help='Run logs (default: <prefix>.log)')
     parser.add_argument('--name', default=None, help='Name of the comparison (default: the prefix name)')
+    add_tad_arguments(parser)
     parser.add_argument('--output', '-o', required=True,
                         help='Output HTML file, or a directory (then <dir>/<name>_explorer.html)')
     return parser.parse_args(args)
@@ -130,7 +132,7 @@ class Capture:
 
     @staticmethod
     def is_shared_note(markup):
-        return markup.startswith(('States are called', 'Element classes follow'))
+        return markup.startswith(('States are called', 'Element classes follow', 'Boundaries: '))
 
     def ref(self, markup):
         if markup not in self.notes:
@@ -304,6 +306,9 @@ class Builder:
                 entry['x'] = explaining
             if mark:
                 entry['mark'] = mark
+        if run.tad_analysis is not None:
+            rep.tad_block(cap, gene, nodes, story)
+            entry['tads'] = cap.take()
         rep.partner_elements(cap, gene, nodes)
         entry['elements'] = cap.take()
         if any(n in self.graph for n in nodes):
@@ -456,6 +461,19 @@ class Builder:
         return {'cols': columns, 'rows': rows, 'total': total, 'maxRank': self.args.maxTriggers,
                 'file': os.path.basename(path)}
 
+    def tads(self):
+        """Boundaries counted as crossed (--tads), per chromosome: [position, strength rank, strong (top decile)]."""
+        analysis = self.run.tad_analysis
+        if analysis is None:
+            return None
+        b = analysis.tads.boundaries
+        b = b[b['strength_pct'].fillna(1.0) >= analysis.min_strength_pct]
+        out = {}
+        for chrom, g in b.groupby('chrom', sort=False):
+            out[chrom] = [[int(p), None if isnan(r) else int(r), 1 if (not isnan(q) and q >= 0.9) else 0]
+                          for p, r, q in zip(g['pos'], g['strength_rank'], g['strength_pct'])]
+        return {'chroms': out, 'n': int(len(analysis.tads)), 'file': os.path.basename(str(analysis.tads.source))}
+
     # meta -----------------------------------------------------------------------------------------------------------
     def meta(self, n_genes):
         run = self.run
@@ -528,6 +546,7 @@ def build(args):
               args.name)
     run.set_labels(args.labels)
     run.read_rechip(args.rechip)
+    run.set_tads(args)
     log.info('%s: conditions %s, marks %s, %d differential fragments', run.name, run.names, run.marks,
              len(run.classes))
     places = Places(run.graph, elements=run.element_lookup(), names=run.names)
@@ -542,6 +561,9 @@ def build(args):
             'switching': builder.switching(default_path(args.prefix, 'enhancer_switching', '_switch_events.tsv',
                                                         args.switching)),
             'triggers': builder.triggers(default_path(args.prefix, 'triggers', '_gene_triggers.tsv', args.triggers))}
+    tads = builder.tads()
+    if tads is not None:
+        data['tads'] = tads
     data['meta'] = builder.meta(len(genes))
     search = {'meta': {k: data['meta'][k] for k in ('name', 'names', 'labels', 'title', 'nDifferential', 'nGenes',
                                                     'nNodes', 'nEdges', 'version', 'date')},

@@ -35,6 +35,10 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             mean) - poised, trigger not among the measured layers | ...; step 2: H3K27ac +3.4 at 12
                             nodes (5 concordant), strongest Hoxa2 promoter H3K27ac log2 +3.1, P 8.5e-05, q 0.004,
                             beyond mirror, 3D support n/a; explaining levels (mean): promoter_state;step2'.
+                            With --tads (TAD / boundary calls, see egaTadCrossing): the gained / lost / shared
+                            contacts of the promoter that cross a boundary (gained_crossing, lost_crossing,
+                            shared_crossing) and a sentence (tad_crossing) naming the boundary, its strength and the
+                            partner region, appended to the summary.
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -47,6 +51,7 @@ from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging
 from .differential import STATE_LEVELS, explanation_level_label, level_hops
+from .egaTadCrossing import add_tad_arguments, tad_kwargs
 from .graph import read_graph
 
 log = logging.getLogger(__name__)
@@ -62,6 +67,7 @@ def parse_arguments(args=None):
                         help='Repressive marks, expected to change opposite to activity')
     parser.add_argument('--fdr', type=float, default=0.1, help='Communities with a coordinated change at this FDR')
     parser.add_argument('--pseudo', type=float, default=1.0, help='Pseudo count of the log2 mark change')
+    add_tad_arguments(parser)
     parser.add_argument('--outputPrefix', '-o', required=True)
     return parser.parse_args(args)
 
@@ -330,6 +336,27 @@ def community_report(graph, prefix, changes, marks, fdr):
     return pd.DataFrame(rows)
 
 
+def add_tad_crossing(genes, graph, args, names):
+    """Columns gained / lost / shared_crossing and tad_crossing (sentence), appended to the summary."""
+    from .tads import Analysis
+    analysis = Analysis(args.prefix, args.tads, graph=graph, names=names, **tad_kwargs(args))
+    rows = {}
+    for node in genes['node']:
+        if node in analysis.genes and node not in rows:
+            rows[node] = analysis.crossing.gene_row(node, '')
+    for s in ('gained', 'lost', 'shared'):
+        genes['{}_crossing'.format(s)] = [rows[n]['{}_crossing'.format(s)] if n in rows else np.nan
+                                          for n in genes['node']]
+    sentences = []
+    for node, gene in zip(genes['node'], genes['gene']):
+        text = rows[node]['sentence'] if node in rows else ''
+        sentences.append(text.replace('{}: '.format(node), '{}: '.format(gene), 1) if text else '')
+    genes['tad_crossing'] = sentences
+    genes['summary'] = [s if not t else '{}; boundaries: {}'.format(s, t.split(': ', 1)[1].rstrip('.'))
+                        for s, t in zip(genes['summary'], sentences)]
+    return genes
+
+
 def main(args=None):
     args = parse_arguments(args)
     setup_logging(args.verbose)
@@ -341,6 +368,8 @@ def main(args=None):
     association = edge_chromatin(edges, marks, set(args.repressive))
     association.to_csv(ensure_parent(args.outputPrefix + '_edge_chromatin.tsv'), sep='\t', index=False)
     genes = gene_report(graph, args.prefix, names, marks, edges)
+    if args.tads:
+        genes = add_tad_crossing(genes, graph, args, names)
     genes.to_csv(args.outputPrefix + '_genes.tsv', sep='\t', index=False)
     communities = community_report(graph, args.prefix, changes, marks, args.fdr)
     communities.to_csv(args.outputPrefix + '_communities.tsv', sep='\t', index=False)
