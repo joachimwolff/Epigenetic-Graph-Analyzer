@@ -177,6 +177,7 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
     chrom_of = pools.chrom_index
     n_fallback = 0
     fallback_index = []
+    eligible_index, eligible_count = [], []
     rows_index, rows_a, rows_b = [], [], []
     for (pair_class, offset), group in pairs.groupby(['pair_class', 'offset']):
         left_kind, right_kind = _class_pools(pair_class)
@@ -207,6 +208,8 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
                     pool = candidates
                     n_fallback += 1
                     fallback_index.append(test_index)
+            eligible_index.append(test_index)
+            eligible_count.append(len(pool))
             choice = rng.integers(0, len(pool), size=n_controls)
             rows_index.extend([test_index] * n_controls)
             rows_a.extend(pool[choice, 0])
@@ -218,6 +221,9 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
                              'bin_b': np.array(rows_b, dtype=np.int64)})
     controls.attrs['n_fallback'] = n_fallback
     controls.attrs['fallback_index'] = np.array(fallback_index, dtype=np.int64)
+    # number of distinct candidate control pairs each test pair was drawn from (0 if none at its offset)
+    controls.attrs['eligible'] = pd.Series(eligible_count, index=eligible_index, dtype=np.int64).reindex(
+        pairs.index, fill_value=0)
     return controls
 
 
@@ -302,6 +308,19 @@ def domain_classes(coverage_class, compartment):
     """Per-bin class combining the coverage class and the compartment (A, B or unknown)."""
     base = coverage_class if coverage_class is not None else np.zeros(len(compartment), dtype=np.int64)
     return base * 3 + (compartment + 1)
+
+
+def standardized_mean_difference(test, control):
+    """(mean test - mean control) / sqrt((var test + var control) / 2), NaN ignored; 0 if both variances are 0."""
+    test = np.asarray(test, dtype=float)
+    control = np.asarray(control, dtype=float)
+    test, control = test[~np.isnan(test)], control[~np.isnan(control)]
+    if len(test) == 0 or len(control) == 0:
+        return np.nan
+    difference = test.mean() - control.mean()
+    scale = np.sqrt((test.var(ddof=1) if len(test) > 1 else 0.0) / 2 +
+                    (control.var(ddof=1) if len(control) > 1 else 0.0) / 2)
+    return float(difference / scale) if scale > 0 else (0.0 if difference == 0 else np.inf * np.sign(difference))
 
 
 def pair_concordance(test_values, control_values, control_index, n_tests):

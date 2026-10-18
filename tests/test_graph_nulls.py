@@ -115,6 +115,22 @@ def test_class_matched_controls_record_fallbacks():
     first = controls[controls['test_index'] == 0]
     assert (bin_class[first['bin_a']] == 0).all() and (bin_class[first['bin_b']] == 0).all()
     assert ((controls['bin_b'] - controls['bin_a']) == 5).all()
+    eligible = controls.attrs['eligible']
+    assert eligible[0] > 0 and eligible[1] > eligible[0]     # the fallback draws from all offset-matched pairs
+
+
+def test_balance_helpers():
+    from epigeneticgraphanalyzer.graph_nulls import local_edge_density, per_bin
+    from epigeneticgraphanalyzer.validation import standardized_mean_difference
+    assert standardized_mean_difference([1, 2, 3], [1, 2, 3]) == 0
+    assert np.isclose(standardized_mean_difference([2, 4], [0, 2]), 2 / np.sqrt(2))
+    graph = nx.Graph()
+    names = [_node(graph, 'chr1', p, i == 0) for i, p in enumerate((0, 50000, 120000, 500000, 520000))]
+    graph.add_edges_from([(names[0], names[1]), (names[0], names[2]), (names[3], names[4])])
+    density = local_edge_density(graph, window=100000)
+    assert density[names[0]] == 2 and density[names[1]] == 2 and density[names[3]] == 1
+    values = per_bin({names[0]: 0, names[1]: 0, names[3]: 2}, {n: graph.degree(n) for n in names}, 3)
+    assert values[0] == 2 and np.isnan(values[1]) and values[2] == 1
 
 
 def test_walk_counts_and_personalized_pagerank():

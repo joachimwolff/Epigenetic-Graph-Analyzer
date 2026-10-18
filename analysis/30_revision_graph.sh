@@ -12,6 +12,8 @@
 #      top four coverage quintiles of the graph loci (hop_distance.py --minCoverageQuantile 0.2)
 #   B10 dependence between tested pairs (dependence.py): one pair per promoter / mediator at two steps, without the
 #      1% and 5% highest-degree nodes, leave-one-chromosome-out, 10 Mb block bootstrap
+#   B11 matching balance of the step-2 controls (balance.py): standardised mean differences and eligible controls
+#      for the coverage- and domain-matched designs
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -183,6 +185,31 @@ if [[ "$stage" == all || "$stage" == B10 ]]; then
         wait_slot
         run "$o/GM_chicago_${m%%:*}_dependence.tsv" "$o/GM_chicago_${m%%:*}_dependence.log" "$py" \
             "$here/dependence.py" "$gm" "${m#*:}" "$o/GM_chicago_${m%%:*}_dependence.tsv" &
+    done
+    wait
+fi
+
+if [[ "$stage" == all || "$stage" == B11 ]]; then
+    # matching balance of the step-2 pairs and their controls (coverage- and domain-matched designs)
+    o="$out/B11_balance"
+    mkdir -p "$o"
+    gm_comp="$data/domains/GM12878_rao2014_hg19/GSE63525_GM12878_subcompartments.bed.gz"
+    gm_dom="$data/domains/GM12878_rao2014_hg19/GSE63525_GM12878_primary+replicate_Arrowhead_domainlist.txt.gz"
+    h1_comp="$data/domains/H1_4dn_hg38/H1_compartments_hg38.bedGraph"
+    h1_dom="$data/domains/H1_4dn_hg38/H1_domains_hg38.bed"
+    gm_dnase="$data/accessibility/GM12878_DNase-seq.GRCh38.ENCFF743ULW.bigWig"
+    h1_dnase="$data/accessibility/H1_DNase-seq.GRCh38.ENCFF131HMO.bigWig"
+    for m in "sprite:$sprite" "hiporec:$hiporec"; do
+        wait_slot
+        run "$o/GM_chicago_${m%%:*}_smd.tsv" "$o/GM_chicago_${m%%:*}.log" "$py" "$here/balance.py" "$gm" "${m#*:}" \
+            "$o/GM_chicago_${m%%:*}" --compartments "$gm_comp" --domains "$gm_dom" --dnase "$gm_dnase" \
+            --dnaseChain "$chain" &
+    done
+    for p in "hESC_gam $hesc" "H1_gam $h1"; do
+        read -r name graph <<< "$p"
+        wait_slot
+        run "$o/${name}_smd.tsv" "$o/${name}.log" "$py" "$here/balance.py" "$graph" "$gam" "$o/$name" --chain "$chain" \
+            --compartments "$h1_comp" --domains "$h1_dom" --dnase "$h1_dnase" &
     done
     wait
 fi

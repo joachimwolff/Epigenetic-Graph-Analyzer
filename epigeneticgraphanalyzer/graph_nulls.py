@@ -283,6 +283,41 @@ def thin_pairs(graph, node_a, node_b, by_bait=True, by_mediator=False, seed=0):
     return keep
 
 
+def local_edge_density(graph, window=100000):
+    """Per node, the number of graph edges with at least one end (node midpoint) within +-window bp of the node
+    midpoint on its chromosome (its own edges included)."""
+    middle = node_midpoints(graph)
+    ends = {}
+    for k, (u, v) in enumerate(graph.edges()):
+        for n in (u, v):
+            ends.setdefault(graph.nodes[n]['chrom'], []).append((middle[n], k))
+    density = {}
+    for chrom, items in ends.items():
+        items.sort()
+        positions = np.array([p for p, _ in items], dtype=np.int64)
+        edge_ids = np.array([k for _, k in items], dtype=np.int64)
+        on = [n for n in graph.nodes if graph.nodes[n]['chrom'] == chrom]
+        centres = np.array([middle[n] for n in on], dtype=np.int64)
+        low = np.searchsorted(positions, centres - window, side='left')
+        high = np.searchsorted(positions, centres + window, side='right')
+        for n, lo, hi in zip(on, low, high):
+            density[n] = len(np.unique(edge_ids[lo:hi]))
+    for n in graph.nodes:
+        density.setdefault(n, 0)
+    return density
+
+
+def per_bin(node_bins, values, n_bins, reduce=max, fill=np.nan):
+    """Per multi-way bin, the reduction (default max) of a node value over the nodes mapped to it."""
+    collected = {}
+    for node, bin_id in node_bins.items():
+        collected.setdefault(bin_id, []).append(values[node])
+    result = np.full(n_bins, fill, dtype=float)
+    for bin_id, items in collected.items():
+        result[bin_id] = reduce(items)
+    return result
+
+
 def graph_statistics(graph, max_distance=2000000):
     """Size and shape of an interaction graph: nodes, baits, edges, cis edges (and those within max_distance),
     cis edge length (node midpoints: median, quartiles), mean degree of baits and other ends, largest component."""
