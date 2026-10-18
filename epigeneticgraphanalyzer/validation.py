@@ -53,6 +53,35 @@ def map_nodes_to_bins(graph, data, liftover=None):
     return mapping
 
 
+def node_mapping_status(graph, data, liftover=None):
+    """Why each graph node is or is not used by map_nodes_to_bins: a table with node, bait, degree, bin (-1 if none)
+    and status: 'mapped', 'liftover_failed' (midpoint not lifted), 'no_bin' (position outside the bins of the
+    multi-way data, e.g. a chromosome it lacks) or 'zero_coverage' (bin never seen in a group)."""
+    rows = []
+    for node, attrs in graph.nodes(data=True):
+        chrom = attrs.get('chrom')
+        if chrom is None:
+            chrom, start, end = parse_node_id(node)
+        else:
+            start, end = int(attrs['start']), int(attrs['end'])
+        position = (start + end) // 2
+        status, bin_id = 'mapped', -1
+        if liftover is not None:
+            lifted = liftover.position(chrom, position)
+            if lifted is None:
+                status = 'liftover_failed'
+            else:
+                chrom, position = lifted
+        if status == 'mapped':
+            bin_id = data.bins.bin_of(chrom, position)
+            if bin_id < 0:
+                status = 'no_bin'
+            elif data.coverage_raw[bin_id] <= 0:
+                status = 'zero_coverage'
+        rows.append((node, bool(attrs.get('bait')), graph.degree(node), int(bin_id), status))
+    return pd.DataFrame(rows, columns=['node', 'bait', 'degree', 'bin', 'status'])
+
+
 def pairs_to_bins(pairs, node_bins):
     """Add bin_a/bin_b to a pair table; drops unmapped pairs and pairs inside one bin."""
     a = pairs['node_a'].map(node_bins)

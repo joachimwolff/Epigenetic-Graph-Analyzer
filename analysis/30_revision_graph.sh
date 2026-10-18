@@ -8,6 +8,8 @@
 #      step curves with the graph built at CHiCAGO score 5, 8 and 12
 #   B7 graph sensitivity: distance limit of the pairs (hop_distance.py --maxDistance), number of shortest paths and
 #      personalised PageRank of the indirect pairs (path_ensemble.py)
+#   B9 ascertainment: nodes and pairs lost in the mapping to the multi-way data (ascertainment.py), step curves on the
+#      top four coverage quintiles of the graph loci (hop_distance.py --minCoverageQuantile 0.2)
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -140,6 +142,33 @@ if [[ "$stage" == all || "$stage" == B7 ]]; then
         wait_slot
         run "$o/GM_chicago_${m}_paths_strata.tsv" "$o/GM_chicago_${m}_paths.log" "$py" "$here/path_ensemble.py" \
             "$gm" "$out/B1_degree_null/GM_chicago_${m}_hops_coverage_pairs.tsv.gz" "$o/GM_chicago_${m}_paths" &
+    done
+    wait
+fi
+
+if [[ "$stage" == all || "$stage" == B9 ]]; then
+    # ascertainment: nodes and pairs lost on the way to each multi-way data set, and the SPRITE / HiPore-C step curves
+    # with the graph loci of the lowest coverage quintile removed from tests and controls
+    o="$out/B9_ascertainment"
+    mkdir -p "$o"
+    porec="$results/multiway/GM12878_porec_hg19_HindIII_fragments.npz"
+    k562_hiporec="$results/multiway/K562_hiporec_hg19_HindIII_fragments.npz"
+    to_hg19="$data/annotation/hg38ToHg19.over.chain.gz"
+    for p in "GM_chicago_sprite $gm $sprite -" "hESC_gam $hesc $gam $chain" "H1_gam $h1 $gam $chain" \
+             "GM_chicago_hiporec $gm $hiporec -" "GM_chicago_porec $gm $porec -" \
+             "K562_dmso_hiporec $results/k562/K562_dmso.graphml $k562_hiporec $to_hg19"; do
+        read -r name graph multiway ch <<< "$p"
+        chain_option=()
+        [[ "$ch" != - ]] && chain_option=(--chain "$ch")
+        wait_slot
+        run "$o/${name}_pairs.tsv" "$o/${name}.log" "$py" "$here/ascertainment.py" "$graph" "$multiway" "$o/$name" \
+            "${chain_option[@]}" &
+    done
+    for m in "sprite:$sprite" "hiporec:$hiporec"; do
+        wait_slot
+        run "$o/GM_chicago_${m%%:*}_hops_top4quintiles.tsv" "$o/GM_chicago_${m%%:*}_hops_top4quintiles.log" "$py" \
+            "$here/hop_distance.py" "$gm" "${m#*:}" "$o/GM_chicago_${m%%:*}_hops_top4quintiles.tsv" \
+            --minCoverageQuantile 0.2 &
     done
     wait
 fi

@@ -10,11 +10,12 @@ and among other-end loci, graph_nulls.degree_bin_classes), so that pairs of high
 pairs of equally connected loci. The 95% interval of the concordance comes from a block bootstrap over chromosomes,
 so that pairs sharing nodes and regions stay together. control_fallback counts the pairs without a class-matched
 control at their offset (matched on the offset only); then the concordance over the pairs with class-matched
-controls only is reported as well (*_class_matched).
+controls only is reported as well (*_class_matched). --minCoverageQuantile keeps only graph loci with a multi-way
+coverage at or above that quantile of all graph loci, for tests and controls.
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
            [--coverageClasses 5] [--degreeClasses 0] [--compartments BED] [--domains BED] [--bootstrap 1000]
-           [--maxDistance 2000000] [--pairTable FILE]
+           [--maxDistance 2000000] [--minCoverageQuantile 0] [--pairTable FILE]
 """
 
 import argparse
@@ -42,6 +43,17 @@ def bin_positions(bins, ids):
         return (bins.bin_start(ids) + bins.bin_end(ids)) // 2
     first = np.array([bins.offsets[c] for c in bins.chrom_names], dtype=np.int64)
     return (ids - first[bins.chrom_index_of_bins(ids)]) * bins.bin_size + bins.bin_size // 2
+
+
+def coverage_filtered(node_bins, data, quantile):
+    """Node bins without the loci whose multi-way coverage is below the given quantile of the coverage of all graph
+    loci (test pairs and control pools then use the better covered loci only)."""
+    loci = np.unique(np.fromiter(node_bins.values(), dtype=np.int64))
+    threshold = np.quantile(data.coverage_raw[loci], quantile)
+    kept = {n: b for n, b in node_bins.items() if data.coverage_raw[b] >= threshold}
+    print('coverage threshold {:g} (quantile {:g} of graph loci): {} of {} nodes kept'.format(
+        threshold, quantile, len(kept), len(node_bins)), flush=True)
+    return kept
 
 
 def step_pairs(graph, node_bins, data, max_distance=MAX_DISTANCE, max_steps=MAX_STEPS):
@@ -119,6 +131,9 @@ def main():
     parser.add_argument('--bootstrap', type=int, default=1000)
     parser.add_argument('--maxDistance', type=int, default=MAX_DISTANCE,
                         help='Largest genomic distance of a pair (bp); 0 keeps all pairs of one chromosome')
+    parser.add_argument('--minCoverageQuantile', type=float, default=0,
+                        help='Use only graph loci whose multi-way coverage reaches this quantile of the coverage of '
+                             'all graph loci (e.g. 0.2: top four quintiles)')
     parser.add_argument('--pairTable', help='Write the tested pairs with their NPMI, control mean and concordance '
                                             '(TSV, .gz allowed)')
     args = parser.parse_args()
@@ -134,6 +149,8 @@ def main():
         compartment = compartment if args.compartments else None
         tad_id = tad_id if args.domains else None
     node_bins = map_nodes_to_bins(graph, data, liftover)
+    if args.minCoverageQuantile > 0:
+        node_bins = coverage_filtered(node_bins, data, args.minCoverageQuantile)
     pairs = step_pairs(graph, node_bins, data, max_distance)
     pools = LocusPools(graph, node_bins, data)
     bin_class = None
