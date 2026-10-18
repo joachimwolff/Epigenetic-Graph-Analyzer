@@ -977,12 +977,14 @@ class GeneCrossing:
     def status_phrase(self, status, cond, info):
         n = info['n']
         if not info['crossing']:
-            return 'its {} {} contact{} ({} only) stay within its own domain'.format(
-                n, status, '' if n == 1 else 's', cond)
-        text = 'in {}, {} of its {} {} contacts cross a boundary'.format(cond, info['crossing'], n, status)
+            return 'its {} {} contact{} ({} only) stay{} within its own domain'.format(
+                n, status, '' if n == 1 else 's', cond, 's' if n == 1 else '')
+        text = 'in {}, {} of its {} {} contact{} cross{} a boundary'.format(
+            cond, info['crossing'], n, status, '' if n == 1 else 's', 'es' if info['crossing'] == 1 else '')
         if 'boundary' in info:
-            text += '; {} of them cross {}, {}'.format(info['boundary_edges'], self.boundary_phrase(info),
-                                                      self.partner_phrase(info))
+            text += '; {} of them cross{} {}, {}'.format(info['boundary_edges'],
+                                                        'es' if info['boundary_edges'] == 1 else '',
+                                                        self.boundary_phrase(info), self.partner_phrase(info))
         if info['within']:
             text += '; {} stay{} within its own domain'.format(info['within'], 's' if info['within'] == 1 else '')
         return text
@@ -996,7 +998,9 @@ class GeneCrossing:
                 parts.append(self.status_phrase(status, cond, info))
         shared = infos.get('shared')
         if shared and shared['n']:
-            parts.append('{} of its {} shared contacts cross a boundary'.format(shared['crossing'], shared['n']))
+            parts.append('{} of its {} shared contact{} cross{} a boundary'.format(
+                shared['crossing'], shared['n'], '' if shared['n'] == 1 else 's',
+                'es' if shared['crossing'] == 1 else ''))
         if not parts:
             return ''
         return '{}: {}.'.format(gene, '; '.join(parts))
