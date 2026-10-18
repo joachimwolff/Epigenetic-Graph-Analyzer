@@ -2019,10 +2019,17 @@ def gene_community_changes(communities_a, communities_b, transitions, node_genes
     return table, test
 
 
+def _uses_keys(n, k):
+    """Whether _sample_without_replacement draws k of n by random keys instead of rejection."""
+    return k > n / 4 or k * (k - 1) / (2 * n) > 1
+
+
 def _sample_without_replacement(rng, n, k, rows):
     """`rows` x `k` indices into range(n), each row without repeats: rows with a repeat are drawn again (vectorised
-    rejection); for k > n / 4 the k smallest of n random keys per row."""
-    if k > n / 4:
+    rejection) while a row of k draws is free of repeats with probability >= about exp(-1) (k (k - 1) / 2n <= 1);
+    otherwise (and always for k > n / 4) the k smallest of n random keys per row. The rejection loop needs about
+    exp(k (k - 1) / 2n) rounds, which grew to hours for large communities."""
+    if _uses_keys(n, k):
         return np.argpartition(rng.random((rows, n)), k - 1, axis=1)[:, :k]
     index = rng.integers(0, n, (rows, k))
     while True:
@@ -2038,7 +2045,7 @@ def _community_null(k):
     state = _SHARED
     values, n_permutations = state['values'], state['n_permutations']
     rng = np.random.default_rng(np.random.SeedSequence([state['seed'], k]))
-    rows = max(1, int(32e6 // (8 * (len(values) if k > len(values) / 4 else k))))
+    rows = max(1, int(32e6 // (8 * (len(values) if _uses_keys(len(values), k) else k))))
     means = []
     for start in range(0, n_permutations, rows):
         index = _sample_without_replacement(rng, len(values), k, min(rows, n_permutations - start))
