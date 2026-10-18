@@ -191,3 +191,26 @@ def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_
                       fraction_edges_changed=float(len(final - original) / max(1, n_edges)))
     log.info('rewiring: %s', statistics)
     return rewired, statistics
+
+
+def graph_statistics(graph, max_distance=2000000):
+    """Size and shape of an interaction graph: nodes, baits, edges, cis edges (and those within max_distance),
+    cis edge length (node midpoints: median, quartiles), mean degree of baits and other ends, largest component."""
+    middle = node_midpoints(graph)
+    lengths = np.array([abs(middle[u] - middle[v]) for u, v in graph.edges()
+                        if graph.nodes[u]['chrom'] == graph.nodes[v]['chrom']], dtype=float)
+    bait = {n: bool(d.get('bait')) for n, d in graph.nodes(data=True)}
+    bait_degree = [graph.degree(n) for n in graph.nodes if bait[n]]
+    other_degree = [graph.degree(n) for n in graph.nodes if not bait[n]]
+    largest = max((len(c) for c in nx.connected_components(graph)), default=0)
+    quartiles = np.percentile(lengths, [25, 50, 75]) if len(lengths) else [np.nan] * 3
+    return dict(nodes=graph.number_of_nodes(), baits=len(bait_degree), other_ends=len(other_degree),
+                edges=graph.number_of_edges(), cis_edges=len(lengths),
+                cis_edges_within_limit=int((lengths <= max_distance).sum()),
+                bait_bait_edges=sum(1 for u, v in graph.edges() if bait[u] and bait[v]),
+                median_edge_length=float(quartiles[1]), edge_length_q1=float(quartiles[0]),
+                edge_length_q3=float(quartiles[2]),
+                mean_bait_degree=float(np.mean(bait_degree)) if bait_degree else np.nan,
+                median_bait_degree=float(np.median(bait_degree)) if bait_degree else np.nan,
+                mean_other_end_degree=float(np.mean(other_degree)) if other_degree else np.nan,
+                largest_component_fraction=largest / max(1, graph.number_of_nodes()))

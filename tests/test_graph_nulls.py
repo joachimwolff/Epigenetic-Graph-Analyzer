@@ -115,3 +115,18 @@ def test_class_matched_controls_record_fallbacks():
     first = controls[controls['test_index'] == 0]
     assert (bin_class[first['bin_a']] == 0).all() and (bin_class[first['bin_b']] == 0).all()
     assert ((controls['bin_b'] - controls['bin_a']) == 5).all()
+
+
+def test_graph_statistics():
+    from epigeneticgraphanalyzer.graph_nulls import graph_statistics
+    graph = nx.Graph()
+    b = _node(graph, 'chr1', 1000000, True)
+    o1 = _node(graph, 'chr1', 1100000, False)
+    o2 = _node(graph, 'chr1', 4000000, False)
+    b2 = _node(graph, 'chr2', 500000, True)
+    t = _node(graph, 'chr3', 500000, False)
+    graph.add_edges_from([(b, o1), (b, o2), (b2, t)])
+    stats = graph_statistics(graph, max_distance=2000000)
+    assert (stats['nodes'], stats['baits'], stats['edges'], stats['cis_edges']) == (5, 2, 3, 2)
+    assert stats['cis_edges_within_limit'] == 1 and stats['median_edge_length'] == 0.5 * (100000 + 3000000)
+    assert stats['mean_bait_degree'] == 1.5 and stats['largest_component_fraction'] == 3 / 5
