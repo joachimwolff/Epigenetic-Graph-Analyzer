@@ -6,6 +6,7 @@ Columns that occur twice in the count table hold identical counts of the same
 library and are used once. log2FoldChange is PA2 relative to Md.
 """
 
+import re
 import sys
 
 import pandas as pd
@@ -17,6 +18,11 @@ def main():
     counts_path, output = sys.argv[1], sys.argv[2]
     table = pd.read_csv(counts_path, compression='infer')
     table = table.loc[:, ~table.columns.duplicated()]
+    # the GEO table repeats some libraries; pandas renames repeated headers to '<name>.1' etc.
+    # drop such a column when its base column exists and holds identical counts
+    repeated = [c for c in table.columns if re.fullmatch(r'.+\.\d+', c) and c.rsplit('.', 1)[0] in table.columns
+                and table[c].equals(table[c.rsplit('.', 1)[0]])]
+    table = table.drop(columns=repeated)
     samples = [c for c in table.columns if c.startswith('RNAseq_E10.5-Md_') or c.startswith('RNAseq_E10.5-PA2_')]
     genes = table.groupby('Associated.Gene.Name')[samples].sum()
     genes = genes[genes.sum(axis=1) >= 10]
