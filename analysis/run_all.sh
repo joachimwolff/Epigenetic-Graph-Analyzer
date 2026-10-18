@@ -163,6 +163,9 @@ step_25_design() { bash "$here/25_design.sh" "$data" "$results" "$kasumi" "$assi
 step_26_structural_variants() { bash "$here/26_structural_variants.sh" "$data" "$results" "$kasumi" "$assi" 12 "$SAMTOOLS"; }
 step_27_boundaries() { bash "$here/27_boundaries.sh" "$mcool" "$data" "$results" 12 500; }
 step_28_tad_crossing() { bash "$here/28_tad_crossing.sh" "$data" "$results" 12; }
+# threshold sensitivity / provenance demo (Kasumi-1, Md / PA2): needs the raw score files, 16 (settings), 17 (fold
+# tracks), 23/24 (K562 TADs) and 28 (PA2 TADs)
+step_29_threshold_support() { bash "$here/29_threshold_support.sh" "$data" "$results" "$kasumi" all 16; }
 step_community_robustness() { support community_robustness; }
 step_crispr_benchmark() { support crispr_benchmark; }
 step_kasumi_sv_cnv() { support kasumi_sv_cnv; }
@@ -191,7 +194,8 @@ steps=(reuse 01_h1_chicago 02_graphs k562_graph 03_validate virtual_capture kasu
        07_aml_assi 08_aml_kasumi1 06_loci 09_porec hubs 10_differential_figures 11_reviewer_controls 12_loopcallers
        13_candidate_robustness 14_differential_robustness explain competitors 15_block_bootstrap 17_minoux_fold
        16_hops_n 18_switching 19_eqtl 20_triggers 21_blind_roles 22_timecourse 23_hic_reference
-       24_compartments_domains 25_design 26_structural_variants 27_boundaries 28_tad_crossing community_robustness
+       24_compartments_domains 25_design 26_structural_variants 27_boundaries 28_tad_crossing 29_threshold_support
+       community_robustness
        crispr_benchmark kasumi_sv_cnv sprite_resolution tables figures reports)
 
 index_of() {   # step name or its number prefix -> position in the list
