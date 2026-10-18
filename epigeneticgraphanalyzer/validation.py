@@ -53,6 +53,35 @@ def map_nodes_to_bins(graph, data, liftover=None):
     return mapping
 
 
+def node_mapping_status(graph, data, liftover=None):
+    """Why each graph node is or is not used by map_nodes_to_bins: a table with node, bait, degree, bin (-1 if none)
+    and status: 'mapped', 'liftover_failed' (midpoint not lifted), 'no_bin' (position outside the bins of the
+    multi-way data, e.g. a chromosome it lacks) or 'zero_coverage' (bin never seen in a group)."""
+    rows = []
+    for node, attrs in graph.nodes(data=True):
+        chrom = attrs.get('chrom')
+        if chrom is None:
+            chrom, start, end = parse_node_id(node)
+        else:
+            start, end = int(attrs['start']), int(attrs['end'])
+        position = (start + end) // 2
+        status, bin_id = 'mapped', -1
+        if liftover is not None:
+            lifted = liftover.position(chrom, position)
+            if lifted is None:
+                status = 'liftover_failed'
+            else:
+                chrom, position = lifted
+        if status == 'mapped':
+            bin_id = data.bins.bin_of(chrom, position)
+            if bin_id < 0:
+                status = 'no_bin'
+            elif data.coverage_raw[bin_id] <= 0:
+                status = 'zero_coverage'
+        rows.append((node, bool(attrs.get('bait')), graph.degree(node), int(bin_id), status))
+    return pd.DataFrame(rows, columns=['node', 'bait', 'degree', 'bin', 'status'])
+
+
 def pairs_to_bins(pairs, node_bins):
     """Add bin_a/bin_b to a pair table; drops unmapped pairs and pairs inside one bin."""
     a = pairs['node_a'].map(node_bins)
@@ -68,13 +97,18 @@ def pairs_to_bins(pairs, node_bins):
 
 
 # --------------------------------------------------------------------- metrics
-def pair_metrics(data, bin_a, bin_b, max_offset):
-    """Co-occurrence, distance-normalised co-occurrence and (GAM) NPMI of bin pairs."""
+def pair_metrics(data, bin_a, bin_b, max_offset, with_expected=True):
+    """Co-occurrence, distance-normalised co-occurrence and (GAM) NPMI of bin pairs.
+
+    with_expected=False skips the expected values per offset (cooc_oe, npmi_delta), which are costly for very large
+    offsets of fragment-level data; cooc and npmi are unchanged."""
     bin_a = np.asarray(bin_a, dtype=np.int64)
     bin_b = np.asarray(bin_b, dtype=np.int64)
     offset = np.abs(bin_b - bin_a)
     data.build_band(max_offset)
     cooc = data.cooccurrence(bin_a, bin_b)
+    if not with_expected:
+        return {'cooc': cooc, 'npmi': data.npmi(bin_a, bin_b)}
     expected = data.expected_by_offset(max_offset, 'cooc')
     exp_values = expected[np.clip(offset, 0, max_offset)]
     pseudo = np.nanmin(expected[1:][expected[1:] > 0]) * 0.1 if np.any(expected[1:] > 0) else 1e-9
@@ -142,6 +176,8 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
     rng = np.random.default_rng(seed)
     chrom_of = pools.chrom_index
     n_fallback = 0
+    fallback_index = []
+    eligible_index, eligible_count = [], []
     rows_index, rows_a, rows_b = [], [], []
     for (pair_class, offset), group in pairs.groupby(['pair_class', 'offset']):
         left_kind, right_kind = _class_pools(pair_class)
@@ -171,15 +207,24 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
                 if pool is None:
                     pool = candidates
                     n_fallback += 1
+                    fallback_index.append(test_index)
+            eligible_index.append(test_index)
+            eligible_count.append(len(pool))
             choice = rng.integers(0, len(pool), size=n_controls)
             rows_index.extend([test_index] * n_controls)
             rows_a.extend(pool[choice, 0])
             rows_b.extend(pool[choice, 1])
     if coverage_class is not None or tad_id is not None:
         log.info('class-matched controls: %d of %d pairs fell back to offset matching', n_fallback, len(pairs))
-    return pd.DataFrame({'test_index': np.array(rows_index, dtype=np.int64),
-                         'bin_a': np.array(rows_a, dtype=np.int64),
-                         'bin_b': np.array(rows_b, dtype=np.int64)})
+    controls = pd.DataFrame({'test_index': np.array(rows_index, dtype=np.int64),
+                             'bin_a': np.array(rows_a, dtype=np.int64),
+                             'bin_b': np.array(rows_b, dtype=np.int64)})
+    controls.attrs['n_fallback'] = n_fallback
+    controls.attrs['fallback_index'] = np.array(fallback_index, dtype=np.int64)
+    # number of distinct candidate control pairs each test pair was drawn from (0 if none at its offset)
+    controls.attrs['eligible'] = pd.Series(eligible_count, index=eligible_index, dtype=np.int64).reindex(
+        pairs.index, fill_value=0)
+    return controls
 
 
 def _pair_code(bin_class, tad_id, bin_a, bin_b):
@@ -263,6 +308,19 @@ def domain_classes(coverage_class, compartment):
     """Per-bin class combining the coverage class and the compartment (A, B or unknown)."""
     base = coverage_class if coverage_class is not None else np.zeros(len(compartment), dtype=np.int64)
     return base * 3 + (compartment + 1)
+
+
+def standardized_mean_difference(test, control):
+    """(mean test - mean control) / sqrt((var test + var control) / 2), NaN ignored; 0 if both variances are 0."""
+    test = np.asarray(test, dtype=float)
+    control = np.asarray(control, dtype=float)
+    test, control = test[~np.isnan(test)], control[~np.isnan(control)]
+    if len(test) == 0 or len(control) == 0:
+        return np.nan
+    difference = test.mean() - control.mean()
+    scale = np.sqrt((test.var(ddof=1) if len(test) > 1 else 0.0) / 2 +
+                    (control.var(ddof=1) if len(control) > 1 else 0.0) / 2)
+    return float(difference / scale) if scale > 0 else (0.0 if difference == 0 else np.inf * np.sign(difference))
 
 
 def pair_concordance(test_values, control_values, control_index, n_tests):
@@ -380,26 +438,38 @@ def summarize_against_controls(test_values, control_values, control_index, n_tes
 
 
 def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offset=None, seed=0,
-                   coverage_matched=0, compartment=None, tad_id=None, return_controls=False):
+                   coverage_matched=0, compartment=None, tad_id=None, bin_class=None, with_expected=True,
+                   return_controls=False):
     """Metrics of test pairs and their matched controls; returns (per-pair table, summary table).
 
     coverage_matched > 0 additionally matches controls on that many coverage classes of their ends; `compartment`
     and `tad_id` (per bin, see domain_annotation) on the compartments of the ends and on whether both ends share a
-    topological domain. The per-pair table holds the concordance of every pair (<metric>_concordance).
-    With return_controls, the matched control pairs (bin_a, bin_b, test_index) are returned as a third element.
+    topological domain; `bin_class` (any further per-bin class, e.g. graph_nulls.degree_bin_classes) on the
+    unordered pair of these classes of the ends. The per-pair table holds the concordance of every pair
+    (<metric>_concordance); table.attrs['control_fallback'] is the number of pairs without a class-matched control
+    (matched on the offset only), marked False in the column class_matched. With return_controls, the matched control pairs (bin_a, bin_b, test_index) are
+    returned as a third element.
     """
     if len(pairs) == 0:
         return (pairs, pd.DataFrame(), pd.DataFrame()) if return_controls else (pairs, pd.DataFrame())
     if max_offset is None:
         max_offset = int(pairs['offset'].max())
-    test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset)
+    test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset, with_expected=with_expected)
     classes = coverage_classes(pools, coverage_matched) if coverage_matched else None
     if compartment is not None:
         classes = domain_classes(classes, compartment)
+    if bin_class is not None:
+        base = classes if classes is not None else np.zeros(len(bin_class), dtype=np.int64)
+        extra = np.asarray(bin_class, dtype=np.int64) + 1
+        classes = base * (int(extra.max()) + 1) + extra
     controls = sample_matched_controls(pairs, pools, excluded, n_controls=n_controls, seed=seed,
                                        coverage_class=classes, tad_id=tad_id)
-    control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset)
+    control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset, with_expected=with_expected)
     table = pairs.copy()
+    table.attrs['control_fallback'] = controls.attrs.get('n_fallback', 0)
+    table['class_matched'] = True
+    if len(controls.attrs.get('fallback_index', [])):
+        table.loc[controls.attrs['fallback_index'], 'class_matched'] = False
     rows = []
     strata = distance_stratum(table['distance'].to_numpy())
     table['stratum'] = strata
@@ -433,20 +503,6 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
     if return_controls:
         return table, pd.DataFrame(rows), controls
     return table, pd.DataFrame(rows)
-
-
-def cooccurrence_rates(data, bin_a, bin_b):
-    """Absolute co-occurrence of bin pairs in the multi-way groups (SPRITE clusters, GAM tubes, Pore-C reads).
-
-    Returns per pair the number of groups containing both ends, whether there is at least one such group, and the
-    share of the groups containing one end that also contain the other (mean over both ends). Unweighted groups.
-    """
-    n_ab = data.cooccurrence(bin_a, bin_b, weighted=False)
-    n_a = data.coverage(bin_a, weighted=False)
-    n_b = data.coverage(bin_b, weighted=False)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        share = 0.5 * (np.where(n_a > 0, n_ab / n_a, 0.0) + np.where(n_b > 0, n_ab / n_b, 0.0))
-    return dict(groups_both=n_ab, together=(n_ab > 0).astype(float), share=share)
 
 
 def _offset_bucket(offset, exact=16, ratio=1.2):
@@ -728,3 +784,17 @@ def validate_communities(communities, node_bins, data, min_bins=3, min_members=3
                         'wilcoxon_p': float(stats.wilcoxon(concordance - 0.5, zero_method='zsplit').pvalue)
                         if len(sub) >= 10 and np.any(concordance != 0.5) else np.nan})
     return table, pd.DataFrame(summary)
+
+
+def cooccurrence_rates(data, bin_a, bin_b):
+    """Absolute co-occurrence of bin pairs in the multi-way groups (SPRITE clusters, GAM tubes, Pore-C reads).
+
+    Returns per pair the number of groups containing both ends, whether there is at least one such group, and the
+    share of the groups containing one end that also contain the other (mean over both ends). Unweighted groups.
+    """
+    n_ab = data.cooccurrence(bin_a, bin_b, weighted=False)
+    n_a = data.coverage(bin_a, weighted=False)
+    n_b = data.coverage(bin_b, weighted=False)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        share = 0.5 * (np.where(n_a > 0, n_ab / n_a, 0.0) + np.where(n_b > 0, n_ab / n_b, 0.0))
+    return dict(groups_both=n_ab, together=(n_ab > 0).astype(float), share=share)

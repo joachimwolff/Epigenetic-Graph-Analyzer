@@ -227,3 +227,7 @@ class LiftOver:
             return None
         new_chrom, new_pos = hits[0][0], hits[0][1]
         return new_chrom, int(new_pos)
+
+    def hits(self, chrom, position):
+        """All lifted positions (chrom, position) of a position; position() uses the first."""
+        return [(h[0], int(h[1])) for h in (self._lift.convert_coordinate(chrom, int(position)) or [])]
