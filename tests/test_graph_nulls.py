@@ -133,6 +133,24 @@ def test_walk_counts_and_personalized_pagerank():
     assert np.isclose(score[0], 0.5 * (reference['f'] + reverse['a']), atol=1e-8)
 
 
+def test_thinning_and_top_degree_nodes():
+    from epigeneticgraphanalyzer.graph_nulls import thin_pairs, top_degree_nodes
+    graph = nx.Graph()
+    for name, bait in (('p1', True), ('p2', True), ('m', False), ('o1', False), ('o2', False), ('o3', False)):
+        graph.add_node(name, bait=bait)
+    graph.add_edges_from([('p1', 'm'), ('p2', 'm'), ('m', 'o1'), ('m', 'o2'), ('p1', 'o3'), ('o3', 'o2')])
+    assert top_degree_nodes(graph, 0.1) == {'m'}
+    a = np.array(['p1', 'p1', 'p2', 'o1'])
+    b = np.array(['p2', 'o1', 'o2', 'o2'])
+    for seed in range(5):
+        keep = thin_pairs(graph, a, b, by_bait=True, seed=seed)
+        baits = [n for k in np.nonzero(keep)[0] for n in (a[k], b[k]) if graph.nodes[n]['bait']]
+        assert len(baits) == len(set(baits)) and keep[3]          # o1 - o2 has no bait: always kept
+        keep = thin_pairs(graph, a, b, by_bait=False, by_mediator=True, seed=seed)
+        # p1-p2, p1-o1, p2-o2 and o1-o2 all have m as a mediator: one pair is kept
+        assert keep.sum() == 1
+
+
 def test_graph_statistics():
     from epigeneticgraphanalyzer.graph_nulls import graph_statistics
     graph = nx.Graph()

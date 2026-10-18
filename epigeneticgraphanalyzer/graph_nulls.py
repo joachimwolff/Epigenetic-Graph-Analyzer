@@ -255,6 +255,34 @@ def pair_ppr(A, index_a, index_b, damping=0.85, iterations=50, batch=512):
     return score
 
 
+def top_degree_nodes(graph, share):
+    """The ceil(share * nodes) nodes of highest degree (ties broken by node name)."""
+    n = int(math.ceil(share * graph.number_of_nodes()))
+    ranked = sorted(graph.nodes, key=lambda node: (-graph.degree(node), str(node)))
+    return set(ranked[:n])
+
+
+def thin_pairs(graph, node_a, node_b, by_bait=True, by_mediator=False, seed=0):
+    """Greedy thinning of node pairs in a fixed random order: with by_bait no bait end occurs in two kept pairs, with
+    by_mediator no common neighbour (mediator of a two-step pair) is shared by two kept pairs. Returns a boolean
+    mask over the pairs."""
+    order = np.random.default_rng(seed).permutation(len(node_a))
+    keep = np.zeros(len(node_a), dtype=bool)
+    used_baits, used_mediators = set(), set()
+    for k in order:
+        a, b = node_a[k], node_b[k]
+        baits = [n for n in (a, b) if graph.nodes[n].get('bait')] if by_bait else []
+        if any(n in used_baits for n in baits):
+            continue
+        mediators = set(graph[a]) & set(graph[b]) if by_mediator else set()
+        if mediators & used_mediators:
+            continue
+        keep[k] = True
+        used_baits.update(baits)
+        used_mediators.update(mediators)
+    return keep
+
+
 def graph_statistics(graph, max_distance=2000000):
     """Size and shape of an interaction graph: nodes, baits, edges, cis edges (and those within max_distance),
     cis edge length (node midpoints: median, quartiles), mean degree of baits and other ends, largest component."""

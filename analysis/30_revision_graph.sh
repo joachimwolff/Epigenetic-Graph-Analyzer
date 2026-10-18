@@ -10,6 +10,8 @@
 #      personalised PageRank of the indirect pairs (path_ensemble.py)
 #   B9 ascertainment: nodes and pairs lost in the mapping to the multi-way data (ascertainment.py), step curves on the
 #      top four coverage quintiles of the graph loci (hop_distance.py --minCoverageQuantile 0.2)
+#   B10 dependence between tested pairs (dependence.py): one pair per promoter / mediator at two steps, without the
+#      1% and 5% highest-degree nodes, leave-one-chromosome-out, 10 Mb block bootstrap
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -169,6 +171,18 @@ if [[ "$stage" == all || "$stage" == B9 ]]; then
         run "$o/GM_chicago_${m%%:*}_hops_top4quintiles.tsv" "$o/GM_chicago_${m%%:*}_hops_top4quintiles.log" "$py" \
             "$here/hop_distance.py" "$gm" "${m#*:}" "$o/GM_chicago_${m%%:*}_hops_top4quintiles.tsv" \
             --minCoverageQuantile 0.2 &
+    done
+    wait
+fi
+
+if [[ "$stage" == all || "$stage" == B10 ]]; then
+    # dependence between tested pairs: thinned step-2 sets, hub exclusion, leave-one-chromosome-out, 10 Mb blocks
+    o="$out/B10_dependence"
+    mkdir -p "$o"
+    for m in "sprite:$sprite" "hiporec:$hiporec"; do
+        wait_slot
+        run "$o/GM_chicago_${m%%:*}_dependence.tsv" "$o/GM_chicago_${m%%:*}_dependence.log" "$py" \
+            "$here/dependence.py" "$gm" "${m#*:}" "$o/GM_chicago_${m%%:*}_dependence.tsv" &
     done
     wait
 fi
