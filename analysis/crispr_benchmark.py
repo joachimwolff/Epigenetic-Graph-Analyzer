@@ -73,6 +73,17 @@ def load_predictions(path, genes):
                                        '3DContact.Feature': 'powerlaw'})
 
 
+def prediction_found(pairs, predictions):
+    """True for pairs whose element overlaps at least one predicted candidate element of the measured gene."""
+    found = np.zeros(len(pairs), dtype=bool)
+    grouped = {k: g for k, g in predictions.groupby('TargetGene')}
+    for i, row in enumerate(pairs.itertuples()):
+        g = grouped.get(row.measuredGeneSymbol)
+        if g is not None:
+            found[i] = bool(np.any((g['chrom'] == row.chrom) & (g['end'] > row.chromStart) & (g['start'] < row.chromEnd)))
+    return found
+
+
 def prediction_scores(pairs, predictions):
     out = np.zeros((len(pairs), 3))
     grouped = {k: g for k, g in predictions.groupby('TargetGene')}
@@ -178,6 +189,7 @@ def main():
     table['log_distance'] = np.log10(table['distanceToTSS'].abs() + 1000)
     predictions = load_predictions(predictions_path, set(table['measuredGeneSymbol']))
     table[['abc', 're2g', 'powerlaw']] = prediction_scores(table, predictions)
+    table['prediction_found'] = prediction_found(table, predictions)
     table.to_csv(prefix + '_pairs.tsv.gz', sep='\t', index=False)
 
     features = ['distance', 'powerlaw', 'direct', 'two_hop', 'hops', 'community', 'ppr', 'abc', 're2g']
