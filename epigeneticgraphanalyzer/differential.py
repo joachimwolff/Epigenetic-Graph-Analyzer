@@ -167,13 +167,17 @@ def annotate_chicdiff(edges, chicdiff, padj_threshold=0.05):
 
 
 def union_graph(edges, name_a='A', name_b='B', bait_nodes=None):
-    """Graph of the union of significant edges, carrying both enrichments."""
+    """Graph of the union of significant edges, carrying both enrichments (and the support class of every edge when
+    `edges` has the column support, support.edge_support)."""
     graph = nx.Graph()
+    has_support = 'support' in edges
     for row in edges.itertuples(index=False):
         row = row._asdict()
         graph.add_edge(row['node_a'], row['node_b'],
                        r_a=float(row['enrichment_' + name_a]), r_b=float(row['enrichment_' + name_b]),
                        log2FC=float(row['log2FC']), qvalue=float(row['qvalue']), status=row['status'])
+        if has_support:
+            graph.edges[row['node_a'], row['node_b']]['support'] = str(row['support'])
     baits = set(edges['node_a']) | set(edges.loc[edges['other_is_bait'], 'node_b'])
     if bait_nodes is not None:
         baits |= set(bait_nodes)
@@ -1055,7 +1059,7 @@ def _values_text(values, digits=1):
 
 def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, states=None, tests=None, proximity=None,
                        chromatin_threshold=1.0, contact_threshold=None, pseudo_count=1.0, names=('A', 'B'),
-                       node_types=None, structural=None, structural_levels=()):
+                       node_types=None, structural=None, structural_levels=(), support=None):
     """Every level of the explanation cascade evaluated for every differential gene (long format, one row per gene
     and level), also when an earlier level already explains the gene.
 
@@ -1096,7 +1100,70 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
     discordant, below threshold, no value) follow the promoter levels, the same under every role set; columns
     sv_name, sv_status, sv_distance, sv_partner, sv_partner_genes, sv_partner_classes, sv_support,
     sv_junction_log2 and copy_number_A / _B / _log2 of those rows.
+
+    Appended after these columns: provenance (of the values of the level: measured, called, derived) and
+    provenance_chain (tags M measured, C called, D derived, I interpretation from the inputs to the explanation, e.g.
+    'MC>D>I' at a step); with the support class of the graph edges (attribute support of support.edge_support; `support`
+    None: when the graph has it, False: never) per role set R and presence statistic S: support_R_S of an explaining
+    level with contacts ('' otherwise): stable (it still explains when the threshold-sensitive and the untested gained
+    / lost contacts get weight 0 in both conditions), not testable (it explains without the threshold-sensitive
+    contacts, not without the untested ones) or threshold-sensitive (it no longer explains without the
+    threshold-sensitive contacts: it rests on them); threshold_sensitive_only_R_S (support_R_S is
+    threshold-sensitive), edges_stable_R_S / edges_threshold_sensitive_R_S / edges_not_testable_R_S (the edges of the
+    shortest paths from the promoter to the carrying nodes) and support_detail_R_S ('rests on 2 threshold-sensitive
+    contacts'). Carrying nodes: the nodes of a step with a contribution in the direction of the expression change
+    (path weight times signal, B minus A), the promoter's own contacts gained (lost) when their summed strength rises
+    (falls), the contacting fragment of a step 1 state (support: the class of its best path); promoter marks, promoter
+    state, structural variant and copy number carry no contact. The distances of the graph are kept when contacts get
+    weight 0, so the nodes of a step stay the same.
     """
+    from .support import (PathSupport, contact_summary, counterfactual_values, graph_has_support, level_provenance,
+                          support_text)
+    with_support = graph_has_support(graph) if support is None else bool(support)
+    new_columns = {}
+    # level values with the threshold-sensitive (and the untested) gained / lost contacts at weight 0
+    without = {}
+    if with_support:
+        for name, drop in (('ts', ('threshold-sensitive',)), ('ts_nt', ('threshold-sensitive', 'not testable'))):
+            without[name] = counterfactual_values(graph, operators, mark_vectors, drop, pseudo_count)
+    source_row = {n: i for i, n in enumerate(operators.sources)}
+
+    def still_explains(name, fl, node, sign, d, contact_sign=None):
+        """The level explains the gene with the contacts of `name` at weight 0 (mark levels: any mark with a sign
+        concordant by at least the threshold; contacts: the contact change)."""
+        values = without[name]
+        k = source_row.get(node)
+        if k is None:
+            return False
+        if contact_sign is not None:
+            value = float(values['contact'][k])
+            return bool(contact_sign) and np.sign(value) * contact_sign == d and abs(value) >= contact_threshold
+        return any(sign[m] and _concordant([values[fl][m][k]], sign[m], d, chromatin_threshold)[0] for m in marks)
+
+    def support_class(explains, name_checks):
+        """Class of an explaining level from the checks without the threshold-sensitive contacts and without those
+        and the untested ones (name -> bool)."""
+        if not explains:
+            return ''
+        if name_checks['ts_nt']:
+            return 'stable'
+        if name_checks['ts']:
+            return 'not testable'
+        return 'threshold-sensitive'
+
+    def set_support(row, key, summary, explains, cls):
+        if not with_support:
+            return
+        values = {'support_' + key: cls if explains else '',
+                  'threshold_sensitive_only_' + key: bool(explains and cls == 'threshold-sensitive'),
+                  'support_detail_' + key: support_text(summary, explains, cls)}
+        for cls, name in (('stable', 'stable'), ('threshold-sensitive', 'threshold_sensitive'),
+                          ('not testable', 'not_testable')):
+            values['edges_{}_{}'.format(name, key)] = summary['edges'][cls] if summary else 0
+        row.update(values)
+        for column in values:
+            new_columns.setdefault(column, None)
+
     if contact_threshold is None:
         contact_threshold = chromatin_threshold
     marks = list(marks)
@@ -1141,14 +1208,20 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                 q[has] = _benjamini_hochberg(p[has])
             pq[(roles, fl)] = (dict(zip(table.index, np.where(has, p, np.nan))), dict(zip(table.index, q)))
     rows = []
+    max_steps = max([int(re.match(r'step(\d+)', lv).group(1)) for lv in level_order if re.fullmatch(r'step\d+', lv)]
+                    + [1])
     for i, (_, r) in enumerate(classes.iterrows()):
         node, d = r['node'], direction[i]
         counts = status[node]
         base = dict(node=node, genes=r.get('genes', ''), rna_log2FC=float(r['rna_log2FC']))
+        paths = PathSupport(graph, node, max_steps) if with_support else None
         for level in level_order:
             row = dict(base, rank=rank[level], level=level)
+            provenance = dict(zip(('provenance', 'provenance_chain'), level_provenance(level)))
+            for column in provenance:
+                new_columns.setdefault(column, None)
             if level in STRUCTURAL_LEVELS:
-                rows.append(_structural_row(row, level, structural, node, roles_sets, presences))
+                rows.append(dict(_structural_row(row, level, structural, node, roles_sets, presences), **provenance))
                 continue
             hops = 0 if level.startswith('promoter') else int(re.match(r'step(\d+)', level).group(1))
             row['hops'] = hops
@@ -1193,6 +1266,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         p = q = np.nan
                     row['p_' + roles], row['q_' + roles] = p, q
                     strongest, strongest_node, n_concordant = '', '', np.nan
+                    carrying = []
+                    positive = None
                     if fl != 'promoter' and node in row_of and n_nodes > 0:
                         used = concordant or [m for m in marks if sign[m]]
                         H_a, H_b, _ = operators.level(fl)
@@ -1206,9 +1281,12 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         kinds = {'promoter': is_promoter[columns], 'element': ~is_promoter[columns]} \
                             if is_promoter is not None else {}
                         best_kind = {kind: (0.0, None, None) for kind in kinds}
+                        positive = np.zeros(len(columns), dtype=bool)
                         for m in used:
                             va, vb = mark_vectors[m]
                             contribution = (w_b * vb[columns] - w_a * va[columns]) * sign[m] * d
+                            if sign[m]:
+                                positive |= contribution > 0
                             change = own[m][columns]
                             hit |= (np.sign(change) * sign[m] == d) & (np.abs(change) >= chromatin_threshold)
                             if len(columns):
@@ -1222,6 +1300,8 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                                         if masked[j] > best_kind[kind][0]:
                                             best_kind[kind] = (float(masked[j]), m, j)
                         n_concordant = int(hit.sum())
+                        # nodes whose contribution goes in the direction of the expression change carry the level
+                        carrying = [operators.nodes[c] for c in columns[positive]]
                         if best[1] is not None:
                             strongest_node = operators.nodes[columns[best[2]]]
                             strongest = '{} {} log2 {:+.1f}'.format(_node_label(graph, strongest_node), best[1],
@@ -1267,10 +1347,16 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                             text += ', beyond mirror' if beyond == 1 else ', not beyond mirror' if beyond == 0 \
                                 else ', mirror n/a'
                         text += ', ' + _support_short(hops, proximity)
+                    summary, cls = None, ''
+                    if paths is not None and fl != 'promoter' and n_nodes > 0:
+                        summary = paths.summary(carrying)
+                        cls = support_class(explains, {name: explains and still_explains(name, fl, node, sign, d)
+                                                       for name in without})
                     for presence in presences:
                         row['explains_{}_{}'.format(roles, presence)] = explains
                         row['result_{}_{}'.format(roles, presence)] = result
                         row['detail_{}_{}'.format(roles, presence)] = text
+                        set_support(row, '{}_{}'.format(roles, presence), summary, explains, cls)
             elif level == 'promoter_contacts':
                 contact = float(np.nan_to_num(r.get('contact_direct', 0.0)))
                 total = counts['gained'] + counts['lost'] + counts['shared']
@@ -1295,10 +1381,14 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         {'concordant': 'concordant', 'discordant': 'discordant',
                          'below threshold': 'below threshold',
                          'no consistent role': 'no consistent role of the own contacts'}[result])
+                    summary = contact_summary(graph, node, contact) if with_support and total else None
+                    cls = support_class(bool(explains), {name: bool(explains) and still_explains(
+                        name, 'direct', node, None, d, contact_sign=sign) for name in without}) if summary else ''
                     for presence in presences:
                         row['explains_{}_{}'.format(roles, presence)] = bool(explains)
                         row['result_{}_{}'.format(roles, presence)] = result
                         row['detail_{}_{}'.format(roles, presence)] = text
+                        set_support(row, '{}_{}'.format(roles, presence), summary, bool(explains), cls)
             else:
                 prefix = 'promoter' if level == 'promoter_state' else 'step1'
                 row['nodes_tested'] = 1 if prefix == 'promoter' else int(level_nodes['direct'].get(node, 0))
@@ -1373,6 +1463,12 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         row['transition_' + key] = transition
                         row['state_fragment_' + key] = fragment
                         row['detail_' + key] = text
+                        summary = None
+                        if paths is not None and prefix == 'step1' and isinstance(fragment, str) and fragment:
+                            summary = paths.summary([fragment])
+                        set_support(row, key, summary, bool(explains),
+                                    summary['support'] if summary and explains else '')
+            row.update(provenance)
             rows.append(row)
     table = pd.DataFrame(rows)
     front = ['node', 'genes', 'rna_log2FC', 'rank', 'level', 'hops', 'nodes_tested', 'mark_changes', 'mirror_changes',
@@ -1392,10 +1488,15 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
         table[column] = pd.array([None if pd.isna(v) else bool(v) for v in table[column]], dtype='boolean')
     for column in [c for c in table if c.startswith(('n_concordant_nodes_', 'n_concordant_promoters_',
                                                       'n_concordant_elements_'))] + ['nodes_tested', 'contacts_gained',
-                                                                                'contacts_lost', 'contacts_shared']:
+                                                                                'contacts_lost', 'contacts_shared'] + \
+            [c for c in new_columns if c.startswith('edges_')]:
         if column in table:
             table[column] = pd.array([None if pd.isna(v) else int(v) for v in table[column]], dtype='Int64')
-    return table[order + [c for c in table if c not in order]]
+    for column in [c for c in new_columns if c.startswith('threshold_sensitive_only_')]:
+        table[column] = np.array([False if pd.isna(v) else bool(v) for v in table[column]], dtype=bool)
+    # the columns of the provenance and support follow every other column (the earlier layout is kept)
+    appended = [c for c in new_columns if c in table]
+    return table[order + [c for c in table if c not in order and c not in new_columns] + appended]
 
 
 def _structural_row(row, level, structural, node, roles_sets, presences):
@@ -1438,9 +1539,14 @@ def explanation_variants(levels):
 def explanation_level_summary(levels):
     """Per gene (indexed by node) and per role set R and presence statistic S: explaining_levels_R_S (the levels
     that explain the gene in rank order, ';'-separated), first_level_R_S ('none' without one) and
-    n_levels_explaining_R_S."""
+    n_levels_explaining_R_S. With the support columns of explanation_levels, appended after these:
+    first_level_support_R_S (support class of the first explaining level, '' without carrying contacts),
+    threshold_sensitive_levels_R_S (explaining levels that rest only on threshold-sensitive contacts),
+    first_level_threshold_sensitive_R_S (the first explaining level does) and only_threshold_sensitive_R_S (every
+    explaining level of the gene does)."""
     out = pd.DataFrame(index=pd.Index(pd.unique(levels['node']), name='node'))
     ordered = levels.sort_values(['node', 'rank'], kind='mergesort')
+    appended = {}
     for roles, presence in explanation_variants(levels):
         key = '{}_{}'.format(roles, presence)
         hit = ordered[ordered['explains_' + key].astype(bool)]
@@ -1449,6 +1555,18 @@ def explanation_level_summary(levels):
         out['first_level_' + key] = hit.groupby('node', sort=False)['level'].first().reindex(out.index).fillna('none')
         out['n_levels_explaining_' + key] = hit.groupby('node', sort=False).size().reindex(out.index).fillna(0) \
             .astype(int)
+        if 'threshold_sensitive_only_' + key in levels:
+            flagged = hit['threshold_sensitive_only_' + key].astype(bool)
+            first = hit.groupby('node', sort=False).first()
+            appended['first_level_support_' + key] = first['support_' + key].fillna('').reindex(out.index).fillna('')
+            appended['threshold_sensitive_levels_' + key] = hit[flagged.to_numpy()].groupby('node', sort=False)[
+                'level'].agg(';'.join).reindex(out.index).fillna('')
+            appended['first_level_threshold_sensitive_' + key] = first['threshold_sensitive_only_' + key].astype(
+                bool).reindex(out.index, fill_value=False).astype(bool)
+            appended['only_threshold_sensitive_' + key] = flagged.groupby(hit['node'].to_numpy(), sort=False).all() \
+                .reindex(out.index, fill_value=False).astype(bool)
+    for column, values in appended.items():
+        out[column] = values
     return out
 
 
@@ -1505,13 +1623,25 @@ def explanation_level_counts(levels):
             row['proximity_ci'] = part['proximity_support_ci'].iloc[0] if len(part) else ''
             tested = part.loc[explains.to_numpy(), 'nodes_tested'].astype(float)
             row['median_nodes_tested'] = float(tested.median()) if len(tested) else np.nan
+            if 'support_' + key in part:
+                # support of the contacts that carry the explanation (appended columns)
+                support = part['support_' + key].fillna('').astype(str)
+                flagged = part['threshold_sensitive_only_' + key].astype(bool)
+                for name, mask in (('any', explains), ('first', is_first)):
+                    for cls, label in (('stable', 'stable'), ('threshold-sensitive', 'threshold_sensitive'),
+                                       ('not testable', 'not_testable')):
+                        row['{}_support_{}'.format(name, label)] = int((mask & (support == cls)).sum())
+                    row[name + '_threshold_sensitive_only'] = int((mask & flagged).sum())
             rows.append(row)
         none = int((first == 'none').sum())
         rows.append(dict(roles=roles, presence=presence, rank=int(levels['rank'].max()) + 1, level='none',
                          differential_genes=total, genes_any=none, genes_first=none,
                          fraction_any=none / total if total else np.nan,
                          fraction_first=none / total if total else np.nan))
-    return pd.DataFrame(rows)
+    table = pd.DataFrame(rows)
+    support = [c for c in table if c.startswith(('any_support_', 'first_support_')) or
+               c.endswith('_threshold_sensitive_only')]
+    return table[[c for c in table if c not in support] + support]
 
 
 def explanation_combinations(levels, top=20):

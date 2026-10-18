@@ -254,6 +254,38 @@ def place_labels(ax, labelled, positions, fontsize=6, obstacles=None, marker_poi
 
 
 MAX_STRENGTH = 3.0
+# support class of a gained / lost edge (egaDifferential, attribute support): threshold-sensitive edges dotted and
+# lighter, edges whose absence in the other condition is not testable dash-dotted; stable edges keep their style
+SENSITIVE_DASH = (0, (1.0, 1.6))
+UNTESTED_DASH = (0, (4.0, 1.5, 1.0, 1.5))
+SENSITIVE_ALPHA = 0.45
+
+
+def support_style(data, style='-', alpha=0.9):
+    """(line style, alpha) of an edge from its support class; `style` and `alpha` for stable edges and edges without
+    the attribute."""
+    support = data.get('support')
+    if support == 'threshold-sensitive':
+        return SENSITIVE_DASH, SENSITIVE_ALPHA
+    if support == 'not testable':
+        return UNTESTED_DASH, alpha
+    return style, alpha
+
+
+def has_support(sub):
+    """Classes other than stable among the edges of `sub` (for the legend)."""
+    return {d.get('support') for _, _, d in sub.edges(data=True)} & {'threshold-sensitive', 'not testable'}
+
+
+def support_handles(classes=('threshold-sensitive', 'not testable')):
+    handles = []
+    if 'threshold-sensitive' in classes:
+        handles.append(plt.Line2D([0], [0], color='#7f7f7a', lw=1.8, ls=SENSITIVE_DASH, alpha=0.8,
+                                  label='threshold-sensitive (sub-threshold in the other condition)'))
+    if 'not testable' in classes:
+        handles.append(plt.Line2D([0], [0], color='#7f7f7a', lw=1.8, ls=UNTESTED_DASH,
+                                  label='not testable (other input thresholded)'))
+    return handles
 
 
 def edge_width(strength, thin=0.3, thick=2.8):
@@ -288,9 +320,10 @@ def draw_arcs(ax, sub, names, priority=()):
             x0, x1 = sorted((middle[u], middle[v]))
             strength = edge_strength(data)
             height = 2 * np.sqrt((x1 - x0) / longest)
+            style, alpha = support_style(data)
             ax.add_patch(Arc(((x0 + x1) / 2, 0), x1 - x0, height, theta1=0 if sign > 0 else 180,
                              theta2=180 if sign > 0 else 360, color=STATUS_COLORS[status],
-                             lw=edge_width(strength), alpha=0.9, zorder=order))
+                             lw=edge_width(strength), alpha=alpha, ls=style, zorder=order))
     # gene labels: each gene once, candidates first, then the others where they keep 2.5% of the window from every
     # label already placed
     gap = 0.025 * (span[1] - span[0] or 1.0)
@@ -360,6 +393,8 @@ def draw_graph(ax, sub, positions, names, mark, max_log2, mode='edges', candidat
             width = edge_width(edge_strength(data))
         else:
             color, style, width = STATUS_COLORS[status], ONLY_DASH, edge_width(edge_strength(data))
+        if mode != 'nodes':
+            style, alpha = support_style(data, style, alpha)
         ax.plot([positions[u][0], positions[v][0]], [positions[u][1], positions[v][1]], color=color, ls=style,
                 lw=width, alpha=alpha, zorder=1)
     for n, data in sub.nodes(data=True):

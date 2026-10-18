@@ -275,6 +275,17 @@
     return 0.5 + 3.4 * Math.max(0, Math.min(1, Math.log(strength) / Math.log(3)));
   }
   var STATUS = ['shared', 'gained', 'lost'];
+  // support class of an edge (egaDifferential): 0 stable, 1 threshold-sensitive, 2 not testable
+  var SUPPORT = ['stable', 'threshold-sensitive', 'not testable'];
+  function supportOf(e) { var t = D.graph.edges.t; return t ? t[e] : 0; }
+  function supCls(e) { var t = supportOf(e); return t === 1 ? ' sup-ts' : t === 2 ? ' sup-nt' : ''; }
+  function supportItems(edges) {
+    var seen = [false, false, false], items = [];
+    edges.forEach(function (e) { seen[supportOf(e)] = true; });
+    if (seen[1]) items.push(['dash', 'sup-ts', 'threshold-sensitive (sub-threshold in the other ' + D.meta.kind + ')']);
+    if (seen[2]) items.push(['dash', 'sup-nt', 'not testable (other input thresholded)']);
+    return items;
+  }
 
   // ------------------------------------------------------------------------------------------------------------------
   // the neighbourhood of a gene (as egaReport.neighbourhood_subgraph)
@@ -742,7 +753,9 @@
           page.appendChild(el('p', { class: 'caption' }, '<span class="label">Evidence.</span> From the promoter outwards. Mark changes are log2 fold changes ' +
             esc(M.names[1]) + ' / ' + esc(M.names[0]) + ', at the promoter itself or over the nodes of a step; explains: the change agrees with the expression change by at least log2 ' +
             sig(M.chromatinThreshold, 2) + '. P and q: per-gene permutation test of the step; distance control: the change exceeds that at distance-matched mirror loci. ' +
-            'A blue bar marks a level that explains the gene, is significant and passes the distance control.'));
+            'A blue bar marks a level that explains the gene, is significant and passes the distance control.' +
+            (frag.cols.indexOf('Source') >= 0 && M.provenance ? ' Source: what the statement of a level rests on (' + M.provenance + ').' : '') +
+            (frag.cols.indexOf('Contacts') >= 0 && M.supportDefinition ? ' Contacts: support of the contacts that carry the level (' + esc(M.supportDefinition) + '); a grey bar marks a level resting only on threshold-sensitive contacts.' : '')));
         }
         if (frag.learned && frag.learned.length) {
           page.appendChild(el('p', { class: 'note' }, 'Under the mark roles learned from these data, ' + frag.learned.join('; ') + '.'));
@@ -779,6 +792,7 @@
     var top = nCols > 1 || hasSupport ? 30 : 10;
     var W = labelW + nCols * colW + supportW + 8, H = top + lad.levels.length * rowH + 8;
     var s = svg('svg', { viewBox: '0 0 ' + W + ' ' + H, width: W, role: 'img', 'aria-label': 'Explanation ladder of ' + gene });
+    var flagged = false;
     s.style.width = '100%';
     s.style.maxWidth = W + 'px';
     lad.levels.forEach(function (lv, r) {
@@ -814,13 +828,15 @@
         if (!cell) return;
         var y = top + r * rowH + rowH / 2;
         if (cell[1]) s.appendChild(svg('circle', { cx: x, cy: y, r: 9, class: 'lad-ring' }));
-        s.appendChild(svg('circle', { cx: x, cy: y, r: 5.2, class: cell[0] ? 'lad-yes' : 'lad-no' }));
+        s.appendChild(svg('circle', { cx: x, cy: y, r: 5.2, class: cell[0] ? (cell[2] ? 'lad-ts' : 'lad-yes') : 'lad-no' }));
+        if (cell[0] && cell[2]) flagged = true;
       });
     });
     fig.appendChild(s);
     fig.appendChild(el('figcaption', null, '<span class="label">Explanation ladder.</span> One row per level from the promoter outwards' +
       (nCols > 1 ? ', one column per promoter fragment' : '') + '. Filled: the level explains the expression change; open: it does not; ' +
       'blue ring: significant (q &lt; 0.05) and beyond distance-matched mirror loci.' +
+      (flagged ? ' Grey with a dotted outline: the level explains the change but rests only on threshold-sensitive contacts.' : '') +
       (hasSupport ? ' 3D support: how much closer graph neighbours at this step are in the nucleus than distance-matched pairs (0.5: no relation).' : '')));
     return fig;
   }
@@ -947,7 +963,7 @@
       var rx = Math.max((hi - lo) / 2, 0.5), ry = Math.max(3, h * Math.sqrt(Math.abs(mid(E.u[e]) - mid(E.v[e])) / longest));
       var d = 'M' + lo.toFixed(1) + ' ' + y + ' A' + rx.toFixed(1) + ' ' + ry.toFixed(1) + ' 0 0 ' + (up ? 1 : 0) + ' ' + hi.toFixed(1) + ' ' + y;
       var hit = svg('path', { d: d, class: 'hit' });
-      var p = svg('path', { d: d, class: 'arc ' + cls, 'stroke-width': width.toFixed(2) });
+      var p = svg('path', { d: d, class: 'arc ' + cls + supCls(e), 'stroke-width': width.toFixed(2) });
       hit.addEventListener('mousemove', function (evt) { showTip(evt, edgeTip(e, ctx)); });
       hit.addEventListener('mouseleave', hideTip);
       s.appendChild(hit);
@@ -1033,12 +1049,13 @@
     host.appendChild(legend([
       ['line', 'var(--shared)', 'interaction of the condition / shared'],
       ['line', 'var(--gained)', 'gained (only in ' + M.names[1] + ')'],
-      ['line', 'var(--lost)', 'lost (only in ' + M.names[0] + ')'],
-      ['seed', '', 'promoter of the gene'], ['bait', '', 'baited promoter'], ['expl', '', 'carries the explanation']]));
+      ['line', 'var(--lost)', 'lost (only in ' + M.names[0] + ')']].concat(supportItems(sub.edges)).concat([
+      ['seed', '', 'promoter of the gene'], ['bait', '', 'baited promoter'], ['expl', '', 'carries the explanation']])));
     host.appendChild(el('figcaption', null, '<span class="label">Arc view.</span> Interactions around <x-g>' + esc(ctx.gene) + '</x-g> up to ' + ctx.k +
       (ctx.k === 1 ? ' step' : ' steps') + ' in ' + esc(M.names[0]) + ' (top), in ' + esc(M.names[1]) + ' (middle) and their change (bottom: gained in ' + esc(M.names[1]) +
       ' above the axis in red, lost below in blue, shared in grey). Line width scales with interaction strength; ' + sub.nodes.length + ' nodes and ' + sub.edges.length + ' interactions' +
-      (sub.reduced ? ', reduced from ' + int(sub.total) + ' nodes to the strongest partners and the paths to the nodes that carry the explanation' : '') + '.'));
+      (sub.reduced ? ', reduced from ' + int(sub.total) + ' nodes to the strongest partners and the paths to the nodes that carry the explanation' : '') + '.' +
+      (supportItems(sub.edges).length ? ' Gained and lost contacts dotted and lighter: threshold-sensitive; dash-dotted: not testable; solid: stable.' : '')));
   }
 
   function edgeTip(e, ctx) {
@@ -1047,7 +1064,7 @@
     return '<div class="t">' + (st === 'shared' ? 'Shared interaction' : st === 'gained' ? 'Gained in ' + esc(M.names[1]) : 'Lost in ' + esc(M.names[1])) + '</div>' +
       '<div>' + capital(place(E.u[e], ctx.ref)) + '</div><div>' + capital(place(E.v[e], ctx.ref)) + '</div>' +
       '<div class="m">Strength ' + esc(M.names[0]) + ' ' + sig(E.a[e], 2) + ', ' + esc(M.names[1]) + ' ' + sig(E.b[e], 2) + ' (score / threshold); ' +
-      distance(Math.abs(mid(E.u[e]) - mid(E.v[e]))) + ' apart</div>';
+      distance(Math.abs(mid(E.u[e]) - mid(E.v[e]))) + ' apart' + (E.t && st !== 'shared' ? '; ' + SUPPORT[E.t[e]] : '') + '</div>';
   }
 
   function legend(items) {
@@ -1055,6 +1072,7 @@
     items.forEach(function (it) {
       var s = svg('svg', { width: it[0] === 'gradient' ? 120 : 26, height: 14, 'aria-hidden': 'true' });
       if (it[0] === 'line') s.appendChild(svg('line', { x1: 2, x2: 24, y1: 7, y2: 7, stroke: it[1], 'stroke-width': 2.4 }));
+      else if (it[0] === 'dash') s.appendChild(svg('line', { x1: 2, x2: 24, y1: 7, y2: 7, class: 'e-cond ' + it[1], 'stroke-width': 2.2 }));
       else if (it[0] === 'width') {
         s.appendChild(svg('line', { x1: 2, x2: 11, y1: 7, y2: 7, class: 'e-cond', 'stroke-width': 0.8 }));
         s.appendChild(svg('line', { x1: 14, x2: 24, y1: 7, y2: 7, class: 'e-cond', 'stroke-width': 3.6 }));
@@ -1102,7 +1120,7 @@
       var width = edgeWidth(state.mode === 'change' ? edgeStrength(e) : edgeStrength(e, state.mode));
       var a = pos[E.u[e]], b = pos[E.v[e]];
       var line = svg('line', { x1: a[0].toFixed(1), y1: a[1].toFixed(1), x2: b[0].toFixed(1), y2: b[1].toFixed(1),
-                               class: 'gline ' + (state.mode === 'change' ? 'e-' + STATUS[st] : 'e-cond'), 'stroke-width': width.toFixed(2) });
+                               class: 'gline ' + (state.mode === 'change' ? 'e-' + STATUS[st] : 'e-cond') + supCls(e), 'stroke-width': width.toFixed(2) });
       line._e = e;
       edgeLayer.appendChild(line);
       lines.push(line);
@@ -1169,7 +1187,7 @@
       ['square', 0.8, 'baited promoter'], ['circle', 'var(--ink)', 'other end'],
       ['square', 2.6, 'promoter of the gene'], ['circle', 'var(--explaining)', 'carries the explanation', 2.4],
       ['gradient', '', 'log2 ' + M.names[1] + ' / ' + M.names[0] + ', ' + MINUS + sig(M.maxLog2, 2) + ' to +' + sig(M.maxLog2, 2) + ': expression (squares), ' + ctx.mark + ' (circles)']
-    ].concat(state.mode === 'change' ? [['line', 'var(--gained)', 'gained'], ['line', 'var(--lost)', 'lost'], ['line', 'var(--shared)', 'shared']] : [['width', '', 'width by strength in ' + (state.mode === 'A' ? M.names[0] : M.names[1])]])));
+    ].concat(state.mode === 'change' ? [['line', 'var(--gained)', 'gained'], ['line', 'var(--lost)', 'lost'], ['line', 'var(--shared)', 'shared']] : [['width', '', 'width by strength in ' + (state.mode === 'A' ? M.names[0] : M.names[1])]]).concat(supportItems(sub.edges))));
     var named = [];
     [1, 2, 3].forEach(function (step) {
       var items = ctx.expl.filter(function (x) { return x[1] === step; }).slice(0, 3)
