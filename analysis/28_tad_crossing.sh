@@ -91,3 +91,5 @@ hs=(--tads "$results/compartments_domains/hic_reference/H1_50kb"
     --annotation "$data/annotation/gencode.v19.annotation.gtf.gz" -o "$out/reports"
 "$py" -m epigeneticgraphanalyzer.explorer -p "$results/hops_n/Md_vs_PA2" "${md[@]}" \
     --annotation "$data/kessler/mm10.ncbiRefSeq.gtf" -o "$out/explorer/"
+"$py" -m epigeneticgraphanalyzer.explorer -p "$results/hops_n/hESC_vs_hNEC" "${hs[@]}" \
+    --annotation "$data/annotation/gencode.v19.annotation.gtf.gz" -o "$out/explorer/"
