@@ -68,13 +68,18 @@ def pairs_to_bins(pairs, node_bins):
 
 
 # --------------------------------------------------------------------- metrics
-def pair_metrics(data, bin_a, bin_b, max_offset):
-    """Co-occurrence, distance-normalised co-occurrence and (GAM) NPMI of bin pairs."""
+def pair_metrics(data, bin_a, bin_b, max_offset, with_expected=True):
+    """Co-occurrence, distance-normalised co-occurrence and (GAM) NPMI of bin pairs.
+
+    with_expected=False skips the expected values per offset (cooc_oe, npmi_delta), which are costly for very large
+    offsets of fragment-level data; cooc and npmi are unchanged."""
     bin_a = np.asarray(bin_a, dtype=np.int64)
     bin_b = np.asarray(bin_b, dtype=np.int64)
     offset = np.abs(bin_b - bin_a)
     data.build_band(max_offset)
     cooc = data.cooccurrence(bin_a, bin_b)
+    if not with_expected:
+        return {'cooc': cooc, 'npmi': data.npmi(bin_a, bin_b)}
     expected = data.expected_by_offset(max_offset, 'cooc')
     exp_values = expected[np.clip(offset, 0, max_offset)]
     pseudo = np.nanmin(expected[1:][expected[1:] > 0]) * 0.1 if np.any(expected[1:] > 0) else 1e-9
@@ -142,6 +147,7 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
     rng = np.random.default_rng(seed)
     chrom_of = pools.chrom_index
     n_fallback = 0
+    fallback_index = []
     rows_index, rows_a, rows_b = [], [], []
     for (pair_class, offset), group in pairs.groupby(['pair_class', 'offset']):
         left_kind, right_kind = _class_pools(pair_class)
@@ -171,15 +177,19 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
                 if pool is None:
                     pool = candidates
                     n_fallback += 1
+                    fallback_index.append(test_index)
             choice = rng.integers(0, len(pool), size=n_controls)
             rows_index.extend([test_index] * n_controls)
             rows_a.extend(pool[choice, 0])
             rows_b.extend(pool[choice, 1])
     if coverage_class is not None or tad_id is not None:
         log.info('class-matched controls: %d of %d pairs fell back to offset matching', n_fallback, len(pairs))
-    return pd.DataFrame({'test_index': np.array(rows_index, dtype=np.int64),
-                         'bin_a': np.array(rows_a, dtype=np.int64),
-                         'bin_b': np.array(rows_b, dtype=np.int64)})
+    controls = pd.DataFrame({'test_index': np.array(rows_index, dtype=np.int64),
+                             'bin_a': np.array(rows_a, dtype=np.int64),
+                             'bin_b': np.array(rows_b, dtype=np.int64)})
+    controls.attrs['n_fallback'] = n_fallback
+    controls.attrs['fallback_index'] = np.array(fallback_index, dtype=np.int64)
+    return controls
 
 
 def _pair_code(bin_class, tad_id, bin_a, bin_b):
@@ -380,25 +390,38 @@ def summarize_against_controls(test_values, control_values, control_index, n_tes
 
 
 def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offset=None, seed=0,
-                   coverage_matched=0, compartment=None, tad_id=None):
+                   coverage_matched=0, compartment=None, tad_id=None, bin_class=None, with_expected=True,
+                   return_controls=False):
     """Metrics of test pairs and their matched controls; returns (per-pair table, summary table).
 
     coverage_matched > 0 additionally matches controls on that many coverage classes of their ends; `compartment`
     and `tad_id` (per bin, see domain_annotation) on the compartments of the ends and on whether both ends share a
-    topological domain. The per-pair table holds the concordance of every pair (<metric>_concordance).
+    topological domain; `bin_class` (any further per-bin class, e.g. graph_nulls.degree_bin_classes) on the
+    unordered pair of these classes of the ends. The per-pair table holds the concordance of every pair
+    (<metric>_concordance); table.attrs['control_fallback'] is the number of pairs without a class-matched control
+    (matched on the offset only), marked False in the column class_matched. With return_controls, the matched control pairs (bin_a, bin_b, test_index) are
+    returned as a third element.
     """
     if len(pairs) == 0:
-        return pairs, pd.DataFrame()
+        return (pairs, pd.DataFrame(), pd.DataFrame()) if return_controls else (pairs, pd.DataFrame())
     if max_offset is None:
         max_offset = int(pairs['offset'].max())
-    test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset)
+    test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset, with_expected=with_expected)
     classes = coverage_classes(pools, coverage_matched) if coverage_matched else None
     if compartment is not None:
         classes = domain_classes(classes, compartment)
+    if bin_class is not None:
+        base = classes if classes is not None else np.zeros(len(bin_class), dtype=np.int64)
+        extra = np.asarray(bin_class, dtype=np.int64) + 1
+        classes = base * (int(extra.max()) + 1) + extra
     controls = sample_matched_controls(pairs, pools, excluded, n_controls=n_controls, seed=seed,
                                        coverage_class=classes, tad_id=tad_id)
-    control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset)
+    control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset, with_expected=with_expected)
     table = pairs.copy()
+    table.attrs['control_fallback'] = controls.attrs.get('n_fallback', 0)
+    table['class_matched'] = True
+    if len(controls.attrs.get('fallback_index', [])):
+        table.loc[controls.attrs['fallback_index'], 'class_matched'] = False
     rows = []
     strata = distance_stratum(table['distance'].to_numpy())
     table['stratum'] = strata
@@ -429,6 +452,8 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
                                                         remap[controls['test_index'].to_numpy()[keep]],
                                                         len(sub_index))
                 rows.append(dict(set=label, pair_class=pair_class, stratum=stratum, metric=metric, **summary))
+    if return_controls:
+        return table, pd.DataFrame(rows), controls
     return table, pd.DataFrame(rows)
 
 

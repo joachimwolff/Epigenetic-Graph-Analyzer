@@ -1,24 +1,31 @@
 """Multi-way support of fragment pairs as a function of their distance in the graph (number of steps).
 
 Pairs at graph distance 1 (direct contacts), 2, 3, 4 and 5 or more steps, and pairs in the same connected component
-range are sampled within 2 Mb; each set is compared with control pairs at the same fragment offset drawn from the
-same pools of graph loci and the same coverage classes of the multi-way data (the matched controls of the pair
-validation, concordance of NPMI). With --compartments and --domains, controls also match the A/B compartments of both
-ends and whether both ends lie in the same topological domain. The 95% interval of the concordance comes from a
-block bootstrap over chromosomes, so that pairs sharing nodes and regions stay together.
+range are sampled within 2 Mb (--maxDistance; 0 keeps all pairs of one chromosome); each set is compared with control
+pairs at the same fragment offset drawn from the same pools of graph loci and the same coverage classes of the
+multi-way data (the matched controls of the pair validation, concordance of NPMI). With --compartments and
+--domains, controls also match the A/B compartments of both ends and whether both ends lie in the same topological
+domain. With --degreeClasses, controls also match the graph degree class of both ends (quantile classes among bait
+and among other-end loci, graph_nulls.degree_bin_classes), so that pairs of high-degree hubs are compared with
+pairs of equally connected loci. The 95% interval of the concordance comes from a block bootstrap over chromosomes,
+so that pairs sharing nodes and regions stay together. control_fallback counts the pairs without a class-matched
+control at their offset (matched on the offset only); then the concordance over the pairs with class-matched
+controls only is reported as well (*_class_matched).
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
-           [--coverageClasses 5] [--compartments BED] [--domains BED] [--bootstrap 1000]
+           [--coverageClasses 5] [--degreeClasses 0] [--compartments BED] [--domains BED] [--bootstrap 1000]
+           [--maxDistance 2000000] [--pairTable FILE]
 """
 
 import argparse
+import logging
 
-import networkx as nx
 import numpy as np
 import pandas as pd
 
 from epigeneticgraphanalyzer.genome import LiftOver
 from epigeneticgraphanalyzer.graph import read_graph
+from epigeneticgraphanalyzer.graph_nulls import degree_bin_classes, graph_distance_pairs
 from epigeneticgraphanalyzer.indirect import pair_class
 from epigeneticgraphanalyzer.multiway import MultiwayData
 from epigeneticgraphanalyzer.validation import (LocusPools, block_bootstrap, domain_annotation, map_nodes_to_bins,
@@ -37,6 +44,64 @@ def bin_positions(bins, ids):
     return (ids - first[bins.chrom_index_of_bins(ids)]) * bins.bin_size + bins.bin_size // 2
 
 
+def step_pairs(graph, node_bins, data, max_distance=MAX_DISTANCE, max_steps=MAX_STEPS):
+    """Pairs at graph distance 1..max_steps within max_distance (None: all cis), mapped to multi-way bins."""
+    pairs = graph_distance_pairs(graph, max_distance, max_steps)
+    pairs['pair_class'] = [pair_class(bool(graph.nodes[a].get('bait')), bool(graph.nodes[b].get('bait')))
+                           for a, b in zip(pairs['node_a'], pairs['node_b'])]
+    pairs = pairs_to_bins(pairs, node_bins)
+    # after a liftover, a few pairs land on distant positions of the multi-way assembly; keep the distance limit there
+    same_chrom = data.bins.chrom_index_of_bins(pairs['bin_a']) == data.bins.chrom_index_of_bins(pairs['bin_b'])
+    keep = same_chrom
+    if max_distance is not None:
+        lifted = bin_positions(data.bins, pairs['bin_a']), bin_positions(data.bins, pairs['bin_b'])
+        keep = same_chrom & (np.abs(lifted[1] - lifted[0]) <= max_distance)
+    if not keep.all():
+        print('{} pairs beyond {} bp or on other chromosomes after mapping to the multi-way assembly removed'.format(
+            int((~keep).sum()), max_distance), flush=True)
+        pairs = pairs[keep].reset_index(drop=True)
+    return pairs
+
+
+def evaluate_steps(pairs, data, pools, excluded, n_pairs, coverage_classes=5, compartment=None, tad_id=None,
+                   bin_class=None, n_boot=1000, steps_list=range(1, MAX_STEPS + 1), return_tables=False):
+    """Concordance of NPMI against matched controls per graph distance (one row per number of steps)."""
+    max_offset = int(pairs['offset'].max())
+    results, tables = [], {}
+    for steps in steps_list:
+        subset = pairs[pairs['steps'] == steps]
+        if len(subset) > n_pairs:
+            subset = subset.sample(n=n_pairs, random_state=steps)
+        subset = subset.reset_index(drop=True)
+        table, summary, controls = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
+                                                  max_offset=max_offset, seed=steps,
+                                                  coverage_matched=coverage_classes, compartment=compartment,
+                                                  tad_id=tad_id, bin_class=bin_class, with_expected=False,
+                                                  return_controls=True)
+        low, high = block_bootstrap(table['npmi_concordance'].to_numpy(), table['chrom'].to_numpy(),
+                                    n_boot=n_boot, seed=steps)
+        row = summary[(summary['metric'] == 'npmi') & (summary['pair_class'] == 'all') &
+                      (summary['stratum'] == 'all')].iloc[0]
+        results.append(dict(steps=steps, pairs_available=int((pairs['steps'] == steps).sum()), n=int(row['n']),
+                            median_distance=float(subset['distance'].median()),
+                            concordance=float(row['fraction_above_control']), ci_low=low, ci_high=high,
+                            mean_npmi=float(row['test_mean']), mean_npmi_control=float(row['control_mean']),
+                            control_fallback=int(table.attrs.get('control_fallback', 0))))
+        if results[-1]['control_fallback']:
+            # the same on the pairs with class-matched controls only
+            matched = table['class_matched'].to_numpy()
+            values = table['npmi_concordance'].to_numpy()[matched]
+            low_m, high_m = block_bootstrap(values, table['chrom'].to_numpy()[matched], n_boot=n_boot, seed=steps)
+            results[-1].update(n_class_matched=int(np.sum(~np.isnan(values))),
+                               concordance_class_matched=float(np.nanmean(values)), ci_low_class_matched=low_m,
+                               ci_high_class_matched=high_m,
+                               median_distance_class_matched=float(np.median(table['distance'].to_numpy()[matched])))
+        print(results[-1], flush=True)
+        if return_tables:
+            tables[steps] = (table, controls)
+    return (results, tables) if return_tables else results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
     parser.add_argument('graph')
@@ -46,14 +111,21 @@ def main():
     parser.add_argument('--chain', help='Chain from the graph assembly to the multi-way assembly')
     parser.add_argument('--pairs', type=int, default=50000, help='Pairs per graph distance')
     parser.add_argument('--coverageClasses', type=int, default=5)
+    parser.add_argument('--degreeClasses', type=int, default=0,
+                        help='Also match controls on this many graph degree classes of both ends (0: off)')
     parser.add_argument('--compartments', help='A/B compartments (BED name A*/B* or eigenvector bedGraph), '
                                                'multi-way assembly')
     parser.add_argument('--domains', help='Topological domains (BED), multi-way assembly')
     parser.add_argument('--bootstrap', type=int, default=1000)
+    parser.add_argument('--maxDistance', type=int, default=MAX_DISTANCE,
+                        help='Largest genomic distance of a pair (bp); 0 keeps all pairs of one chromosome')
+    parser.add_argument('--pairTable', help='Write the tested pairs with their NPMI, control mean and concordance '
+                                            '(TSV, .gz allowed)')
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
     chain = args.chain or (args.chain_file if args.chain_file not in (None, '-') else None)
     liftover = LiftOver(chain) if chain else None
-    n_pairs = args.pairs
+    max_distance = args.maxDistance if args.maxDistance > 0 else None
     graph = read_graph(args.graph)
     data = MultiwayData.load(args.multiway)
     compartment, tad_id = None, None
@@ -62,53 +134,22 @@ def main():
         compartment = compartment if args.compartments else None
         tad_id = tad_id if args.domains else None
     node_bins = map_nodes_to_bins(graph, data, liftover)
-    middle = {n: (int(d['start']) + int(d['end'])) // 2 for n, d in graph.nodes(data=True)}
-    rows = []
-    for source in graph.nodes:
-        lengths = nx.single_source_shortest_path_length(graph, source, cutoff=MAX_STEPS)
-        chrom = graph.nodes[source]['chrom']
-        for target, steps in lengths.items():
-            if target <= source or graph.nodes[target]['chrom'] != chrom:
-                continue
-            distance = abs(middle[target] - middle[source])
-            if distance > MAX_DISTANCE:
-                continue
-            rows.append((source, target, chrom, distance, steps))
-    pairs = pd.DataFrame(rows, columns=['node_a', 'node_b', 'chrom', 'distance', 'steps'])
-    pairs['pair_class'] = [pair_class(bool(graph.nodes[a].get('bait')), bool(graph.nodes[b].get('bait')))
-                           for a, b in zip(pairs['node_a'], pairs['node_b'])]
-    pairs = pairs_to_bins(pairs, node_bins)
-    # after a liftover, a few pairs land on distant positions of the multi-way assembly; keep the distance limit there
-    lifted = bin_positions(data.bins, pairs['bin_a']), bin_positions(data.bins, pairs['bin_b'])
-    same_chrom = data.bins.chrom_index_of_bins(pairs['bin_a']) == data.bins.chrom_index_of_bins(pairs['bin_b'])
-    keep = same_chrom & (np.abs(lifted[1] - lifted[0]) <= MAX_DISTANCE)
-    if not keep.all():
-        print('{} pairs beyond {} bp after mapping to the multi-way assembly removed'.format(int((~keep).sum()),
-                                                                                          MAX_DISTANCE), flush=True)
-        pairs = pairs[keep].reset_index(drop=True)
+    pairs = step_pairs(graph, node_bins, data, max_distance)
     pools = LocusPools(graph, node_bins, data)
+    bin_class = None
+    if args.degreeClasses:
+        bin_class = degree_bin_classes(graph, node_bins, data.bins.n_bins, args.degreeClasses)
+        print('degree classes of graph loci: {}'.format(dict(zip(*np.unique(bin_class[bin_class >= 0],
+                                                                            return_counts=True)))), flush=True)
     # every graph-connected pair within MAX_STEPS is excluded from the controls
     excluded = set(zip(pairs['bin_a'], pairs['bin_b']))
-    max_offset = int(pairs['offset'].max())
-    results = []
-    for steps in range(1, MAX_STEPS + 1):
-        subset = pairs[pairs['steps'] == steps]
-        if len(subset) > n_pairs:
-            subset = subset.sample(n=n_pairs, random_state=steps)
-        subset = subset.reset_index(drop=True)
-        table, summary = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
-                                        max_offset=max_offset, seed=steps, coverage_matched=args.coverageClasses,
-                                        compartment=compartment, tad_id=tad_id)
-        low, high = block_bootstrap(table['npmi_concordance'].to_numpy(), table['chrom'].to_numpy(),
-                                    n_boot=args.bootstrap, seed=steps)
-        row = summary[(summary['metric'] == 'npmi') & (summary['pair_class'] == 'all') &
-                      (summary['stratum'] == 'all')].iloc[0]
-        results.append(dict(steps=steps, pairs_available=int((pairs['steps'] == steps).sum()), n=int(row['n']),
-                            median_distance=float(subset['distance'].median()),
-                            concordance=float(row['fraction_above_control']), ci_low=low, ci_high=high,
-                            mean_npmi=float(row['test_mean']), mean_npmi_control=float(row['control_mean'])))
-        print(results[-1], flush=True)
+    results, tables = evaluate_steps(pairs, data, pools, excluded, args.pairs, args.coverageClasses, compartment,
+                                     tad_id, bin_class, args.bootstrap, return_tables=True)
     pd.DataFrame(results).to_csv(args.output, sep='\t', index=False)
+    if args.pairTable:
+        columns = ['steps', 'node_a', 'node_b', 'chrom', 'distance', 'pair_class', 'bin_a', 'bin_b', 'offset', 'npmi',
+                   'npmi_control', 'npmi_concordance', 'class_matched']
+        pd.concat([table[columns] for table, _ in tables.values()]).to_csv(args.pairTable, sep='\t', index=False)
 
 
 if __name__ == '__main__':
