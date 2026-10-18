@@ -113,13 +113,16 @@ def panel_gam(ax):
     label(ax, 'b', 'GAM: thin nuclear slices')
 
 
-def panel_test(ax):
+def panel_test(ax, communities=True):
+    """Schematic of the multi-way test; communities=False draws the pair test only."""
     # left: graph with grey edges, the indirect contact E1-E2 and community 1
     ox, oy = 0.0, 0.25
     pos = {n: (x + ox, y + oy) for n, (x, y) in LAYOUT.items()}
-    ax.add_patch(mpatches.FancyBboxPatch((ox + 0.3, oy + 0.0), 2.2, 1.4, boxstyle='round,pad=0.02,rounding_size=0.25',
-                                         facecolor=AQUA, alpha=0.13, lw=0))
-    ax.text(ox + 0.35, oy - 0.2, 'community 1', fontsize=6.5, color=AQUA)
+    if communities:
+        ax.add_patch(mpatches.FancyBboxPatch((ox + 0.3, oy + 0.0), 2.2, 1.4,
+                                             boxstyle='round,pad=0.02,rounding_size=0.25', facecolor=AQUA, alpha=0.13,
+                                             lw=0))
+        ax.text(ox + 0.35, oy - 0.2, 'community 1', fontsize=6.5, color=AQUA)
     for u, v in EDGES:
         ax.plot(*zip(pos[u], pos[v]), color=GRID, lw=1.3, zorder=2)
     t = np.linspace(0, 1, 60)[:, None]
@@ -153,7 +156,7 @@ def panel_test(ax):
         y = y0 + (len(groups) - 1 - i) * h
         ax.text(x0 - 0.08, y + h / 2, 'group {}'.format(i + 1), ha='right', va='center', fontsize=6, color=MUTED)
         both = {'E1', 'E2'} <= members
-        community = {'E1', 'P1', 'E2', 'E3', 'P2'} <= members
+        community = communities and {'E1', 'P1', 'E2', 'E3', 'P2'} <= members
         if community:
             ax.add_patch(mpatches.Rectangle((x0 - 0.02, y - 0.01), 5 * w + 0.04, h + 0.02, facecolor='none',
                                             edgecolor=AQUA, lw=1.4, zorder=4))
@@ -167,13 +170,15 @@ def panel_test(ax):
     ax.text(right, 1.78, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
     ax.text(right, 1.33, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
             va='center')
-    ax.text(right, 0.78, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
-    ax.text(right, 0.22, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
+    if communities:
+        ax.text(right, 0.78, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
+        ax.text(right, 0.22, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
     ax.set_xlim(-0.05, 12.3)
     ax.set_ylim(-0.1, 2.05)
     ax.set_aspect('equal')
     ax.axis('off')
-    label(ax, 'c', 'Multi-way groups observe indirect contacts and communities directly')
+    label(ax, 'c', 'Multi-way groups observe indirect contacts and communities directly' if communities else
+          'Multi-way groups observe indirect contacts directly')
 
 
 def panel_steps(ax, results):
