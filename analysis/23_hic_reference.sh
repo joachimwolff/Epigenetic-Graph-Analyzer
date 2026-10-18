@@ -3,7 +3,7 @@
 # (hicPCA, 100 kb and 250 kb, first eigenvector, sign oriented by protein-coding gene density) and TADs (hicFindTADs,
 # 50 kb) of the 4DN mcool files of GM12878 (Hi-C), K562 (Hi-C) and H1-hESC (Micro-C), all GRCh38.
 # Output: <results>/compartments_domains/hic_reference/<cell>_pc1_<res>.bedgraph, <cell>_50kb_domains.bed,
-#         <cell>_50kb_boundaries.bed, <cell>_50kb_tad_score.bm
+#         <cell>_50kb_boundaries.bed, <cell>_50kb_tad_score.bm, genes_{hg38,hg19}_protein_coding.bed
 # Requires HiCExplorer (hicPCA, hicFindTADs; set HICEXPLORER_BIN to the directory holding them).
 set -euo pipefail
 mcool=${1:?usage: 23_hic_reference.sh <mcool_dir> <data_dir> <results_dir> [threads]}
@@ -14,13 +14,17 @@ bin=${HICEXPLORER_BIN:-}
 [ -n "$bin" ] && bin="$bin/"
 out="$results/compartments_domains/hic_reference"
 mkdir -p "$out"
-genes="$out/genes_hg38_protein_coding.bed"
-if [ ! -s "$genes" ]; then
-    zcat "$data/annotation/gencode.v29.annotation.gtf.gz" \
+# protein-coding genes of both assemblies: hg38 orients hicPCA, hg19 and hg38 give the gene density of
+# compartments_common.py
+for assembly in hg38:v29 hg19:v19; do
+    genes="$out/genes_${assembly%%:*}_protein_coding.bed"
+    [ -s "$genes" ] && continue
+    zcat "$data/annotation/gencode.${assembly#*:}.annotation.gtf.gz" \
         | awk -F'\t' '$3=="gene" && $9 ~ /gene_type "protein_coding"/ {match($9,/gene_name "[^"]+"/);
               print $1"\t"$4-1"\t"$5"\t"substr($9,RSTART+11,RLENGTH-12)"\t0\t"$7}' \
         | grep -E '^chr([0-9]+|X)\s' | sort -k1,1 -k2,2n > "$genes"
-fi
+done
+genes="$out/genes_hg38_protein_coding.bed"
 chroms=$(for c in $(seq 1 22) X; do printf 'chr%s ' "$c"; done)
 while read -r cell accession; do
     for res in 100000 250000; do
