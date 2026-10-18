@@ -6,6 +6,8 @@
 #      kind and length bin of every edge (rewired_null.py; log10 length bins of 0.1, 0.3 and 1.0)
 #   B6 input comparability: size, edge lengths and degrees of every graph (graph_comparability.py) and the GM12878
 #      step curves with the graph built at CHiCAGO score 5, 8 and 12
+#   B7 graph sensitivity: distance limit of the pairs (hop_distance.py --maxDistance), number of shortest paths and
+#      personalised PageRank of the indirect pairs (path_ensemble.py)
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -116,6 +118,28 @@ if [[ "$stage" == all || "$stage" == B6 ]]; then
             run "${prefix}_${m%%:*}_hops.tsv" "${prefix}_${m%%:*}_hops.log" "$py" "$here/hop_distance.py" \
                 "$prefix.graphml" "${m#*:}" "${prefix}_${m%%:*}_hops.tsv" &
         done
+    done
+    wait
+fi
+
+if [[ "$stage" == all || "$stage" == B7 ]]; then
+    # graph sensitivity: (a) distance limit of the tested pairs (2 Mb, 5 Mb, all of one chromosome) on the graph with
+    # edges <= 2 Mb and on the graph without an edge length limit; (b) number of shortest paths and personalised
+    # PageRank of the tested pairs at two and three steps (pair tables of stage B1)
+    o="$out/B7_sensitivity"
+    mkdir -p "$o"
+    for g in "GM_chicago:$gm" "GM_chicago_all:$results/graphs_nolimit/GM_chicago_all.graphml"; do
+        for d in 2000000 5000000 0; do
+            name="${g%%:*}_sprite_max$d"
+            wait_slot
+            run "$o/${name}_hops.tsv" "$o/${name}_hops.log" "$py" "$here/hop_distance.py" "${g#*:}" "$sprite" \
+                "$o/${name}_hops.tsv" --maxDistance "$d" &
+        done
+    done
+    for m in sprite hiporec; do
+        wait_slot
+        run "$o/GM_chicago_${m}_paths_strata.tsv" "$o/GM_chicago_${m}_paths.log" "$py" "$here/path_ensemble.py" \
+            "$gm" "$out/B1_degree_null/GM_chicago_${m}_hops_coverage_pairs.tsv.gz" "$o/GM_chicago_${m}_paths" &
     done
     wait
 fi

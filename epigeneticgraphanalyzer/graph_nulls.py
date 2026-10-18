@@ -5,6 +5,8 @@
   separately for bait and other-end loci, so that controls can match the degree of both ends of a tested pair
 * rewire_by_distance: degree-preserving double-edge swaps that stay on one chromosome, keep the bait / other-end
   structure of every edge and keep each edge length within its logarithmic length bin
+* walk_counts, pair_ppr: number of shortest paths and symmetric personalised PageRank of node pairs
+* graph_statistics: size and shape of a graph
 """
 
 import bisect
@@ -14,6 +16,7 @@ import math
 import networkx as nx
 import numpy as np
 import pandas as pd
+import scipy.sparse as sp
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +194,65 @@ def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_
                       fraction_edges_changed=float(len(final - original) / max(1, n_edges)))
     log.info('rewiring: %s', statistics)
     return rewired, statistics
+
+
+def adjacency(graph):
+    """Unweighted symmetric adjacency (CSR) and the node order."""
+    nodes = list(graph.nodes)
+    return nx.to_scipy_sparse_array(graph, nodelist=nodes, weight=None, format='csr').astype(np.float64), nodes
+
+
+def walk_counts(A, index_a, index_b, steps):
+    """Number of walks of length `steps` between node indices a and b (element-wise); for pairs at shortest-path
+    distance `steps` this is the number of distinct shortest paths (for steps 2, the number of common neighbours)."""
+    index_a = np.asarray(index_a, dtype=np.int64)
+    index_b = np.asarray(index_b, dtype=np.int64)
+    left = A
+    for _ in range(steps - 2):
+        left = left @ A
+    result = np.zeros(len(index_a))
+    for start in range(0, len(index_a), 20000):
+        a, b = index_a[start:start + 20000], index_b[start:start + 20000]
+        rows = left[a] if steps > 1 else None
+        if steps == 1:
+            result[start:start + len(a)] = np.asarray(A[a, b]).ravel()
+            continue
+        result[start:start + len(a)] = np.asarray(rows.multiply(A[b]).sum(axis=1)).ravel()
+    return result
+
+
+def personalized_pagerank(A, sources, damping=0.85, iterations=50):
+    """Personalised PageRank of the unweighted graph for the given source indices: a dense matrix nodes x sources
+    whose column k is the stationary visiting distribution of a walk restarting at sources[k] with probability
+    1 - damping."""
+    degree = np.asarray(A.sum(axis=0)).ravel()
+    inverse = np.where(degree > 0, 1.0 / np.maximum(degree, 1), 0.0)
+    P = (A @ sp.diags(inverse)).tocsr()          # column-stochastic transition matrix
+    sources = np.asarray(sources, dtype=np.int64)
+    restart = np.zeros((A.shape[0], len(sources)))
+    restart[sources, np.arange(len(sources))] = 1.0
+    x = restart.copy()
+    for _ in range(iterations):
+        x = damping * (P @ x) + (1 - damping) * restart
+    return x
+
+
+def pair_ppr(A, index_a, index_b, damping=0.85, iterations=50, batch=512):
+    """Symmetric personalised PageRank of node pairs: mean of PPR_a(b) and PPR_b(a)."""
+    index_a = np.asarray(index_a, dtype=np.int64)
+    index_b = np.asarray(index_b, dtype=np.int64)
+    score = np.zeros(len(index_a))
+    sources = np.unique(np.concatenate([index_a, index_b]))
+    position = -np.ones(A.shape[0], dtype=np.int64)
+    for start in range(0, len(sources), batch):
+        chunk = sources[start:start + batch]
+        x = personalized_pagerank(A, chunk, damping, iterations)
+        position[:] = -1
+        position[chunk] = np.arange(len(chunk))
+        for source, target in ((index_a, index_b), (index_b, index_a)):
+            hit = np.nonzero(position[source] >= 0)[0]
+            score[hit] += 0.5 * x[target[hit], position[source[hit]]]
+    return score
 
 
 def graph_statistics(graph, max_distance=2000000):

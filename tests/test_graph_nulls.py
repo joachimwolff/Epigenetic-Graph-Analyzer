@@ -117,6 +117,22 @@ def test_class_matched_controls_record_fallbacks():
     assert ((controls['bin_b'] - controls['bin_a']) == 5).all()
 
 
+def test_walk_counts_and_personalized_pagerank():
+    from epigeneticgraphanalyzer.graph_nulls import adjacency, pair_ppr, personalized_pagerank, walk_counts
+    graph = nx.Graph([('a', 'b'), ('b', 'c'), ('c', 'd'), ('d', 'a'), ('c', 'e'), ('e', 'f')])
+    A, nodes = adjacency(graph)
+    i = {n: k for k, n in enumerate(nodes)}
+    # a - c: two shortest paths (via b and via d), b - e one (via c); a - e: a-b-c-e and a-d-c-e, d - f: d-c-e-f
+    assert walk_counts(A, [i['a'], i['b']], [i['c'], i['e']], 2).tolist() == [2.0, 1.0]
+    assert walk_counts(A, [i['a'], i['d']], [i['e'], i['f']], 3).tolist() == [2.0, 1.0]
+    x = personalized_pagerank(A, [i['a']], damping=0.85, iterations=200)[:, 0]
+    reference = nx.pagerank(graph, alpha=0.85, personalization={'a': 1.0}, weight=None, tol=1e-12, max_iter=5000)
+    assert np.allclose(x, [reference[n] for n in nodes], atol=1e-8)
+    score = pair_ppr(A, [i['a']], [i['f']], iterations=200, batch=1)
+    reverse = nx.pagerank(graph, alpha=0.85, personalization={'f': 1.0}, weight=None, tol=1e-12, max_iter=5000)
+    assert np.isclose(score[0], 0.5 * (reference['f'] + reverse['a']), atol=1e-8)
+
+
 def test_graph_statistics():
     from epigeneticgraphanalyzer.graph_nulls import graph_statistics
     graph = nx.Graph()
