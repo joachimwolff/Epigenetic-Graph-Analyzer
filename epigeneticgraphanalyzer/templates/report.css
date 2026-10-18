@@ -106,6 +106,18 @@ table tr:last-child td { border-bottom: 1px solid var(--ink); }
 .evidence tr.supported td:first-child { box-shadow: inset 3px 0 0 var(--accent); padding-left: 0.5rem; }
 .evidence td:first-child { padding-left: 0.5rem; }
 .evidence th:first-child { padding-left: 0.5rem; }
+.evidence tr.sensitive td:first-child { box-shadow: inset 3px 0 0 var(--faint); }
+
+/* provenance tags (M measured, C called, D derived, I interpretation) and support of the contacts */
+.prov-chain { white-space: nowrap; }
+.prov { display: inline-block; min-width: 1.05em; padding: 0 0.15em; margin: 0 0.05em; border: 1px solid var(--faint);
+        border-radius: 2px; font-size: 0.68rem; line-height: 1.2; text-align: center; color: var(--muted);
+        font-weight: 600; vertical-align: 0.1em; }
+.prov-I { background: var(--soft); }
+.prov-arrow { color: var(--faint); font-size: 0.75rem; margin: 0 0.05em; }
+.support-ts { color: var(--muted); text-decoration: underline dotted; text-underline-offset: 0.18em; }
+.support-nt { color: var(--muted); font-style: italic; }
+.support-stable { color: var(--ink); }
 
 .states p { margin: 0.4rem 0 0.8rem; }
 
