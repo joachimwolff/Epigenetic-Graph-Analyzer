@@ -21,7 +21,11 @@ Genes
                          distance k) of the sum over the shortest paths from the
                          bait to m of the product of r along the path, times signal(m).
 
-    The feature is log2(activity_B / activity_A). Expression changes are
+    The feature is log2(activity_B / activity_A) (pseudo count 1). It mixes changes of the contact strength r
+    and of the mark; the step feature 'decomposed' (ActivityOperators, step_terms) splits it into the mark term
+    (marks of B versus A under the fixed strengths r_bar = (r_A + r_B) / 2) and the contact term (strengths of B
+    versus A under the fixed marks x_bar = (x_A + x_B) / 2) and evaluates the step levels on the mark term.
+    Expression changes are
     related to these features by nested linear models (one level added at a
     time) and by a hierarchical classification (promoter, 1 hop, 2 hops, ...,
     n hops, unexplained). The contribution of the levels at k >= 2 hops is
@@ -219,8 +223,45 @@ def hop_levels(features, marks):
     return ['direct', 'indirect'] + ['hop{}'.format(k) for k in sorted(found) if k >= 3]
 
 
+STEP_FEATURES = ('combined', 'marks', 'contacts', 'decomposed')
+STEP_TERMS = ('combined', 'marks', 'contacts')
+
+
+def step_terms(H_a, H_b, H_mean, vector_a, vector_b, pseudo_count=1.0):
+    """The three step features of every source at one level (log2 B/A):
+
+    combined  log2 (H_B x_B + c) / (H_A x_A + c), contact strengths and marks of each condition;
+    marks     log2 (H_bar x_B + c) / (H_bar x_A + c), the mark term: path weights of r_bar = (r_A + r_B) / 2 (an edge
+              called in one condition only enters with half its strength) fixed in both conditions;
+    contacts  log2 (H_B x_bar + c) / (H_A x_bar + c), the contact term: mark signals x_bar = (x_A + x_B) / 2 fixed.
+
+    The mark term is 0 when only contacts change, the contact term 0 when only marks change."""
+    mean = (vector_a + vector_b) / 2
+    return {'combined': np.log2((H_b @ vector_b + pseudo_count) / (H_a @ vector_a + pseudo_count)),
+            'marks': np.log2((H_mean @ vector_b + pseudo_count) / (H_mean @ vector_a + pseudo_count)),
+            'contacts': np.log2((H_b @ mean + pseudo_count) / (H_a @ mean + pseudo_count))}
+
+
+def term_driver(combined, marks, contacts):
+    """Which term carries a concordant level: 'both' (mark and contact term concordant), 'marks', 'contacts',
+    'neither' (only the combined feature is concordant) or '' (no feature concordant)."""
+    if marks and contacts:
+        return 'both'
+    if marks:
+        return 'marks'
+    if contacts:
+        return 'contacts'
+    return 'neither' if combined else ''
+
+
 class ActivityOperators:
     """Sparse operators mapping a node signal vector to the k-hop activities of source nodes, k = 1 .. max_hops.
+
+    `step_feature` sets what the step levels measure: 'combined' (default) the change of the contact-weighted mark
+    signal with the contact strengths and marks of each condition; 'marks' and 'decomposed' the mark term, path
+    weights of r_bar = (r_A + r_B) / 2 in both conditions (hop_a = hop_b; 'decomposed' adds the columns of all three
+    terms, step_terms); 'contacts' the contact term, the condition weights applied to the mean signal
+    (step_vectors). condition_a / condition_b (condition_level) always hold the weights of the two conditions.
 
     The activity of source s at k hops in condition c is H_c^(k) @ signal_c with
     H_c^(k)[s, m] = sum over the shortest paths s = n_0, n_1, ..., n_k = m of prod_i r_c(n_{i-1}, n_i),
@@ -231,10 +272,13 @@ class ActivityOperators:
     r_c(s, n) r_c(n, m), m at exactly two hops) as before; hop_a[k], hop_b[k] and n_hop[k] hold every level.
     """
 
-    def __init__(self, graph, sources, max_hops=2):
+    def __init__(self, graph, sources, max_hops=2, step_feature='combined'):
         import scipy.sparse as sp
         if max_hops < 2:
             raise ValueError('max_hops must be at least 2')
+        if step_feature not in STEP_FEATURES:
+            raise ValueError('Unknown step feature {} (one of {})'.format(step_feature, ', '.join(STEP_FEATURES)))
+        self.step_feature = step_feature
         self.max_hops = int(max_hops)
         self.levels = [level_name(k) for k in range(1, self.max_hops + 1)]
         self.nodes = list(graph.nodes)
@@ -260,6 +304,11 @@ class ActivityOperators:
         frontier = A_s
         self.hop_a = {1: W_a[src]}
         self.hop_b = {1: W_b[src]}
+        mean_weights = step_feature in ('marks', 'decomposed')
+        if mean_weights:
+            # mark term: the same path weights in both conditions, products of r_bar = (r_A + r_B) / 2
+            W_m = ((W_a + W_b) * 0.5).tocsr()
+            hop_m = {1: W_m[src]}
         self.n_hop = {}
         for k in range(2, self.max_hops + 1):
             reach = (frontier @ A).tocsr()
@@ -269,24 +318,48 @@ class ActivityOperators:
             mask.eliminate_zeros()
             self.hop_a[k] = (self.hop_a[k - 1] @ W_a).multiply(mask).tocsr()
             self.hop_b[k] = (self.hop_b[k - 1] @ W_b).multiply(mask).tocsr()
+            if mean_weights:
+                hop_m[k] = (hop_m[k - 1] @ W_m).multiply(mask).tocsr()
             self.n_hop[k] = np.asarray((mask > 0).sum(axis=1)).ravel()
             if k < self.max_hops:
                 visited = visited + mask
                 visited.data[:] = 1.0
                 frontier = mask
+        # path weights of the two conditions (contact_<level>, the contact term); hop_a / hop_b are the weights of
+        # the step feature: the condition weights, or r_bar in both conditions for the mark term
+        self.condition_a = dict(self.hop_a)
+        self.condition_b = dict(self.hop_b)
+        if mean_weights:
+            self.hop_a = dict(hop_m)
+            self.hop_b = dict(hop_m)
         self.direct_a = self.hop_a[1]
         self.direct_b = self.hop_b[1]
         self.indirect_a = self.hop_a[2]
         self.indirect_b = self.hop_b[2]
-        self.n_direct = np.asarray((self.direct_a > 0).sum(axis=1)).ravel()
+        # partners of condition A (the same under every step feature)
+        self.n_direct = np.asarray((self.condition_a[1] > 0).sum(axis=1)).ravel()
         self.n_hop[1] = self.n_direct
         self.n_indirect = self.n_hop[2]
         self.source_index = src
 
     def level(self, level):
-        """(H_a, H_b, number of nodes) of a level name (direct, indirect, hop<k>)."""
+        """(H_a, H_b, number of nodes) of a level name (direct, indirect, hop<k>), the path weights of the step
+        feature (mark term: r_bar in both conditions)."""
         k = level_hops(level)
         return self.hop_a[k], self.hop_b[k], self.n_hop[k]
+
+    def condition_level(self, level):
+        """(H_a, H_b, number of nodes) with the path weights of the two conditions, whatever the step feature."""
+        k = level_hops(level)
+        return self.condition_a[k], self.condition_b[k], self.n_hop[k]
+
+    def step_vectors(self, vector_a, vector_b):
+        """Node signals entering the step levels: the signals of the two conditions, or for the contact term
+        (step feature 'contacts') their mean x_bar = (x_A + x_B) / 2 in both conditions."""
+        if self.step_feature == 'contacts':
+            mean = (np.asarray(vector_a, dtype=float) + np.asarray(vector_b, dtype=float)) / 2
+            return mean, mean
+        return vector_a, vector_b
 
     def vector(self, signal):
         return np.array([signal.get(n, 0.0) for n in self.nodes], dtype=float)
@@ -307,7 +380,10 @@ def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=N
     `expression_change` maps bait node -> RNA log2 fold change. Precomputed
     `operators` (which then set the number of hops) and `mark_vectors` (name -> (vector_a, vector_b)) are used
     when given. Columns per level (direct, indirect, hop3, ...): n_<level> (nodes at that distance),
-    contact_<level> and <mark>_<level>.
+    contact_<level> (always with the contact strengths of the two conditions) and <mark>_<level>, the step feature
+    of the operators (operators.step_feature: combined, the mark term or the contact term, step_terms); with the
+    step feature 'decomposed' (<mark>_<level> = mark term) in addition <mark>_<level>_combined, _marks and
+    _contacts.
     """
     if operators is None:
         operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops)
@@ -325,14 +401,22 @@ def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=N
     features = pd.DataFrame(columns)
     ones = np.ones(len(operators.nodes))
     for level in levels:
-        H_a, H_b, _ = operators.level(level)
+        H_a, H_b, _ = operators.condition_level(level)
         features['contact_' + level] = np.log2((H_b @ ones + pseudo_count) / (H_a @ ones + pseudo_count))
     src = operators.source_index
+    decomposed = operators.step_feature == 'decomposed'
     for mark, (vector_a, vector_b) in mark_vectors.items():
         features[mark + '_promoter'] = np.log2((vector_b[src] + pseudo_count) / (vector_a[src] + pseudo_count))
+        step_a, step_b = operators.step_vectors(vector_a, vector_b)
         for level in levels:
             H_a, H_b, _ = operators.level(level)
-            features[mark + '_' + level] = np.log2((H_b @ vector_b + pseudo_count) / (H_a @ vector_a + pseudo_count))
+            features[mark + '_' + level] = np.log2((H_b @ step_b + pseudo_count) / (H_a @ step_a + pseudo_count))
+        if decomposed:
+            for level in levels:
+                C_a, C_b, _ = operators.condition_level(level)
+                terms = step_terms(C_a, C_b, operators.level(level)[0], vector_a, vector_b, pseudo_count)
+                for term in STEP_TERMS:
+                    features['{}_{}_{}'.format(mark, level, term)] = terms[term]
     return features
 
 
@@ -394,7 +478,9 @@ def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0, th
     distance on the opposite side of s (mirrored around the midpoint of s),
     keeping the contact (path-product) weights. The mark signal of the mirrored intervals is
     read from the bigWig files (in parallel over `threads` processes), so the control has the genomic distance
-    profile of the real neighbourhood without its 3D topology.
+    profile of the real neighbourhood without its 3D topology. The path weights and signals are those of the step
+    feature of the operators (<mark>_<level>_mirror); with 'decomposed' (main column: the mark term) in addition
+    <mark>_<level>_combined_mirror and <mark>_<level>_contacts_mirror.
     """
     src_nodes = operators.sources
     node_start = np.array([graph.nodes[n]['start'] for n in operators.nodes], dtype=np.int64)
@@ -409,18 +495,30 @@ def mirrored_features(graph, operators, tracks_a, tracks_b, pseudo_count=1.0, th
         rows, cols = pattern.row, pattern.col
         weight_a = np.asarray(W_a.tocsr()[rows, cols]).ravel()
         weight_b = np.asarray(W_b.tocsr()[rows, cols]).ravel()
+        C_a, C_b, _ = operators.condition_level(level)
+        condition_a = np.asarray(C_a.tocsr()[rows, cols]).ravel()
+        condition_b = np.asarray(C_b.tocsr()[rows, cols]).ravel()
         chroms = list(source_chrom[rows])
         starts = source_centre[rows] - node_end[cols]
         ends = source_centre[rows] - node_start[cols]
         paths = list(dict.fromkeys(p for tracks in (tracks_a, tracks_b) for mark in tracks for p in tracks[mark]))
         read = _interval_signals(paths, chroms, starts, ends, threads) if len(rows) else {}
+
+        def change(w_a, w_b, s_a, s_b):
+            activity_a = np.bincount(rows, weights=w_a * s_a, minlength=len(src_nodes))
+            activity_b = np.bincount(rows, weights=w_b * s_b, minlength=len(src_nodes))
+            return np.log2((activity_b + pseudo_count) / (activity_a + pseudo_count))
+
         for mark in tracks_a:
             signal_a = np.mean([read[p] for p in tracks_a[mark]], axis=0) if len(rows) else np.zeros(0)
             signal_b = np.mean([read[p] for p in tracks_b[mark]], axis=0) if len(rows) else np.zeros(0)
-            activity_a = np.bincount(rows, weights=weight_a * signal_a, minlength=len(src_nodes))
-            activity_b = np.bincount(rows, weights=weight_b * signal_b, minlength=len(src_nodes))
-            columns['{}_{}_mirror'.format(mark, level)] = np.log2((activity_b + pseudo_count) /
-                                                                   (activity_a + pseudo_count))
+            step_a, step_b = operators.step_vectors(signal_a, signal_b)
+            columns['{}_{}_mirror'.format(mark, level)] = change(weight_a, weight_b, step_a, step_b)
+            if operators.step_feature == 'decomposed':
+                mean = (signal_a + signal_b) / 2
+                columns['{}_{}_combined_mirror'.format(mark, level)] = change(condition_a, condition_b, signal_a,
+                                                                              signal_b)
+                columns['{}_{}_contacts_mirror'.format(mark, level)] = change(condition_a, condition_b, mean, mean)
     return pd.DataFrame(columns, index=src_nodes)
 
 
@@ -1236,6 +1334,16 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                 have_mirror = bool(mirror) and all(not pd.isna(v) for v in mirror.values())
                 if have_mirror:
                     row['mirror_changes'] = ';'.join('{}:{:+.2f}'.format(m, float(v)) for m, v in mirror.items())
+                # step feature 'decomposed': the combined feature, the mark term and the contact term of the step
+                terms = {}
+                if fl != 'promoter' and all('{}_{}_marks'.format(m, fl) in r for m in marks):
+                    for term in STEP_TERMS:
+                        terms[term] = {m: float(np.nan_to_num(r.get('{}_{}_{}'.format(m, fl, term), np.nan)))
+                                       for m in marks}
+                        column = {'combined': 'combined_changes', 'marks': 'mark_term_changes',
+                                  'contacts': 'contact_term_changes'}[term]
+                        row[column] = ';'.join('{}:{:+.2f}'.format(m, v) for m, v in terms[term].items())
+                        new_columns.setdefault(column, None)
                 for roles in roles_sets:
                     sign = {m: sign_of(signs[roles], m, fl) for m in marks}
                     row['signs_' + roles] = ';'.join('{}:{:+d}'.format(m, int(s)) for m, s in sign.items())
@@ -1259,6 +1367,18 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                                        for m in concordant)
                         beyond = float(mirrored < len(concordant))
                     row['beyond_mirror_' + roles] = beyond
+                    if terms:
+                        hits = {term: [m for m in marks if sign[m] and
+                                       _concordant([terms[term][m]], sign[m], d, chromatin_threshold)[0]]
+                                for term in STEP_TERMS}
+                        extra = {'concordant_combined_' + roles: ','.join(hits['combined']),
+                                 'concordant_mark_term_' + roles: ','.join(hits['marks']),
+                                 'concordant_contact_term_' + roles: ','.join(hits['contacts']),
+                                 'driver_' + roles: term_driver(bool(hits['combined']), bool(hits['marks']),
+                                                                bool(hits['contacts']))}
+                        row.update(extra)
+                        for column in extra:
+                            new_columns.setdefault(column, None)
                     p = q = np.nan
                     if (roles, fl) in pq:
                         p, q = pq[(roles, fl)][0].get(node, np.nan), pq[(roles, fl)][1].get(node, np.nan)
@@ -1283,7 +1403,7 @@ def explanation_levels(classes, graph, operators, mark_vectors, marks, signs, st
                         best_kind = {kind: (0.0, None, None) for kind in kinds}
                         positive = np.zeros(len(columns), dtype=bool)
                         for m in used:
-                            va, vb = mark_vectors[m]
+                            va, vb = operators.step_vectors(*mark_vectors[m])
                             contribution = (w_b * vb[columns] - w_a * va[columns]) * sign[m] * d
                             if sign[m]:
                                 positive |= contribution > 0
@@ -1773,7 +1893,7 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
         H_a, H_b, _ = operators.level(first)
         drivers = []
         for mark in explaining:
-            vector_a, vector_b = mark_vectors[mark]
+            vector_a, vector_b = operators.step_vectors(*mark_vectors[mark])
             row_a = H_a.getrow(i)
             row_b = H_b.getrow(i)
             columns = np.union1d(row_a.indices, row_b.indices)
@@ -1819,17 +1939,21 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
 
 
 def permutation_test(graph, marks, expression_change, mark_signs, n_permutations=100, seed=0,
-                     rna_threshold=1.0, chromatin_threshold=1.0, max_hops=2):
+                     rna_threshold=1.0, chromatin_threshold=1.0, max_hops=2, step_feature='combined'):
     """Null distribution of the contribution of every level at k >= 2 hops.
 
     Mark signals of all non-source nodes are permuted jointly (A and B values of
     a node move together, so the distribution of changes is preserved) while the
-    graph and the signals at the source promoters stay fixed. The indirect (2-hop) level keeps its keys
+    graph and the signals at the source promoters stay fixed (the levels measure `step_feature`, see
+    ActivityOperators: with the mark term the permuted signals enter with the fixed weights r_bar, with the contact
+    term as the mean of A and B). The indirect (2-hop) level keeps its keys
     (observed_indirect_delta_r2, observed_fraction_indirect, ...); levels at k >= 3 hops add the same statistics as
     observed_hop<k>_delta_r2, observed_fraction_hop<k>, ...
     """
     rng = np.random.default_rng(seed)
-    operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops)
+    # the step feature of the levels (decomposed: the mark term, without the columns of the other terms)
+    operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops,
+                                  step_feature='marks' if step_feature == 'decomposed' else step_feature)
     levels = operators.levels
     tested = levels[1:]   # indirect, hop3, ...
     position = {level: levels.index(level) + 1 for level in tested}   # row of the level in nested_models
@@ -1949,7 +2073,9 @@ def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rn
     The permutations come in blocks of PERMUTATION_BLOCK; block b draws from
     np.random.default_rng(np.random.SeedSequence([seed, b])), so the result does not depend on `threads` (worker
     processes over blocks). Within a block the permuted signals form a matrix (nodes x permutations) and every mark
-    and level takes one sparse-dense product.
+    and level takes one sparse-dense product. The statistic is that of the step feature of the operators
+    (ActivityOperators): with the mark term ('marks', 'decomposed') the permuted signals enter with the path weights
+    of r_bar in both conditions, so a concordant change carried by contact gains alone does not count.
     """
     if genes is None:
         genes = {'indirect': None}
@@ -1975,7 +2101,9 @@ def gene_level_hop_test(operators, mark_vectors, features, marks, mark_signs, rn
     others = np.nonzero(~is_source)[0]
     position = np.full(len(operators.nodes), -1, dtype=np.int64)
     position[others] = np.arange(len(others))
-    state = dict(tests=tests, marks=list(marks), signs=mark_signs, vectors=mark_vectors, pseudo_count=pseudo_count,
+    # the signals of the step feature (contact term: x_bar in both conditions), permuted jointly over the nodes
+    vectors = {m: operators.step_vectors(*mark_vectors[m]) for m in marks}
+    state = dict(tests=tests, marks=list(marks), signs=mark_signs, vectors=vectors, pseudo_count=pseudo_count,
                  used=used, position=position[used], others=others, seed=seed, n_permutations=n_permutations)
     observed = _hop_statistics(state, used[:, None])
     state['observed'] = {level: values[:, 0] for level, values in observed.items()}

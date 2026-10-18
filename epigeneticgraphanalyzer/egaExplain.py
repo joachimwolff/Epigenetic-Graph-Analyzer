@@ -47,6 +47,10 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             support_note (per explaining level with contacts, e.g. 'step 2: rests on 2
                             threshold-sensitive contacts') and provenance (tags of the first explaining level: M
                             measured, C called, D derived, I interpretation, e.g. 'MC>D>I').
+                            With egaDifferential --stepFeature decomposed: step_terms (per step level with a
+                            concordant feature the combined feature, the mark term and the contact term of the marks
+                            and which term drives it: marks, contacts, both, neither) and first_step_driver (the
+                            driver of the first step level explaining the gene, declared roles, fragment mean).
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -211,6 +215,40 @@ def all_level_text(gene, rna, levels, roles):
         gene, 'up' if rna > 0 else 'down', rna, '; '.join(parts), ', '.join(explaining))
 
 
+def term_columns(levels, roles='declared', presence='mean'):
+    """Mark term and contact term of the step levels of one gene (egaDifferential --stepFeature decomposed; rows of
+    the all-level table): step_terms, per step with a concordant feature 'step 2: H3K27ac combined +1.3, mark term
+    +0.2, contact term +1.1 (contacts)', and first_step_driver, the driver (marks, contacts, both, neither) of the
+    first step that explains the gene. {} without the term columns."""
+    driver = 'driver_' + roles
+    if driver not in levels:
+        return {}
+    levels = levels.sort_values('rank')
+    parts, first = [], ''
+    for _, r in levels.iterrows():
+        value = r.get(driver)
+        if not isinstance(value, str) or not value:
+            continue
+        values = {}
+        for column, name in (('combined_changes', 'combined'), ('mark_term_changes', 'mark term'),
+                             ('contact_term_changes', 'contact term')):
+            for item in str(r.get(column, '')).split(';'):
+                if ':' in item:
+                    mark, number = item.split(':')
+                    values.setdefault(mark, []).append('{} {}'.format(name, number))
+        concordant = set()
+        for column in ('concordant_combined_', 'concordant_mark_term_', 'concordant_contact_term_'):
+            text = r.get(column + roles, '')
+            concordant |= set(text.split(',')) if isinstance(text, str) and text else set()
+        shown = [m for m in values if m in concordant] or list(values)
+        parts.append('{}: {} ({})'.format(explanation_level_label(r['level']),
+                                          '; '.join('{} {}'.format(m, ', '.join(values[m])) for m in shown), value))
+        explains = str(r.get('explains_{}_{}'.format(roles, presence), '')).lower() == 'true'
+        if explains and not first:
+            first = value
+    return dict(step_terms=' | '.join(parts), first_step_driver=first)
+
+
 def support_columns(levels, roles='declared', presence='mean'):
     """Support of the explaining levels of one gene (rows of the all-level table); {} without support columns."""
     key = '{}_{}'.format(roles, presence)
@@ -246,7 +284,8 @@ def gene_report(graph, prefix, names, marks, edges):
         switches = pd.DataFrame()
     try:
         indirect = pd.read_csv(prefix + '_indirect_only_genes.tsv', sep='\t').set_index('node')
-    except FileNotFoundError:
+    except (FileNotFoundError, pd.errors.EmptyDataError):
+        # no file, or no gene first explained at two or more steps (empty table)
         indirect = pd.DataFrame()
     status = {}
     for u, v, s in edges[['node_a', 'node_b', 'status']].itertuples(index=False):
@@ -324,6 +363,7 @@ def gene_report(graph, prefix, names, marks, edges):
             for roles, column in (('declared', 'all_levels'), ('learned', 'all_levels_learned')):
                 if 'detail_{}_mean'.format(roles) in all_levels[node]:
                     row[column] = all_level_text(gene, r['rna_log2FC'], all_levels[node], roles)
+            row.update(term_columns(all_levels[node]))
             supported.update({column: None for column in support_columns(all_levels[node])})
             extra[node] = support_columns(all_levels[node])
         rows.append(row)

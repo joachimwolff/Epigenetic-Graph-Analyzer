@@ -310,14 +310,17 @@ def counterfactual_values(graph, operators, mark_vectors, drop, pseudo_count=1.0
     for u, v, data in graph.edges(data=True):
         zero = data.get('support') in drop
         reduced.add_edge(u, v, r_a=0.0 if zero else data['r_a'], r_b=0.0 if zero else data['r_b'])
-    reduced_ops = ActivityOperators(reduced, operators.sources, max_hops=operators.max_hops)
+    # the step feature of `operators` (mark term: r_bar of the reduced graph in both conditions)
+    reduced_ops = ActivityOperators(reduced, operators.sources, max_hops=operators.max_hops,
+                                    step_feature=operators.step_feature)
     out = {}
+    vectors = {m: reduced_ops.step_vectors(va, vb) for m, (va, vb) in mark_vectors.items()}
     for level in reduced_ops.levels:
         H_a, H_b, _ = reduced_ops.level(level)
         out[level] = {m: np.log2((H_b @ vb + pseudo_count) / (H_a @ va + pseudo_count))
-                      for m, (va, vb) in mark_vectors.items()}
+                      for m, (va, vb) in vectors.items()}
     ones = np.ones(len(reduced_ops.nodes))
-    H_a, H_b, _ = reduced_ops.level('direct')
+    H_a, H_b, _ = reduced_ops.condition_level('direct')
     out['contact'] = np.log2((H_b @ ones + pseudo_count) / (H_a @ ones + pseudo_count))
     return out
 
@@ -329,11 +332,14 @@ def all_levels_provenance(columns):
         base = column.split('_')[0]
         if column in ('node', 'genes', 'rank', 'level', 'hops', 'provenance', 'provenance_chain'):
             kind = 'identifier'
-        elif column == 'rna_log2FC' or column.startswith(('mark_changes', 'mirror_changes', 'copy_number')):
+        elif column == 'rna_log2FC' or column.startswith(('mark_changes', 'mirror_changes', 'copy_number',
+                                                           'combined_changes', 'mark_term_changes',
+                                                           'contact_term_changes')):
             kind = 'measured'
         elif column.startswith(('contacts_', 'transition_', 'state_fragment_', 'sv_')):
             kind = 'called'
-        elif column.startswith(('explains_', 'result_', 'detail_', 'concordant_marks_', 'signs_')):
+        elif column.startswith(('explains_', 'result_', 'detail_', 'concordant_marks_', 'signs_', 'concordant_',
+                                'driver_')):
             kind = 'interpretation'
         elif base in ('p', 'q') or column.startswith(('nodes_tested', 'contact_log2', 'proximity_support', 'n_concordant',
                                                       'strongest', 'beyond_mirror', 'support', 'edges_',
