@@ -5,7 +5,8 @@
 # ENCODE-rE2G and power-law contact scores of the published K562 ENCODE-rE2G predictions (ENCFF970QAX, ENCSR627ANP).
 # B2 (crispr_cv.py): leakage-aware out-of-fold evaluation (leave-one-chromosome-out and GroupKFold by gene) of the
 # nested logistic models, gene-cluster bootstrap CIs, coefficient tables and likelihood-ratio tests.
-# Outputs: <out>/pairs/bench_{training,heldout}_*, <out>/B2_cv/.
+# B3 (crispr_head_to_head.py): head-to-head with the published predictions on identical pairs.
+# Outputs: <out>/pairs/bench_{training,heldout}_*, <out>/B2_cv/, <out>/B3_head_to_head/.
 set -euo pipefail
 data=${1:?usage: 30_crispr_revision.sh <data_dir> <results_dir> <out_dir> [threads]}
 results=${2:?}
@@ -28,3 +29,10 @@ fi
 
 python "$here/crispr_cv.py" "$out/pairs/bench_training_pairs.tsv.gz" "$out/pairs/bench_heldout_pairs.tsv.gz" \
     "$out/B2_cv" --threads "$threads" --bootstrap 1000 --seed 0 > "$out/B2_cv/crispr_cv.log" 2>&1
+
+# B3 (crispr_head_to_head.py): distance, ABC, ENCODE-rE2G, power law, EGA direct / two-step / PPR and the
+# out-of-sample EGA logistic models on identical pairs; coverage, intersection and missing = lowest score.
+mkdir -p "$out/B3_head_to_head"
+python "$here/crispr_head_to_head.py" "$out/pairs/bench_training_pairs.tsv.gz" \
+    "$out/pairs/bench_heldout_pairs.tsv.gz" "$out/B2_cv" "$out/B3_head_to_head" --threads "$threads" \
+    --bootstrap 1000 --seed 0 > "$out/B3_head_to_head/crispr_head_to_head.log" 2>&1
