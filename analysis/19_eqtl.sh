@@ -3,15 +3,16 @@
 # steps, on the GM12878 graphs (matched cell type for LCL eQTLs), the K562 graph (mismatch control) and the
 # virtual-capture GM12878 graph, each also mirrored. Four eQTL data sets: GEUVADIS LCL SuSiE (PIP >= 0.5), GTEx v8
 # LCL and whole blood (lead per gene), eQTLGen whole blood (lead per gene).
-# Usage: bash 19_eqtl.sh [jobs=8]
+# Usage: bash 19_eqtl.sh [jobs=8] [data_dir] [results_dir]
+# (data_dir and results_dir default to EGA_RAW / EGA_RESULTS, else /mnt/processed/wolffjoa/ega/{raw,results})
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 export PYTHONPATH="$(dirname "$here")${PYTHONPATH:+:$PYTHONPATH}"
 python="${PYTHON:-$HOME/miniconda3/envs/ega/bin/python}"
 jobs="${1:-8}"
 root=/mnt/processed/wolffjoa/ega
-raw="$root/raw"
-res="$root/results"
+raw="${2:-${EGA_RAW:-$root/raw}}"
+res="${3:-${EGA_RESULTS:-$root/results}}"
 out="$res/eqtl_validation"
 inputs="$out/inputs"
 mkdir -p "$out/runs" "$inputs"
