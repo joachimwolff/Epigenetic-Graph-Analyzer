@@ -57,6 +57,9 @@ hicexplorer=${HICEXPLORER_PREFIX:-$HOME/miniconda3/envs/hicexplorer}
 export PATH="$ega/bin:$PATH:$HOME/miniconda3/envs/__ucsc_kent/bin"
 export PYTHONPATH="$repo${PYTHONPATH:+:$PYTHONPATH}"
 export PYTHON="$ega/bin/python"
+# Python's per-process string hashing orders sets of node names; ties in the community transitions of egaDifferential
+# follow that order (see community_robustness.py, where 2 reproduces the stored results), so the run pins it
+export PYTHONHASHSEED=${PYTHONHASHSEED:-2}
 export HICEXPLORER_BIN="$hicexplorer/bin/" HICEXPLORER_PYTHON="$hicexplorer/bin/python"
 export EGA_RAW="$data" EGA_RESULTS="$results" EGA_HOPS="$results/hops_n" EGA_MCOOL="$mcool"
 export SAMTOOLS=${SAMTOOLS:-$HOME/miniconda3/envs/capchic/bin/samtools}
