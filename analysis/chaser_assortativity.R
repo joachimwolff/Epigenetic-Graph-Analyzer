@@ -2,6 +2,7 @@
 # distance 1 to 5, and of distance-matched randomised networks of the direct interactions.
 #
 # Usage: Rscript chaser_assortativity.R <dir with network_step*.txt and features.txt> <output.tsv> [randomisations=10]
+#        [seed=1]
 
 suppressPackageStartupMessages(library(chaser))
 
@@ -9,6 +10,8 @@ args <- commandArgs(trailingOnly = TRUE)
 dir <- args[1]
 output <- args[2]
 n_random <- if (length(args) > 2) as.integer(args[3]) else 10
+# the randomisations were unseeded, so their assortativity changed between runs
+set.seed(if (length(args) > 3) as.integer(args[4]) else 1)
 features <- file.path(dir, "features.txt")
 rows <- list()
 for (step in 1:5) {
