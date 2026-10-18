@@ -41,7 +41,7 @@ log = logging.getLogger(__name__)
 
 
 def parse_arguments(args=None):
-    parser = base_parser(__doc__.split('\n\n')[0])
+    parser = base_parser(__doc__.split('\n\n')[0], experimental=True)
     parser.add_argument('--days', nargs='+', required=True, help='Ordered condition names (at least three)')
     parser.add_argument('--differential', required=True, help='Directory of the egaDifferential runs <a>_vs_<b>')
     parser.add_argument('--expressionDir', required=True)

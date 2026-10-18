@@ -17,7 +17,7 @@ def parse_arguments(args=None):
     parser = base_parser('Per-bin boundary evidence: capture insulation dip (graph edges spanning each bin against a '
                          'distance-matched mirror expectation), cohesin-bound CTCF with motif orientation (reverse '
                          'sites on the left, forward on the right), convergent CTCF loops among the edges; boundaries '
-                         'by a rule with fixed thresholds (no fitted weights).')
+                         'by a rule with fixed thresholds (no fitted weights).', experimental=True)
     parser.add_argument('--nodes', required=True, help='Node table of a graph (egaCreateGraph *_nodes.tsv)')
     parser.add_argument('--edges', required=True, help='Edge table of the same graph (*_edges.tsv)')
     parser.add_argument('--chromSizes', required=True, help='Chromosome sizes (UCSC format)')

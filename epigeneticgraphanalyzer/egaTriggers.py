@@ -44,7 +44,7 @@ log = logging.getLogger(__name__)
 
 
 def parse_arguments(args=None):
-    parser = base_parser(__doc__.split('\n\n')[0])
+    parser = base_parser(__doc__.split('\n\n')[0], experimental=True)
     parser.add_argument('--prefix', '-p', required=True, help='Output prefix of egaDifferential (union graph, '
                         'gene classes and explanations_all_levels)')
     parser.add_argument('--names', nargs=2, default=None,

@@ -1023,7 +1023,7 @@ def parse_arguments(args=None):
     parser = base_parser('Enhancer switching and promoter competition between the two conditions of an '
                          'egaDifferential run: elements that lose a contact with one promoter and gain one with '
                          'another, the expression changes of both promoters against null models, and promoters that '
-                         'share elements.')
+                         'share elements.', experimental=True)
     parser.add_argument('--prefix', '-p', required=True, help='Output prefix of egaDifferential (<prefix>_union.graphml)')
     parser.add_argument('--outPrefix', '-o', required=True, help='Output prefix of the tables (figures in '
                                                                   '<dirname>/figures/)')

@@ -7,7 +7,13 @@ import os
 from ._version import __version__
 
 
-def base_parser(description):
+EXPERIMENTAL = ('[Experimental] The evaluation of this module gave weak or null results; its output is exploratory. ')
+
+
+def base_parser(description, experimental=False):
+    """Common options of all tools; experimental modules carry a note in their description."""
+    if experimental:
+        description = EXPERIMENTAL + description
     parser = argparse.ArgumentParser(description=description,
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--verbose', action='store_true', help='Print progress information')

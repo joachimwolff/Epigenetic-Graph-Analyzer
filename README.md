@@ -26,14 +26,28 @@ Python >= 3.9 with numpy, scipy, pandas, networkx, pyBigWig, matplotlib and pyli
 
 | Tool | Purpose |
 |---|---|
-| `egaCallInteractions` | Significant interactions from raw pcHi-C counts (distance decay, bait and other-end factors, negative binomial test) |
-| `egaCreateGraph` | Graph, gene annotation of baits, Leiden/Louvain communities (GraphML + TSV tables) |
-| `egaIndirectContacts` | Indirect contacts with pair classes and scores, direct contacts, two-hop triplets |
+| `egaCreateGraph` | Graph from called interactions (CHiCAGO, HOMER, other callers) or cool matrices; gene annotation of baits; Leiden communities |
+| `egaIndirectContacts` | Indirect contacts with pair classes and scores, direct contacts, two-step triplets |
 | `egaAnnotateGraph` | Mean bigWig signal per node, expression values per bait |
-| `egaBuildMultiway` | Bin SPRITE clusters or GAM segregation tables into a sparse incidence matrix |
-| `egaValidateMultiway` | Validation of direct/indirect contacts, triplets and communities against multi-way data |
-| `egaDifferential` | Differential interactions and promoter/direct/indirect chromatin changes versus expression changes |
-| `egaPlotNeighbourhood` | Direct and indirect neighbourhood of a gene on the genomic axis |
+| `egaBuildMultiway` | SPRITE clusters, GAM segregation tables or concatemers as a sparse locus-by-group matrix |
+| `egaValidateMultiway` | Direct and indirect contacts, triplets and hubs against multi-way data with matched controls |
+| `egaEqtl` | eQTL enrichment of direct edges and paths against matched non-eQTL pairs |
+| `egaDifferential` | Two conditions: union graph, chromatin states, mark roles, contact-weighted mark changes |
+| `egaExplain` | Gene-centred integrative reports: all levels from the promoter to step n |
+| `egaReport`, `egaExplorer` | Reports as HTML or PDF, interactive browser page |
+| `egaTadCrossing` | Gained and lost contacts across domain boundaries (HiCExplorer, Arrowhead, cooltools, BED) |
+| `egaPlotNeighbourhood`, `egaPlotLocus`, `egaPlotRegion`, `egaPlotDifferential` | Plots |
+
+Experimental modules (their evaluation gave weak or null results; the output is exploratory and the `--help` text says so):
+
+| Tool | Purpose |
+|---|---|
+| `egaSwitching` | Enhancer switching between promoters |
+| `egaTriggers` | Motif enrichment at changing nodes |
+| `egaCompartments` | A/B compartments from chromatin tracks or capture data |
+| `egaBoundaries` | Rule-based domain boundaries from capture contacts and CTCF |
+| `egaDesign` | Ranking of perturbation targets |
+| `egaTimecourse` | Order of changes in time courses |
 
 Every tool prints its options with `--help`.
 

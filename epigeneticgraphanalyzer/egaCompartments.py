@@ -22,7 +22,7 @@ def parse_arguments(args=None):
     parser = base_parser('A/B compartment estimates per genomic bin from chromatin tracks (first principal '
                          'component oriented by the active marks; active minus repressive role score) and from '
                          'capture interactions (eigenvector of the correlated observed / expected matrix), and '
-                         'community / edge statistics of a graph against TADs.')
+                         'community / edge statistics of a graph against TADs.', experimental=True)
     parser.add_argument('--chromSizes', required=True, help='Chromosome sizes (UCSC format)')
     parser.add_argument('--binSize', type=int, default=100000, help='Bin size in bp for the chromatin estimates')
     parser.add_argument('--tracks', '-t', nargs='*', default=[], help='name=file.bw[,replicate.bw]; replicates '
