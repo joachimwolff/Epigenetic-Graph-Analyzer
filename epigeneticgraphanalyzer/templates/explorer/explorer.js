@@ -749,6 +749,10 @@
         }
       });
     }
+    if (info.tads) {
+      section(page, 'Domain boundaries', 'boundaries');
+      page.appendChild(el('div', null, info.tads.h + notesFor(info.tads)));
+    }
     if (info.states) {
       section(page, 'Chromatin states', 'states');
       page.appendChild(el('div', null, info.states.h + notesFor(info.states)));
@@ -966,6 +970,19 @@
       sub.edges.forEach(function (e) { if (E.s[e] === st) arc(e, yC, hC - 4, st !== 2, 'e-' + STATUS[st], edgeWidth(edgeStrength(e))); });
     });
     axis(yC);
+    // TAD boundaries of the span (egaExplorer --tads): dashed lines, thick for the strongest decile
+    if (D.tads && sub.nodes.length) {
+      var tadChrom = D.graph.chroms[D.graph.nodes.c[sub.nodes[0]]];
+      (D.tads.chroms[tadChrom] || []).forEach(function (bd) {
+        if (bd[0] < x0 - pad || bd[0] > x1 + pad) return;
+        var xb = X(bd[0]);
+        var line = svg('line', { x1: xb, x2: xb, y1: top, y2: yC + hC, class: 'tad-boundary' + (bd[2] ? ' strong' : '') });
+        var title = svg('title', {});
+        title.textContent = 'TAD boundary ' + tadChrom + ':' + (bd[0] / 1e6).toFixed(3) + ' Mb' + (bd[1] ? ', strength rank ' + bd[1] + ' of ' + D.tads.n : '');
+        line.appendChild(title);
+        s.appendChild(line);
+      });
+    }
     // markers on the axes: promoters, nodes that carry the explanation, the gene
     [yA, yB, yC].forEach(function (y) {
       sub.nodes.forEach(function (i) {
