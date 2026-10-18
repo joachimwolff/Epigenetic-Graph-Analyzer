@@ -90,11 +90,10 @@ hubs)
     out="$results/hubs"
     mkdir -p "$out"
     "$py" "$here/hub_multiway.py" "$results/graphs/GM_chicago.graphml" \
-        "$results/multiway/sprite_GM12878_hg19_HindIII_fragments.npz" "$out/GM_chicago_sprite" \
-        > "$out/GM_chicago_sprite.log" 2>&1 &
+        "$results/multiway/sprite_GM12878_hg19_HindIII_fragments.npz" "$out/GM_chicago_sprite" --threads "$threads" \
+        > "$out/GM_chicago_sprite.log" 2>&1
     "$py" "$here/hub_multiway.py" "$results/graphs/hESC.graphml" "$results/multiway/gam_H1_hg38_30kb.npz" \
-        "$out/hESC_gam" "$annotation/hg19ToHg38.over.chain.gz" > "$out/hESC_gam.log" 2>&1 &
-    wait
+        "$out/hESC_gam" "$annotation/hg19ToHg38.over.chain.gz" --threads "$threads" > "$out/hESC_gam.log" 2>&1
     ;;
 explain)
     out="$results/explain"

@@ -12,11 +12,13 @@ of Beagrie et al. (2017) is available as well.
 """
 
 import logging
+import time
 
 import numpy as np
 import pandas as pd
 import scipy.sparse as sp
 
+from . import parallel
 from .genome import BinIndex, IntervalIndex, normalize_chrom, open_text
 
 log = logging.getLogger(__name__)
@@ -36,6 +38,19 @@ class MultiwayData:
         self._expected = {}
         self._band = None
         self._band_offset = 0
+        self._ones = None
+        self.threads = 1
+        self.batch_rows = None   # rows per sparse query batch; None: from the matrix density (see _batches)
+
+    def set_threads(self, threads):
+        """Worker processes for pair and set queries (results do not depend on the number)."""
+        self.threads = parallel.resolve_threads(threads)
+        return self
+
+    def unit_weights(self):
+        if self._ones is None:
+            self._ones = np.ones(self.n_groups)
+        return self._ones
 
     # ------------------------------------------------------------------ io
     def save(self, path):
@@ -66,7 +81,8 @@ class MultiwayData:
     # ------------------------------------------------------------ queries
     def _batches(self, n, *bin_arrays):
         mean_nnz = max(1.0, self.incidence.nnz / max(1, self.incidence.shape[0]))
-        batch = int(max(256, min(200000, 3e7 / mean_nnz)))
+        # about 3e5 stored entries per batch: small batches stay in cache and spread over the workers
+        batch = self.batch_rows or int(max(256, min(200000, 3e5 / mean_nnz)))
         for start in range(0, n, batch):
             yield start, [array[start:start + batch] for array in bin_arrays]
 
@@ -83,7 +99,7 @@ class MultiwayData:
             # variable intervals or a band too large for memory: pair queries use the sparse path
             return
         band = np.full((2, self.incidence.shape[0], max_offset + 1), np.nan, dtype=np.float64)
-        ones = np.ones(self.n_groups)
+        ones = self.unit_weights()
         for chrom in self.bins.chrom_names:
             start = self.bins.offsets[chrom]
             n_chrom = self.bins.n_chrom_bins(chrom)
@@ -104,7 +120,7 @@ class MultiwayData:
         arrays = [np.asarray(a, dtype=np.int64) for a in bin_arrays]
         n = len(arrays[0])
         result = np.zeros(n, dtype=np.float64)
-        weights = self.group_weight if weighted else np.ones(self.n_groups)
+        weights = self.group_weight if weighted else self.unit_weights()
         if len(arrays) == 2 and self._band is not None and n:
             low = np.minimum(arrays[0], arrays[1])
             offset = np.abs(arrays[1] - arrays[0])
@@ -120,11 +136,16 @@ class MultiwayData:
     def _sparse_cooccurrence(self, arrays, weights):
         n = len(arrays[0])
         result = np.zeros(n, dtype=np.float64)
-        for start, chunk in self._batches(n, *arrays):
-            product = self.incidence[chunk[0]]
-            for other in chunk[1:]:
-                product = product.multiply(self.incidence[other])
-            result[start:start + len(chunk[0])] = sp.csr_matrix(product) @ weights
+        batches = list(self._batches(n, *arrays))
+        if self.threads > 1 and len(batches) > 1:
+            # each batch is computed independently (same batches as the serial path), so the values are identical
+            parallel.share(multiway_data=self, multiway_weights=weights)
+            values = parallel.map_chunks(_cooccurrence_batch, [chunk for _, chunk in batches], self.threads)
+            for (start, chunk), value in zip(batches, values):
+                result[start:start + len(chunk[0])] = value
+            return result
+        for start, chunk in batches:
+            result[start:start + len(chunk[0])] = _cooccurrence_of(self.incidence, chunk, weights)
         return result
 
     def _sampled_expected(self, max_offset, metric):
@@ -159,7 +180,9 @@ class MultiwayData:
             return self._expected[key]
         self.build_band(max_offset)
         if self._band is None:
+            clock = time.time()
             self._expected[key] = self._sampled_expected(max_offset, metric)
+            log.info('expected %s by offset (0..%d, sampled pairs): %.1f s', metric, max_offset, time.time() - clock)
             return self._expected[key]
         covered = self.coverage_raw > 0
         expected = np.full(max_offset + 1, np.nan)
@@ -180,13 +203,28 @@ class MultiwayData:
         return expected
 
 
+def _cooccurrence_of(incidence, chunk, weights):
+    product = incidence[chunk[0]]
+    for other in chunk[1:]:
+        product = product.multiply(incidence[other])
+    return sp.csr_matrix(product) @ weights
+
+
+def _cooccurrence_batch(chunk):
+    return _cooccurrence_of(parallel.shared('multiway_data').incidence, chunk, parallel.shared('multiway_weights'))
+
+
 def _sampled_expected_impl(data, max_offset, metric, samples_per_offset=20000, seed=0):
-    """Mean metric of covered pairs at each offset, from a random sample of pairs per offset."""
+    """Mean metric of covered pairs at each offset, from a random sample of pairs per offset.
+
+    The samples of all offsets are drawn first (one random stream, offset by offset) and queried together, so that
+    the pair queries run in parallel batches."""
     rng = np.random.default_rng(seed)
     covered = np.nonzero(data.coverage_raw > 0)[0]
     chrom_of = data.bins._chrom_of_bin
     expected = np.full(max_offset + 1, np.nan)
     covered_mask = data.coverage_raw > 0
+    offsets, lefts = [], []
     for offset in range(1, max_offset + 1):
         left = covered[covered + offset < len(chrom_of)]
         left = left[covered_mask[left + offset] & (chrom_of[left] == chrom_of[left + offset])]
@@ -194,11 +232,16 @@ def _sampled_expected_impl(data, max_offset, metric, samples_per_offset=20000, s
             continue
         if len(left) > samples_per_offset:
             left = rng.choice(left, samples_per_offset, replace=False)
-        if metric == 'cooc':
-            values = data.cooccurrence(left, left + offset)
-        else:
-            values = data.npmi(left, left + offset)
-        expected[offset] = np.nanmean(values)
+        offsets.append(offset)
+        lefts.append(left)
+    if not offsets:
+        return expected
+    left = np.concatenate(lefts)
+    right = left + np.repeat(np.array(offsets, dtype=np.int64), [len(x) for x in lefts])
+    values = data.cooccurrence(left, right) if metric == 'cooc' else data.npmi(left, right)
+    bounds = np.cumsum([0] + [len(x) for x in lefts])
+    for k, offset in enumerate(offsets):
+        expected[offset] = np.nanmean(values[bounds[k]:bounds[k + 1]])
     return expected
 
 

@@ -8,10 +8,12 @@ ends and whether both ends lie in the same topological domain. The 95% interval 
 block bootstrap over chromosomes, so that pairs sharing nodes and regions stay together.
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
-           [--coverageClasses 5] [--compartments BED] [--domains BED] [--bootstrap 1000]
+           [--coverageClasses 5] [--compartments BED] [--domains BED] [--bootstrap 1000] [--threads N]
 """
 
 import argparse
+import logging
+import time
 
 import networkx as nx
 import numpy as np
@@ -50,18 +52,25 @@ def main():
                                                'multi-way assembly')
     parser.add_argument('--domains', help='Topological domains (BED), multi-way assembly')
     parser.add_argument('--bootstrap', type=int, default=1000)
+    parser.add_argument('--threads', type=int, default=0,
+                        help='Worker processes for the pair queries (default: available CPUs, at most 24); the '
+                             'results do not depend on the number')
     args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
+    clock = time.time()
     chain = args.chain or (args.chain_file if args.chain_file not in (None, '-') else None)
     liftover = LiftOver(chain) if chain else None
     n_pairs = args.pairs
     graph = read_graph(args.graph)
-    data = MultiwayData.load(args.multiway)
+    data = MultiwayData.load(args.multiway).set_threads(args.threads)
     compartment, tad_id = None, None
     if args.compartments or args.domains:
         compartment, tad_id = domain_annotation(data.bins, args.compartments, args.domains)
         compartment = compartment if args.compartments else None
         tad_id = tad_id if args.domains else None
     node_bins = map_nodes_to_bins(graph, data, liftover)
+    print('graph and multi-way data loaded, nodes mapped: {:.1f} s'.format(time.time() - clock), flush=True)
+    clock = time.time()
     middle = {n: (int(d['start']) + int(d['end'])) // 2 for n, d in graph.nodes(data=True)}
     rows = []
     for source in graph.nodes:
@@ -90,6 +99,7 @@ def main():
     # every graph-connected pair within MAX_STEPS is excluded from the controls
     excluded = set(zip(pairs['bin_a'], pairs['bin_b']))
     max_offset = int(pairs['offset'].max())
+    print('{} pairs within {} steps enumerated: {:.1f} s'.format(len(pairs), MAX_STEPS, time.time() - clock), flush=True)
     results = []
     for steps in range(1, MAX_STEPS + 1):
         subset = pairs[pairs['steps'] == steps]
@@ -99,8 +109,10 @@ def main():
         table, summary = validate_pairs(subset, data, pools, excluded, 'steps_{}'.format(steps),
                                         max_offset=max_offset, seed=steps, coverage_matched=args.coverageClasses,
                                         compartment=compartment, tad_id=tad_id)
+        clock = time.time()
         low, high = block_bootstrap(table['npmi_concordance'].to_numpy(), table['chrom'].to_numpy(),
                                     n_boot=args.bootstrap, seed=steps)
+        print('step {}: block bootstrap {:.1f} s'.format(steps, time.time() - clock), flush=True)
         row = summary[(summary['metric'] == 'npmi') & (summary['pair_class'] == 'all') &
                       (summary['stratum'] == 'all')].iloc[0]
         results.append(dict(steps=steps, pairs_available=int((pairs['steps'] == steps).sum()), n=int(row['n']),

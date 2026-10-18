@@ -13,6 +13,7 @@ twice the shifted observed / expected ratio in at least MIN_CLUSTERS clusters; t
 span are written with their genes.
 
 Usage: python sprite_community_pairs.py <sprite fragments .npz> <graph>_nodes.tsv <output prefix> [shifts, 5]
+           [threads, default: available CPUs, at most 24; the shifted layouts are counted in parallel]
 """
 
 import sys
@@ -21,6 +22,8 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 from scipy import sparse
+
+from epigeneticgraphanalyzer import parallel
 
 CLASSES = ((6, 100), (101, 1000))
 DISTANCE_BINS = np.array([0, 2, 5, 10, 20, 50, 300]) * 1e6
@@ -48,9 +51,15 @@ def pair_counts(incidence):
             pd.Series(n * incidence.shape[0] / (touched[i] * touched[j]), index=index))
 
 
+def _shifted_counts(members):
+    """pair_counts of one shifted community layout (worker function)."""
+    return pair_counts(cluster_by_community(parallel.shared('cluster_locus'), members, parallel.shared('n_comm')))
+
+
 def main():
     npz, nodes_path, prefix = sys.argv[1:4]
     n_shifts = int(sys.argv[4]) if len(sys.argv) > 4 else 5
+    threads = parallel.resolve_threads(int(sys.argv[5]) if len(sys.argv) > 5 else 0)
     data = np.load(npz)
     indptr, indices = data['indptr'], data['indices']
     chroms, starts = data['interval_chroms'], data['interval_starts']
@@ -91,7 +100,8 @@ def main():
         observed_inc = cluster_by_community(cluster_locus, (node_loci, node_comms), n_comm)
         touching = np.asarray(observed_inc.sum(axis=1)).ravel()
         observed, observed_oe = pair_counts(observed_inc)
-        shifted_runs = [pair_counts(cluster_by_community(cluster_locus, m, n_comm)) for m in shifted_members]
+        parallel.share(cluster_locus=cluster_locus, n_comm=n_comm)
+        shifted_runs = parallel.map_chunks(_shifted_counts, shifted_members, threads)
         shifted = pd.concat([r[0] for r in shifted_runs], axis=1).reindex(observed.index).fillna(0).mean(axis=1)
         # observed / expected of the shifted layouts; pairs that never meet after a shift count with ratio 0
         shifted_oe = pd.concat([r[1] for r in shifted_runs], axis=1).reindex(observed.index).fillna(0).mean(axis=1)

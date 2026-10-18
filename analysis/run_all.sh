@@ -27,7 +27,8 @@
 #
 # Environment: EGA_PREFIX (conda env with the package dependencies, default ~/miniconda3/envs/ega),
 # HICEXPLORER_PREFIX (default ~/miniconda3/envs/hicexplorer), THREADS (largest number of threads of one step,
-# default 24), PERMUTATIONS (community permutations of egaDifferential, default 200), H1_WORK / BOWTIE2_HG19 /
+# default 24; worker processes of the multi-way validation), DIFFERENTIAL_PERMUTATIONS (community permutations of
+# egaDifferential, default 200; PERMUTATIONS is read by 13_candidate_robustness.sh), H1_WORK / BOWTIE2_HG19 /
 # HICUP_DIGEST_HG19 / CHICAGO_TOOLS (inputs of 01_h1_chicago.sh when its calls are missing), SAMTOOLS, PGT
 # (pyGenomeTracks), HLM_NBODY.
 # Every step is logged with start, end and duration in <results_dir>/run_all_steps.tsv; the output of the drivers
@@ -47,7 +48,7 @@ results=$(realpath "$results")
 here=$(cd "$(dirname "$0")" && pwd)
 repo=$(dirname "$here")
 threads=${THREADS:-24}
-permutations=${PERMUTATIONS:-200}
+permutations=${DIFFERENTIAL_PERMUTATIONS:-200}
 reuse_from=${REUSE_FROM:-/mnt/processed/wolffjoa/ega/results}
 ega=${EGA_PREFIX:-$HOME/miniconda3/envs/ega}
 hicexplorer=${HICEXPLORER_PREFIX:-$HOME/miniconda3/envs/hicexplorer}
@@ -121,7 +122,7 @@ step_01_h1_chicago() {
 }
 step_02_graphs() { bash "$here/02_build_graphs.sh" "$data" "$results"; }
 step_k562_graph() { support k562_graph; }
-step_03_validate() { bash "$here/03_validate.sh" "$data" "$results"; }
+step_03_validate() { bash "$here/03_validate.sh" "$data" "$results" "$threads"; }
 step_virtual_capture() { support virtual_capture; }
 step_kasumi_rna() {
     # PyDESeq2 on the salmon quantification of kasumi_rna.sh (salmon itself is raw-data processing, reused)
@@ -136,10 +137,10 @@ step_05_kessler() { bash "$here/05_kessler_md_pa2.sh" "$data" "$results"; }
 step_07_aml_assi() { bash "$here/07_aml_assi.sh" "$assi" "$data" "$results" "$permutations"; }
 step_08_aml_kasumi1() { bash "$here/08_aml_kasumi1.sh" "$kasumi" "$data" "$results" "$permutations"; }
 step_06_loci() { bash "$here/06_loci.sh" "$data" "$results" "$figures"; }
-step_09_porec() { JOBS=8 bash "$here/09_porec.sh" "$data" "$results"; }
-step_hubs() { support hubs; }
+step_09_porec() { JOBS=8 bash "$here/09_porec.sh" "$data" "$results" "$threads"; }
+step_hubs() { support hubs "$threads"; }
 step_10_differential_figures() { bash "$here/10_differential_figures.sh" "$results" "$figures"; }
-step_11_reviewer_controls() { bash "$here/11_reviewer_controls.sh" "$data" "$results"; }
+step_11_reviewer_controls() { bash "$here/11_reviewer_controls.sh" "$data" "$results" "$threads"; }
 step_12_loopcallers() { bash "$here/12_loopcaller_benchmark.sh" "$data" "$vc" "$results"; }
 step_13_candidate_robustness() { bash "$here/13_candidate_robustness.sh" "$results" "$data" "$kasumi" all; }
 step_14_differential_robustness() { bash "$here/14_differential_robustness.sh" "$results" "$data" "$kasumi" all; }
@@ -162,7 +163,7 @@ step_28_tad_crossing() { bash "$here/28_tad_crossing.sh" "$data" "$results" 12; 
 step_community_robustness() { support community_robustness; }
 step_crispr_benchmark() { support crispr_benchmark; }
 step_kasumi_sv_cnv() { support kasumi_sv_cnv; }
-step_sprite_resolution() { support sprite_resolution; }
+step_sprite_resolution() { support sprite_resolution "$threads"; }
 step_tables() {
     local out="$results/tables" t
     mkdir -p "$out"

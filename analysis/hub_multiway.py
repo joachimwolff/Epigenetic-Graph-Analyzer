@@ -6,14 +6,18 @@ number in one group and the number of groups holding the promoter together with 
 group contains an indirect partner-partner contact together with its mediating promoter). As reference, the
 whole hub is shifted along the chromosome by a random number of fragments (same shape and distances), ten times.
 
-Usage: python hub_multiway.py <graph.graphml> <multiway.npz> <output prefix> [chain file for liftover]
+The shifts are drawn hub by hub from one random stream (which shifts are accepted depends only on the coverage of
+the multi-way data), then the hubs are counted in parallel blocks; the result does not depend on --threads.
+
+Usage: python hub_multiway.py <graph.graphml> <multiway.npz> <output prefix> [chain file for liftover] [--threads N]
 """
 
-import sys
+import argparse
 
 import numpy as np
 import pandas as pd
 
+from epigeneticgraphanalyzer import parallel
 from epigeneticgraphanalyzer.genome import LiftOver
 from epigeneticgraphanalyzer.graph import read_graph
 from epigeneticgraphanalyzer.multiway import MultiwayData
@@ -21,6 +25,7 @@ from epigeneticgraphanalyzer.validation import map_nodes_to_bins
 
 N_SHIFTS = 10
 SIZE_CLASSES = ((3, 3), (4, 5), (6, 10), (11, 1000))
+BLOCK = 500   # hubs per parallel task
 
 
 def hub_counts(data, promoter_bin, partner_bins):
@@ -46,17 +51,30 @@ def hub_counts_dense(data, promoter_bin, partner_bins):
     return int(per_group.max()), int(np.sum(with_promoter & (partners_in >= 2)))
 
 
+def _count_block(block):
+    """hub_counts of every bin set (promoter first) of a block of hubs (worker function)."""
+    data = parallel.shared('multiway_data')
+    return [[hub_counts(data, bins[0], bins[1:]) for bins in sets] for sets in block]
+
+
 def main():
-    graph_path, multiway_path, prefix = sys.argv[1:4]
-    liftover = LiftOver(sys.argv[4]) if len(sys.argv) > 4 else None
-    graph = read_graph(graph_path)
-    data = MultiwayData.load(multiway_path)
+    parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
+    parser.add_argument('graph')
+    parser.add_argument('multiway')
+    parser.add_argument('prefix')
+    parser.add_argument('chain', nargs='?', default=None, help='Chain file from the graph to the multi-way assembly')
+    parser.add_argument('--threads', type=int, default=0, help='Worker processes (default: available CPUs, <= 24)')
+    args = parser.parse_args()
+    prefix = args.prefix
+    liftover = LiftOver(args.chain) if args.chain else None
+    graph = read_graph(args.graph)
+    data = MultiwayData.load(args.multiway)
     node_bins = map_nodes_to_bins(graph, data, liftover)
     chrom_of = data.bins._chrom_of_bin
     covered = data.coverage_raw > 0
     rng = np.random.default_rng(0)
     shift_range = 50 if not data.bins.fixed else max(10, 1500000 // data.bins.bin_size)
-    rows = []
+    hubs = []
     for promoter, attributes in graph.nodes(data=True):
         if not attributes.get('bait') or promoter not in node_bins:
             continue
@@ -64,23 +82,31 @@ def main():
         if len(partners) < 2:
             continue
         p = node_bins[promoter]
-        partners = np.array(partners)
-        largest, groups = hub_counts(data, p, partners)
-        shifted_largest, shifted_groups = [], []
+        hub = np.concatenate([[p], np.array(partners)])
+        sets = [hub]
         tries = 0
-        while len(shifted_largest) < N_SHIFTS and tries < 100:
+        while len(sets) - 1 < N_SHIFTS and tries < 100:
             tries += 1
             shift = int(rng.integers(shift_range // 5, shift_range)) * int(rng.choice([-1, 1]))
-            bins = np.concatenate([[p], partners]) + shift
+            bins = hub + shift
             if bins.min() < 0 or bins.max() >= len(chrom_of) or np.any(chrom_of[bins] != chrom_of[p]) \
                     or not np.all(covered[bins]):
                 continue
-            a, b = hub_counts(data, bins[0], bins[1:])
-            shifted_largest.append(a)
-            shifted_groups.append(b)
-        if not shifted_largest:
+            sets.append(bins)
+        if len(sets) == 1:
             continue
-        rows.append(dict(promoter=promoter, genes=attributes.get('genes', ''), hub_size=1 + len(partners),
+        hubs.append((promoter, attributes.get('genes', ''), sets))
+    parallel.share(multiway_data=data)
+    counts = parallel.map_chunks(_count_block, [[sets for _, _, sets in hubs[i:i + BLOCK]]
+                                                for i in range(0, len(hubs), BLOCK)],
+                                 parallel.resolve_threads(args.threads))
+    counts = [c for block in counts for c in block]
+    rows = []
+    for (promoter, genes, sets), hub_values in zip(hubs, counts):
+        (largest, groups), shifted = hub_values[0], hub_values[1:]
+        shifted_largest = [a for a, _ in shifted]
+        shifted_groups = [b for _, b in shifted]
+        rows.append(dict(promoter=promoter, genes=genes, hub_size=len(sets[0]),
                          largest_in_one_group=largest, groups_promoter_plus2=groups,
                          shifted_largest_in_one_group=float(np.mean(shifted_largest)),
                          shifted_groups_promoter_plus2=float(np.mean(shifted_groups)),
