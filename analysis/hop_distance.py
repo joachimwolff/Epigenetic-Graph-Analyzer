@@ -11,11 +11,14 @@ pairs of equally connected loci. The 95% interval of the concordance comes from 
 so that pairs sharing nodes and regions stay together. control_fallback counts the pairs without a class-matched
 control at their offset (matched on the offset only); then the concordance over the pairs with class-matched
 controls only is reported as well (*_class_matched). --minCoverageQuantile keeps only graph loci with a multi-way
-coverage at or above that quantile of all graph loci, for tests and controls.
+coverage at or above that quantile of all graph loci, for tests and controls. --minOffset drops pairs whose ends
+are fewer bins apart (pairs in one bin are always dropped). With --rates, the absolute co-occurrence of tested and
+control pairs is reported: the share found together in at least one group, the mean share of the groups holding
+one end that also hold the other, and the mean number of groups holding both ends (unweighted).
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
            [--coverageClasses 5] [--degreeClasses 0] [--compartments BED] [--domains BED] [--bootstrap 1000]
-           [--maxDistance 2000000] [--minCoverageQuantile 0] [--pairTable FILE]
+           [--maxDistance 2000000] [--minCoverageQuantile 0] [--minOffset 1] [--rates] [--pairTable FILE]
 """
 
 import argparse
@@ -43,6 +46,29 @@ def bin_positions(bins, ids):
         return (bins.bin_start(ids) + bins.bin_end(ids)) // 2
     first = np.array([bins.offsets[c] for c in bins.chrom_names], dtype=np.int64)
     return (ids - first[bins.chrom_index_of_bins(ids)]) * bins.bin_size + bins.bin_size // 2
+
+
+def cooccurrence_rates(data, bin_a, bin_b):
+    """Unweighted groups holding both ends, whether there is one, and the mean share over both ends of the groups
+    holding one end that also hold the other."""
+    n_ab = data.cooccurrence(bin_a, bin_b, weighted=False)
+    n_a = data.coverage(bin_a, weighted=False)
+    n_b = data.coverage(bin_b, weighted=False)
+    with np.errstate(divide='ignore', invalid='ignore'):
+        share = 0.5 * (np.where(n_a > 0, n_ab / n_a, 0.0) + np.where(n_b > 0, n_ab / n_b, 0.0))
+    return dict(groups_both=n_ab, together=(n_ab > 0).astype(float), share=share)
+
+
+def add_rates(rows, tables, data):
+    """Mean absolute co-occurrence of the tested pairs and their controls added to the step rows."""
+    for row in rows:
+        table, controls = tables[row['steps']]
+        test = cooccurrence_rates(data, table['bin_a'].to_numpy(), table['bin_b'].to_numpy())
+        control = cooccurrence_rates(data, controls['bin_a'].to_numpy(), controls['bin_b'].to_numpy())
+        for key in ('together', 'share', 'groups_both'):
+            row[key] = float(np.mean(test[key]))
+            row[key + '_control'] = float(np.mean(control[key]))
+    return rows
 
 
 def coverage_filtered(node_bins, data, quantile):
@@ -134,6 +160,11 @@ def main():
     parser.add_argument('--minCoverageQuantile', type=float, default=0,
                         help='Use only graph loci whose multi-way coverage reaches this quantile of the coverage of '
                              'all graph loci (e.g. 0.2: top four quintiles)')
+    parser.add_argument('--minOffset', type=int, default=1,
+                        help='Test only pairs whose ends are at least this many bins apart (controls are matched on '
+                             'the offset, so they follow); e.g. 2 drops pairs in adjacent GAM windows')
+    parser.add_argument('--rates', action='store_true',
+                        help='Also report the absolute co-occurrence of test and control pairs')
     parser.add_argument('--pairTable', help='Write the tested pairs with their NPMI, control mean and concordance '
                                             '(TSV, .gz allowed)')
     args = parser.parse_args()
@@ -153,15 +184,22 @@ def main():
         node_bins = coverage_filtered(node_bins, data, args.minCoverageQuantile)
     pairs = step_pairs(graph, node_bins, data, max_distance)
     pools = LocusPools(graph, node_bins, data)
+    # every graph-connected pair within MAX_STEPS is excluded from the controls
+    excluded = set(zip(pairs['bin_a'], pairs['bin_b']))
+    if args.minOffset > 1:
+        close = (pairs['offset'] < args.minOffset).to_numpy()
+        print('{} pairs with ends fewer than {} bins apart removed: {}'.format(
+            int(close.sum()), args.minOffset, pairs[close].groupby('steps').size().to_dict()), flush=True)
+        pairs = pairs[~close].reset_index(drop=True)
     bin_class = None
     if args.degreeClasses:
         bin_class = degree_bin_classes(graph, node_bins, data.bins.n_bins, args.degreeClasses)
         print('degree classes of graph loci: {}'.format(dict(zip(*np.unique(bin_class[bin_class >= 0],
                                                                             return_counts=True)))), flush=True)
-    # every graph-connected pair within MAX_STEPS is excluded from the controls
-    excluded = set(zip(pairs['bin_a'], pairs['bin_b']))
     results, tables = evaluate_steps(pairs, data, pools, excluded, args.pairs, args.coverageClasses, compartment,
                                      tad_id, bin_class, args.bootstrap, return_tables=True)
+    if args.rates:
+        results = add_rates(results, tables, data)
     pd.DataFrame(results).to_csv(args.output, sep='\t', index=False)
     if args.pairTable:
         columns = ['steps', 'node_a', 'node_b', 'chrom', 'distance', 'pair_class', 'bin_a', 'bin_b', 'offset', 'npmi',

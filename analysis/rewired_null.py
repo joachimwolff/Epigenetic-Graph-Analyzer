@@ -26,35 +26,13 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from hop_distance import MAX_DISTANCE, MAX_STEPS, evaluate_steps, step_pairs  # noqa: E402
+from hop_distance import MAX_DISTANCE, MAX_STEPS, add_rates, evaluate_steps, step_pairs  # noqa: E402
 
 from epigeneticgraphanalyzer.genome import LiftOver  # noqa: E402
 from epigeneticgraphanalyzer.graph import read_graph  # noqa: E402
 from epigeneticgraphanalyzer.graph_nulls import rewire_by_distance  # noqa: E402
 from epigeneticgraphanalyzer.multiway import MultiwayData  # noqa: E402
 from epigeneticgraphanalyzer.validation import LocusPools, map_nodes_to_bins  # noqa: E402
-
-
-def cooccurrence_rates(data, bin_a, bin_b):
-    """Unweighted groups holding both ends, whether there is one, and the mean share over both ends of the groups
-    holding one end that also hold the other."""
-    n_ab = data.cooccurrence(bin_a, bin_b, weighted=False)
-    n_a = data.coverage(bin_a, weighted=False)
-    n_b = data.coverage(bin_b, weighted=False)
-    with np.errstate(divide='ignore', invalid='ignore'):
-        share = 0.5 * (np.where(n_a > 0, n_ab / n_a, 0.0) + np.where(n_b > 0, n_ab / n_b, 0.0))
-    return dict(groups_both=n_ab, together=(n_ab > 0).astype(float), share=share)
-
-
-def _rates(rows, tables, data):
-    for row in rows:
-        table, controls = tables[row['steps']]
-        test = cooccurrence_rates(data, table['bin_a'].to_numpy(), table['bin_b'].to_numpy())
-        control = cooccurrence_rates(data, controls['bin_a'].to_numpy(), controls['bin_b'].to_numpy())
-        for key in ('together', 'share', 'groups_both'):
-            row[key] = float(np.mean(test[key]))
-            row[key + '_control'] = float(np.mean(control[key]))
-    return rows
 
 
 def evaluate_graph(name, graph, node_bins, data, pools, real_keys, args):
@@ -71,7 +49,7 @@ def evaluate_graph(name, graph, node_bins, data, pools, real_keys, args):
     for label, subset_pairs in sets:
         results, tables = evaluate_steps(subset_pairs, data, pools, excluded, args.pairs, args.coverageClasses,
                                          n_boot=args.bootstrap, steps_list=args.steps, return_tables=True)
-        results = _rates(results, tables, data)
+        results = add_rates(results, tables, data)
         for row in results:
             row['graph'] = label
             subset = subset_pairs[subset_pairs['steps'] == row['steps']]

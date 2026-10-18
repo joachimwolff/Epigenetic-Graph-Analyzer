@@ -14,6 +14,8 @@
 #      1% and 5% highest-degree nodes, leave-one-chromosome-out, 10 Mb block bootstrap
 #   B11 matching balance of the step-2 controls (balance.py): standardised mean differences and eligible controls
 #      for the coverage- and domain-matched designs
+#   B12 GAM window collisions: graph pairs in the same or adjacent 30 kb windows (gam_windows.py), GAM step curves
+#      without pairs at offset 0 or 1 (hop_distance.py --minOffset 2 --rates)
 # Usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [parallel jobs]
 set -euo pipefail
 data=${1:?usage: 30_revision_graph.sh <data_dir> <results_dir> [stage] [jobs]}
@@ -210,6 +212,24 @@ if [[ "$stage" == all || "$stage" == B11 ]]; then
         wait_slot
         run "$o/${name}_smd.tsv" "$o/${name}.log" "$py" "$here/balance.py" "$graph" "$gam" "$o/$name" --chain "$chain" \
             --compartments "$h1_comp" --domains "$h1_dom" --dnase "$h1_dnase" &
+    done
+    wait
+fi
+
+if [[ "$stage" == all || "$stage" == B12 ]]; then
+    # GAM window collisions: hESC and H1 graphs against 30 kb GAM windows
+    o="$out/B12_gam_windows"
+    mkdir -p "$o"
+    for p in "hESC_gam $hesc" "H1_gam $h1"; do
+        read -r name graph <<< "$p"
+        wait_slot
+        run "$o/${name}_window_offsets.tsv" "$o/${name}_window_offsets.log" "$py" "$here/gam_windows.py" "$graph" \
+            "$gam" "$o/${name}_window_offsets.tsv" --chain "$chain" &
+        for k in 1 2; do
+            wait_slot
+            run "$o/${name}_hops_minoffset$k.tsv" "$o/${name}_hops_minoffset$k.log" "$py" "$here/hop_distance.py" \
+                "$graph" "$gam" "$o/${name}_hops_minoffset$k.tsv" --chain "$chain" --minOffset "$k" --rates &
+        done
     done
     wait
 fi
