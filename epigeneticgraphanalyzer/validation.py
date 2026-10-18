@@ -19,11 +19,13 @@ distance of the tested loci:
 """
 
 import logging
+import time
 
 import numpy as np
 import pandas as pd
 from scipy import stats
 
+from . import parallel
 from .genome import parse_node_id
 
 log = logging.getLogger(__name__)
@@ -179,22 +181,27 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
     fallback_index = []
     eligible_index, eligible_count = [], []
     rows_index, rows_a, rows_b = [], [], []
+    # excluded pairs as sorted codes bin_a * n + bin_b (the candidate order, and so the draws, are unchanged)
+    n_code = np.int64(len(chrom_of) + 1)
+    excluded_codes = np.unique(np.fromiter((a * n_code + b for a, b in excluded), dtype=np.int64,
+                                           count=len(excluded)))
     for (pair_class, offset), group in pairs.groupby(['pair_class', 'offset']):
         left_kind, right_kind = _class_pools(pair_class)
         left = pools.pool(left_kind)
         right = pools.pool(right_kind)
         # orientation 1: left pool upstream, right pool downstream
-        starts = left[np.isin(left + offset, right)]
+        # the pools are sorted unique bin arrays: binary search instead of np.isin (same selection and order)
+        starts = left[_in_sorted(left + offset, right)]
         starts = starts[chrom_of[starts] == chrom_of[np.minimum(starts + offset, len(chrom_of) - 1)]]
-        candidates = [(s, s + offset) for s in starts]
         if left_kind != right_kind:
-            starts2 = right[np.isin(right + offset, left)]
+            starts2 = right[_in_sorted(right + offset, left)]
             starts2 = starts2[chrom_of[starts2] == chrom_of[np.minimum(starts2 + offset, len(chrom_of) - 1)]]
-            candidates.extend((s, s + offset) for s in starts2)
-        candidates = [c for c in candidates if c not in excluded]
-        if not candidates:
+            starts = np.concatenate([starts, starts2])
+        starts = starts.astype(np.int64)
+        starts = starts[~_in_sorted(starts * n_code + (starts + offset), excluded_codes)]
+        if not len(starts):
             continue
-        candidates = np.array(candidates, dtype=np.int64)
+        candidates = np.column_stack([starts, starts + offset])
         by_class = None
         if coverage_class is not None or tad_id is not None:
             codes = _pair_code(coverage_class, tad_id, candidates[:, 0], candidates[:, 1])
@@ -225,6 +232,14 @@ def sample_matched_controls(pairs, pools, excluded, n_controls=10, seed=0, cover
     controls.attrs['eligible'] = pd.Series(eligible_count, index=eligible_index, dtype=np.int64).reindex(
         pairs.index, fill_value=0)
     return controls
+
+
+def _in_sorted(values, sorted_unique):
+    """Membership of values in a sorted array of unique values (binary search, no re-sorting of the large array)."""
+    if not len(sorted_unique):
+        return np.zeros(len(values), dtype=bool)
+    position = np.minimum(np.searchsorted(sorted_unique, values), len(sorted_unique) - 1)
+    return sorted_unique[position] == values
 
 
 def _pair_code(bin_class, tad_id, bin_a, bin_b):
@@ -454,7 +469,11 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
         return (pairs, pd.DataFrame(), pd.DataFrame()) if return_controls else (pairs, pd.DataFrame())
     if max_offset is None:
         max_offset = int(pairs['offset'].max())
+    clock = time.time()
     test = pair_metrics(data, pairs['bin_a'], pairs['bin_b'], max_offset, with_expected=with_expected)
+    log.info('%s: metrics of %d pairs (with the expected values by offset): %.1f s', label, len(pairs),
+             time.time() - clock)
+    clock = time.time()
     classes = coverage_classes(pools, coverage_matched) if coverage_matched else None
     if compartment is not None:
         classes = domain_classes(classes, compartment)
@@ -464,7 +483,10 @@ def validate_pairs(pairs, data, pools, excluded, label, n_controls=10, max_offse
         classes = base * (int(extra.max()) + 1) + extra
     controls = sample_matched_controls(pairs, pools, excluded, n_controls=n_controls, seed=seed,
                                        coverage_class=classes, tad_id=tad_id)
+    log.info('%s: %d matched controls drawn: %.1f s', label, len(controls), time.time() - clock)
+    clock = time.time()
     control = pair_metrics(data, controls['bin_a'], controls['bin_b'], max_offset, with_expected=with_expected)
+    log.info('%s: metrics of the controls: %.1f s', label, time.time() - clock)
     table = pairs.copy()
     table.attrs['control_fallback'] = controls.attrs.get('n_fallback', 0)
     table['class_matched'] = True
@@ -709,6 +731,12 @@ def validate_triplets(triplets, node_bins, data, pools, graph, n_controls=5, max
 
 
 # ------------------------------------------------------------------ communities
+def _set_counts(block):
+    """Groups holding at least min_members of every bin set of a block of communities (worker function)."""
+    data = parallel.shared('multiway_data')
+    return [[data.set_cooccurrence(bins, min_members) for bins in sets] for sets, min_members in block]
+
+
 def validate_communities(communities, node_bins, data, min_bins=3, min_members=3, n_shifts=20,
                          max_bins=200, seed=0, min_locus_fraction=0.5, bait_nodes=None):
     """Multi-way co-occurrence of community bin sets versus circularly shifted sets.
@@ -722,7 +750,9 @@ def validate_communities(communities, node_bins, data, min_bins=3, min_members=3
     covered = data.coverage_raw > 0
     locus = np.zeros(len(covered), dtype=bool)
     locus[np.fromiter(node_bins.values(), dtype=np.int64)] = True
-    rows = []
+    # the shifts are drawn first, community by community from one random stream (which shifts are accepted depends
+    # only on coverage and graph loci), then every bin set is counted, in parallel over blocks of communities
+    plans = []
     for community_id, members in enumerate(communities):
         bins = np.unique([node_bins[n] for n in members if n in node_bins])
         if len(bins) < min_bins or len(bins) > max_bins:
@@ -733,22 +763,37 @@ def validate_communities(communities, node_bins, data, min_bins=3, min_members=3
             continue
         first = data.bins.offsets[chrom]
         n_chrom = data.bins.n_chrom_bins(chrom)
-        observed = data.set_cooccurrence(bins, min_members)
         local = bins - first
-        null = {'shift': [], 'locus': []}
+        sets = [bins]                      # index 0: the community itself
+        null = {'shift': [], 'locus': []}  # indices into sets
         attempts = 0
         while (len(null['shift']) < n_shifts or len(null['locus']) < n_shifts) and attempts < n_shifts * 200:
             attempts += 1
             shift = int(rng.integers(1, n_chrom))
             shifted = (local + shift) % n_chrom + first
-            if covered[shifted].mean() < 0.8:
+            # count / size equals the mean of the boolean array exactly and is much faster
+            if np.count_nonzero(covered[shifted]) / len(shifted) < 0.8:
                 continue
             value = None
             if len(null['shift']) < n_shifts:
-                value = data.set_cooccurrence(shifted, min_members)
+                sets.append(shifted)
+                value = len(sets) - 1
                 null['shift'].append(value)
-            if len(null['locus']) < n_shifts and locus[shifted].mean() >= min_locus_fraction:
-                null['locus'].append(value if value is not None else data.set_cooccurrence(shifted, min_members))
+            if len(null['locus']) < n_shifts and np.count_nonzero(locus[shifted]) / len(shifted) >= min_locus_fraction:
+                if value is None:
+                    sets.append(shifted)
+                    value = len(sets) - 1
+                null['locus'].append(value)
+        plans.append((community_id, members, chrom, bins, sets, null))
+    block = 50
+    parallel.share(multiway_data=data)
+    counts = parallel.map_chunks(_set_counts, [[(sets, min_members) for _, _, _, _, sets, _ in plans[i:i + block]]
+                                               for i in range(0, len(plans), block)], getattr(data, 'threads', 1))
+    counts = [c for chunk in counts for c in chunk]
+    rows = []
+    for (community_id, members, chrom, bins, sets, null_index), values_of_sets in zip(plans, counts):
+        observed = values_of_sets[0]
+        null = {name: [values_of_sets[k] for k in index] for name, index in null_index.items()}
         row = {'community': community_id, 'chrom': chrom, 'n_nodes': len(members),
                'n_baits': int(sum(1 for n in members if bait_nodes is not None and n in bait_nodes)),
                'n_bins': len(bins), 'span_bins': int(bins.max() - bins.min()), 'observed': observed}

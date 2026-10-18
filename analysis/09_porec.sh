@@ -6,8 +6,9 @@
 # to hg19), assigned to the hg19 HindIII fragments of the capture design; graphs on GRCh38 (K562) are lifted to hg19.
 # Pore-C is ligation-based: a read records several fragments ligated within one crosslinked complex.
 set -euo pipefail
-data=${1:?usage: 09_porec.sh <data_dir> <results_dir>}
+data=${1:?usage: 09_porec.sh <data_dir> <results_dir> [threads=24]}
 results=${2:?}
+threads=${3:-24}
 here=$(cd "$(dirname "$0")" && pwd)
 porec="$data/porec"
 chain_to_hg19="$data/annotation/hg38ToHg19.over.chain.gz"
@@ -41,11 +42,11 @@ evaluate() {   # <graph prefix> <multiway name> <run name> [chain for the graph]
     local npz="$results/multiway/${name}_hg19_HindIII_fragments.npz"
     local chain=${1:-}
     [[ -s "$out/${run}_summary.tsv" ]] || egaValidateMultiway --verbose -g "$graph.graphml" -m "$npz" ${chain:+--chain "$chain"} --confirmPairs \
-        --coverageClasses 5 --controls 10 --maxPairs 300000 --maxTriplets 100000 --seed 0 \
+        --coverageClasses 5 --controls 10 --maxPairs 300000 --maxTriplets 100000 --seed 0 --threads "$threads" \
         -o "$out/$run" > "$out/$run.log" 2>&1
-    [[ -s "$out/${run}_hops.tsv" ]] || python "$here/hop_distance.py" "$graph.graphml" "$npz" "$out/${run}_hops.tsv" ${chain:+"$chain"} \
+    [[ -s "$out/${run}_hops.tsv" ]] || python "$here/hop_distance.py" "$graph.graphml" "$npz" "$out/${run}_hops.tsv" ${chain:+"$chain"} --threads "$threads" \
         > "$out/${run}_hops.log" 2>&1
-    [[ -s "$out/${run}_hubs_hub_summary.tsv" ]] || python "$here/hub_multiway.py" "$graph.graphml" "$npz" "$out/${run}_hubs" ${chain:+"$chain"} \
+    [[ -s "$out/${run}_hubs_hub_summary.tsv" ]] || python "$here/hub_multiway.py" "$graph.graphml" "$npz" "$out/${run}_hubs" ${chain:+"$chain"} --threads "$threads" \
         > "$out/${run}_hubs.log" 2>&1
 }
 
@@ -63,5 +64,5 @@ evaluate "$results/graphs/GM_chicago" GM12878_hiporec GM_chicago_hiporec
 evaluate "$results/k562/K562_dmso" K562_hiporec K562_hiporec "$chain_to_hg19"
 for run in GM12878_porec GM12878_hiporec; do
     [[ -s "$out/GM_chicago_${run}_community_pairs_summary.tsv" ]] || python "$here/sprite_community_pairs.py" "$results/multiway/${run}_hg19_HindIII_fragments.npz" \
-        "$results/graphs/GM_chicago_nodes.tsv" "$out/GM_chicago_${run}" > "$out/GM_chicago_${run}_pairs.log" 2>&1
+        "$results/graphs/GM_chicago_nodes.tsv" "$out/GM_chicago_${run}" 5 "$threads" > "$out/GM_chicago_${run}_pairs.log" 2>&1
 done

@@ -8,8 +8,9 @@
 #   * cell-type specificity: GM12878-only, hESC-only and shared interactions in GM12878 SPRITE and H1-hESC GAM
 # Runs one after another (each run holds a multi-way matrix in memory).
 set -euo pipefail
-data=${1:?usage: 11_reviewer_controls.sh <data_dir> <results_dir>}
+data=${1:?usage: 11_reviewer_controls.sh <data_dir> <results_dir> [threads=24]}
 results=${2:?}
+threads=${3:-24}
 here=$(cd "$(dirname "$0")" && pwd)
 out="$results/reviewer_controls"
 mkdir -p "$out"
@@ -30,9 +31,11 @@ hops() {   # <graph> <multiway> <name> [chain] ; coverage-matched and domain-mat
     if [[ "$multiway" == "$sprite" ]]; then comp=$gm_comp; dom=$gm_dom; else comp=$h1_comp; dom=$h1_dom; fi
     [[ "$graph" == */* ]] || graph="$results/graphs/$graph.graphml"
     [[ -s "$out/${name}_hops_coverage.tsv" ]] || python "$here/hop_distance.py" "$graph" \
-        "$multiway" "$out/${name}_hops_coverage.tsv" "${chain_option[@]}" > "$out/${name}_hops_coverage.log" 2>&1
+        "$multiway" "$out/${name}_hops_coverage.tsv" "${chain_option[@]}" --threads "$threads" \
+        > "$out/${name}_hops_coverage.log" 2>&1
     [[ -s "$out/${name}_hops_domains.tsv" ]] || python "$here/hop_distance.py" "$graph" \
         "$multiway" "$out/${name}_hops_domains.tsv" "${chain_option[@]}" --compartments "$comp" --domains "$dom" \
+        --threads "$threads" \
         > "$out/${name}_hops_domains.log" 2>&1
 }
 hops GM_chicago "$sprite" GM_chicago_sprite
@@ -44,5 +47,5 @@ hops "$results/virtual_capture/graphs/VC_H1_microc.graphml" "$gam" VC_H1_microc_
 [[ -s "$out/GM_vs_hESC_domains.tsv" ]] || python "$here/celltype_specific_edges.py" \
     "$results/graphs/GM_chicago.graphml" "$results/graphs/hESC.graphml" GM12878 hESC "$out/GM_vs_hESC_domains.tsv" \
     --multiway SPRITE_GM12878 "$sprite" --multiway GAM_H1 "$gam" "$chain" \
-    --domainsFor SPRITE_GM12878 "$gm_comp" "$gm_dom" --domainsFor GAM_H1 "$h1_comp" "$h1_dom" \
+    --domainsFor SPRITE_GM12878 "$gm_comp" "$gm_dom" --domainsFor GAM_H1 "$h1_comp" "$h1_dom" --threads "$threads" \
     > "$out/GM_vs_hESC_domains.log" 2>&1

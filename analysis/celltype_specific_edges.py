@@ -10,6 +10,7 @@ the other (a double dissociation); shared architecture supports all sets alike.
 
 Usage: python celltype_specific_edges.py <graph1.graphml> <graph2.graphml> <name1> <name2> <output.tsv>
            --multiway NAME FILE.npz [CHAIN] [--multiway ...] [--domainsFor NAME COMPARTMENTS DOMAINS] [--pairs 50000]
+           [--threads N]
 """
 
 import argparse
@@ -42,6 +43,8 @@ def main():
     parser.add_argument('--pairs', type=int, default=50000)
     parser.add_argument('--coverageClasses', type=int, default=5)
     parser.add_argument('--bootstrap', type=int, default=1000)
+    parser.add_argument('--threads', type=int, default=0,
+                        help='Worker processes for the pair queries (default: available CPUs, at most 24)')
     args = parser.parse_args()
     graphs = [read_graph(args.graph1), read_graph(args.graph2)]
     keys = [{tuple(sorted((u, v))) for u, v in g.edges} for g in graphs]
@@ -54,7 +57,7 @@ def main():
     for spec in args.multiway:
         name, path = spec[0], spec[1]
         chain = spec[2] if len(spec) > 2 else None
-        data = MultiwayData.load(path)
+        data = MultiwayData.load(path).set_threads(args.threads)
         node_bins = map_nodes_to_bins(union, data, LiftOver(chain) if chain else None)
         pools = LocusPools(union, node_bins, data)
         compartment, tad_id = None, None
@@ -62,7 +65,9 @@ def main():
             compartment, tad_id = domain_annotation(data.bins, *domains[name])
         all_pairs = []
         for label, edges in sets.items():
-            frame = pd.DataFrame([(u, v, union.nodes[u]['chrom'], abs(middle[u] - middle[v])) for u, v in edges
+            # sorted: iterating the set itself follows Python's per-process string hashing, which made the sampled
+            # pairs and their controls differ between runs
+            frame = pd.DataFrame([(u, v, union.nodes[u]['chrom'], abs(middle[u] - middle[v])) for u, v in sorted(edges)
                                   if union.nodes[u]['chrom'] == union.nodes[v]['chrom']],
                                  columns=['node_a', 'node_b', 'chrom', 'distance'])
             frame = frame[frame['distance'] <= MAX_DISTANCE]

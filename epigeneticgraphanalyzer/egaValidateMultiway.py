@@ -44,6 +44,9 @@ def parse_arguments(args=None):
     parser.add_argument('--skipTriplets', action='store_true')
     parser.add_argument('--skipCommunities', action='store_true')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--threads', type=int, default=0,
+                        help='Worker processes for the pair, triplet and community queries (default: available CPUs, '
+                             'at most 24); the results do not depend on the number')
     parser.add_argument('--outputPrefix', '-o', required=True)
     return parser.parse_args(args)
 
@@ -52,7 +55,7 @@ def main(args=None):
     args = parse_arguments(args)
     setup_logging(args.verbose)
     graph = read_graph(args.graph)
-    data = MultiwayData.load(args.multiway)
+    data = MultiwayData.load(args.multiway).set_threads(args.threads)
     liftover = LiftOver(args.chain) if args.chain else None
     node_bins = map_nodes_to_bins(graph, data, liftover)
     log.info('%d of %d nodes mapped to covered bins', len(node_bins), graph.number_of_nodes())

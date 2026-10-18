@@ -18,7 +18,7 @@ one end that also hold the other, and the mean number of groups holding both end
 
 Usage: python hop_distance.py <graph.graphml> <multiway.npz> <output.tsv> [--chain FILE] [--pairs 50000]
            [--coverageClasses 5] [--degreeClasses 0] [--compartments BED] [--domains BED] [--bootstrap 1000]
-           [--maxDistance 2000000] [--minCoverageQuantile 0] [--minOffset 1] [--rates] [--pairTable FILE]
+           [--maxDistance 2000000] [--minCoverageQuantile 0] [--minOffset 1] [--rates] [--pairTable FILE] [--threads N]
 """
 
 import argparse
@@ -156,13 +156,16 @@ def main():
                         help='Also report the absolute co-occurrence of test and control pairs')
     parser.add_argument('--pairTable', help='Write the tested pairs with their NPMI, control mean and concordance '
                                             '(TSV, .gz allowed)')
+    parser.add_argument('--threads', type=int, default=0,
+                        help='Worker processes for the pair queries (default: available CPUs, at most 24); the '
+                             'results do not depend on the number')
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format='%(asctime)s %(name)s %(message)s')
     chain = args.chain or (args.chain_file if args.chain_file not in (None, '-') else None)
     liftover = LiftOver(chain) if chain else None
     max_distance = args.maxDistance if args.maxDistance > 0 else None
     graph = read_graph(args.graph)
-    data = MultiwayData.load(args.multiway)
+    data = MultiwayData.load(args.multiway).set_threads(args.threads)
     compartment, tad_id = None, None
     if args.compartments or args.domains:
         compartment, tad_id = domain_annotation(data.bins, args.compartments, args.domains)
