@@ -35,7 +35,8 @@ from ._version import __version__
 from . import egaReport as report
 from .egaPlotDifferential import IGNORED_GENE_PREFIXES
 from .egaReport import (GeneStory, Places, Report, Run, esc, explaining_nodes, gene_names, is_step, isnan, level_hops,
-                        level_label, level_order, level_short, read_strands, supported, truthy)
+                        level_label, level_order, level_short, prov_legend, read_strands, sensitive_only, supported,
+                        truthy)
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +48,8 @@ TRIGGER_COLUMNS = ('gene', 'gene_log2FC', 'explained_at', 'promoter_transition',
                    'evidence', 'relation', 'tf_log2FC', 'tf_padj', 'tf_in_graph', 'motif', 'steps_with_motif',
                    'gene_motif_p', 'group_q', 'rank_score')
 STATUS_CODE = {'shared': 0, 'gained': 1, 'lost': 2}
+# support class of an edge (egaDifferential attribute support): stable, threshold-sensitive, not testable
+SUPPORT_CODE = {'stable': 0, 'threshold-sensitive': 1, 'not testable': 2}
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -214,12 +217,17 @@ class Builder:
                     marks[m][k].append(number(d.get('{}_{}'.format(m, name)), 3))
         nodes['m'] = {m: list(v) for m, v in marks.items()}
         edges = dict(u=[], v=[], s=[], a=[], b=[])
+        support = []
         for u, v, d in graph.edges(data=True):
             edges['u'].append(self.index[u])
             edges['v'].append(self.index[v])
             edges['s'].append(STATUS_CODE.get(d.get('status', 'shared'), 0))
             edges['a'].append(number(d.get('r_a', 0) or 0, 3))
             edges['b'].append(number(d.get('r_b', 0) or 0, 3))
+            support.append(SUPPORT_CODE.get(d.get('support'), -1))
+        if any(c >= 0 for c in support):
+            # support class per edge (0 stable, 1 threshold-sensitive, 2 not testable)
+            edges['t'] = [max(c, 0) for c in support]
         return dict(chroms=chroms, classes=classes, tss=statuses, nodes=nodes, edges=edges)
 
     # genes ----------------------------------------------------------------------------------------------------------
@@ -245,7 +253,8 @@ class Builder:
         levels = sorted({lv for _, rows in story.fragments for lv in rows}, key=level_order)
         columns = []
         for node, rows in story.fragments:
-            cells = {lv: [1 if r['explains'] else 0, 1 if supported(r) else 0] for lv, r in rows.items()}
+            cells = {lv: [1 if r['explains'] else 0, 1 if supported(r) else 0, 1 if sensitive_only(r) else 0]
+                     for lv, r in rows.items()}
             columns.append({'l': story.column_label(node), 'c': cells})
         support = {}
         _, rows = story.fragments[0]
@@ -495,6 +504,8 @@ class Builder:
                 'levelOrder': {lv: level_order(lv) for lv in self.level_names()},
                 'version': __version__, 'date': datetime.date.today().isoformat(),
                 'levelsSource': run.levels_source, 'strands': bool(self.places.strands),
+                'provenance': gene_tags(prov_legend()),
+                'supportDefinition': self.report.support_definition() if run.support_edges is not None else '',
                 'ignored': list(IGNORED_GENE_PREFIXES),
                 'notes': [gene_tags(n) for n, _ in sorted(self.notes.items(), key=lambda x: x[1])]}
 

@@ -132,6 +132,21 @@ svg .lad-ring { fill: none; stroke: var(--accent); stroke-width: 1.8; }
 svg .bait-mark { fill: var(--ink); }
 svg .seed-mark { fill: var(--ink); stroke: var(--ink); }
 svg .expl-mark { fill: var(--bg); stroke: var(--explaining); stroke-width: 1.6; }
+/* support of gained and lost contacts: threshold-sensitive dotted and lighter, not testable dash-dotted */
+svg .sup-ts { stroke-dasharray: 1.2 2.4; stroke-opacity: 0.5; }
+svg .sup-nt { stroke-dasharray: 6 2.5 1.5 2.5; }
+svg .lad-ts { fill: var(--faint); stroke: var(--ink); stroke-width: 1.2; stroke-dasharray: 1.5 1.5; }
+
+/* provenance tags (M measured, C called, D derived, I interpretation) and support of the contacts */
+.prov-chain { white-space: nowrap; }
+.prov { display: inline-block; min-width: 1.05em; padding: 0 0.15em; margin: 0 0.05em; border: 1px solid var(--faint);
+        border-radius: 2px; font-size: 0.7rem; line-height: 1.2; text-align: center; color: var(--muted);
+        font-weight: 600; vertical-align: 0.1em; }
+.prov-I { background: var(--panel); }
+.prov-arrow { color: var(--faint); font-size: 0.78rem; margin: 0 0.05em; }
+.support-ts { color: var(--muted); text-decoration: underline dotted; text-underline-offset: 0.18em; }
+.support-nt { color: var(--muted); font-style: italic; }
+tr.sensitive td:first-child { box-shadow: inset 3px 0 0 var(--faint); }
 
 /* controls */
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1.2rem; margin: 0.4rem 0 0.6rem;

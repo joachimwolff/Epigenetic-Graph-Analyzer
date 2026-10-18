@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import time
 
 import numpy as np
@@ -29,6 +30,7 @@ from .graph import annotate_genes, build_graph, detect_communities, write_graph
 from .structural import (add_sv_edges, breakpoint_calls, flag_sv_edges, read_copy_number, read_structural_variants,
                          read_sv_contacts, read_trans_calls, structural_genes, sv_edge_table, sv_status)
 from .egaTadCrossing import add_tad_arguments, tad_kwargs
+from .support import all_levels_provenance, default_floor, edge_support, input_detection, support_summary
 from .io import INTERACTION_FORMATS, read_baits, read_chicdiff, read_expression, read_interactions
 
 log = logging.getLogger(__name__)
@@ -57,6 +59,17 @@ def parse_arguments(args=None):
                              "'intersect': reaching it in every replicate; 'union': in any replicate")
     parser.add_argument('--referenceScore', type=float, default=5.0,
                         help='Score that maps to edge strength 1 (the calling threshold, CHiCAGO 5)')
+    parser.add_argument('--supportThreshold', type=float, default=None,
+                        help='Calling score of the support classes of gained and lost edges (default: '
+                             '--scoreThreshold, else --referenceScore)')
+    parser.add_argument('--supportFloor', type=float, default=None,
+                        help='Gained / lost edges whose pair is listed in the other condition at a score of at least '
+                             'this value (below the calling score) are threshold-sensitive, below it stable; absence '
+                             'from a file whose lowest score is above the floor is not testable (default: 0.6 x the '
+                             'calling score, 3 at CHiCAGO 5). Columns support, support_reason, other_max_score, '
+                             'replicates_floor_<name> of <prefix>_edges.tsv.gz, edge attribute support, '
+                             '<prefix>_support_inputs.tsv (lowest score per input file), <prefix>_support.tsv '
+                             '(edges per status and class) and the support columns of the all-level explanations')
     parser.add_argument('--chicdiff', help='Chicdiff results table (fwrite of <prefix>_results.Rds) testing the '
                                            'change of each interaction')
     parser.add_argument('--chicdiffPadj', type=float, default=0.05)
@@ -212,24 +225,56 @@ def main(args=None):
     prefix = args.outputPrefix
     baits = read_baits(args.baits) if args.baits else None
 
-    def condition(paths):
+    replicate_tables = {}
+
+    def condition(paths, name):
         tables = []
         for path in paths:
             table = read_interactions([path], args.format, baits=baits, cool_field=args.coolField)
             if args.maxFdr is not None and 'fdr' in table:
                 table = table[table['fdr'] <= args.maxFdr]
             tables.append(table)
+        replicate_tables[name] = tables
         if len(tables) == 1 and args.scoreThreshold is not None:
             return consensus_scores([tables[0][tables[0]['score'] >= args.scoreThreshold]], 'union')
         return consensus_scores(tables, args.replicates, args.scoreThreshold)
 
-    table_a = condition(args.interactionsA)
-    table_b = condition(args.interactionsB)
+    table_a = condition(args.interactionsA, name_a)
+    table_b = condition(args.interactionsB, name_b)
     edges = differential_edges_from_scores(table_a, table_b, name_a, name_b, args.referenceScore)
     if args.chicdiff:
         edges = annotate_chicdiff(edges, read_chicdiff(args.chicdiff), args.chicdiffPadj)
     community_weight = 'score'
     log.info('%d union edges: %s', len(edges), edges['status'].value_counts().to_dict())
+    # support of the gained and lost edges: the scores of the other condition below the calling threshold, and
+    # whether its input files hold sub-threshold scores at all (lowest score per file)
+    support_threshold = args.supportThreshold if args.supportThreshold is not None else \
+        args.scoreThreshold if args.scoreThreshold is not None else args.referenceScore
+    support_floor = args.supportFloor if args.supportFloor is not None else default_floor(support_threshold)
+    detection = input_detection(replicate_tables, {name_a: args.interactionsA, name_b: args.interactionsB},
+                                (name_a, name_b), support_threshold, support_floor)
+    write_table(detection, prefix + '_support_inputs.tsv')
+    for row in detection.itertuples():
+        log.info('input %s replicate %d: %d pairs, lowest score %.3g: absence %s', row.condition, row.replicate,
+                 row.pairs, row.min_score, row.absence)
+    edges = pd.concat([edges, edge_support(edges, replicate_tables, detection, (name_a, name_b), support_threshold,
+                                           support_floor)], axis=1)
+    replicate_tables.clear()
+    support_table = support_summary(edges)
+    write_table(support_table.assign(threshold=support_threshold, floor=support_floor), prefix + '_support.tsv')
+    # inputs of the run for the displays (egaReport --overlay draws the interactions and mark tracks of a region)
+    with open(ensure_parent(prefix + '_support.json'), 'w') as handle:
+        json.dump({'names': [name_a, name_b], 'threshold': support_threshold, 'floor': support_floor,
+                   'format': args.format, 'replicates': args.replicates, 'scoreThreshold': args.scoreThreshold,
+                   'interactions': {name_a: [os.path.abspath(p) for p in args.interactionsA],
+                                    name_b: [os.path.abspath(p) for p in args.interactionsB]},
+                   'tracks': {name_a: {m: [os.path.abspath(p) for p in v]
+                                       for m, v in parse_track_arguments(args.tracksA).items()},
+                              name_b: {m: [os.path.abspath(p) for p in v]
+                                       for m, v in parse_track_arguments(args.tracksB).items()}},
+                   'inputs': json.loads(detection.to_json(orient='records'))}, handle, indent=2)
+    log.info('edge support (threshold %g, floor %g): %s', support_threshold, support_floor,
+             {s: dict(zip(p['support'], p['edges'])) for s, p in support_table.groupby('status', sort=False)})
     write_table(edges, prefix + '_edges.tsv.gz')
 
     tss = load_tss(args.tss, args.geneTypes)
@@ -578,6 +623,7 @@ def main(args=None):
                                     node_types=node_types(elements), structural=structural,
                                     structural_levels=structural_levels)
     write_table(all_levels, prefix + '_explanations_all_levels.tsv')
+    write_table(all_levels_provenance(all_levels.columns), prefix + '_explanations_provenance.tsv')
     write_table(explanation_level_counts(all_levels), prefix + '_explanation_levels.tsv')
     write_table(explanation_combinations(all_levels, top=20), prefix + '_explanation_combinations.tsv')
     classes = classes.join(explanation_level_summary(all_levels), on='node')

@@ -39,6 +39,14 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             contacts of the promoter that cross a boundary (gained_crossing, lost_crossing,
                             shared_crossing) and a sentence (tad_crossing) naming the boundary, its strength and the
                             partner region, appended to the summary.
+                            With the support columns of the all-level table (egaDifferential), appended after the
+                            other columns (declared roles, fragment mean): first_level_support (stable,
+                            threshold-sensitive, not testable: the contacts that carry the first explaining level),
+                            first_level_threshold_sensitive (it rests only on threshold-sensitive contacts),
+                            only_threshold_sensitive (every explaining level does), threshold_sensitive_levels,
+                            support_note (per explaining level with contacts, e.g. 'step 2: rests on 2
+                            threshold-sensitive contacts') and provenance (tags of the first explaining level: M
+                            measured, C called, D derived, I interpretation, e.g. 'MC>D>I').
   <out>_communities.tsv     per community with a coordinated expression change (FDR < --fdr): rewiring, expression
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
@@ -203,6 +211,27 @@ def all_level_text(gene, rna, levels, roles):
         gene, 'up' if rna > 0 else 'down', rna, '; '.join(parts), ', '.join(explaining))
 
 
+def support_columns(levels, roles='declared', presence='mean'):
+    """Support of the explaining levels of one gene (rows of the all-level table); {} without support columns."""
+    key = '{}_{}'.format(roles, presence)
+    if 'support_' + key not in levels:
+        return {}
+    levels = levels.sort_values('rank')
+    hit = levels[levels['explains_' + key].astype(str).str.lower() == 'true']
+    flagged = hit['threshold_sensitive_only_' + key].astype(str).str.lower() == 'true'
+    notes = ['{}: {}'.format(explanation_level_label(r['level']), r['support_detail_' + key])
+             for _, r in hit.iterrows() if isinstance(r['support_detail_' + key], str) and r['support_detail_' + key]]
+    first = hit.iloc[0] if len(hit) else None
+    support = first['support_' + key] if first is not None else ''
+    return dict(first_level_support=support if isinstance(support, str) else '',
+                first_level_threshold_sensitive=bool(flagged.iloc[0]) if len(hit) else False,
+                only_threshold_sensitive=bool(len(hit) and flagged.all()),
+                threshold_sensitive_levels=';'.join(hit.loc[flagged.to_numpy(), 'level']),
+                support_note='; '.join(notes),
+                provenance=str(first['provenance_chain']) if first is not None and 'provenance_chain' in hit and
+                isinstance(first['provenance_chain'], str) else '')
+
+
 def gene_report(graph, prefix, names, marks, edges):
     classes = pd.read_csv(prefix + '_gene_classes.tsv', sep='\t')
     try:
@@ -224,6 +253,7 @@ def gene_report(graph, prefix, names, marks, edges):
         for n in (u, v):
             status.setdefault(n, {'gained': 0, 'lost': 0, 'shared': 0})[s] += 1
     rows = []
+    supported, extra = {}, {}
     for _, r in classes.iterrows():
         node = r['node']
         counts = status.get(node, {'gained': 0, 'lost': 0, 'shared': 0})
@@ -294,8 +324,16 @@ def gene_report(graph, prefix, names, marks, edges):
             for roles, column in (('declared', 'all_levels'), ('learned', 'all_levels_learned')):
                 if 'detail_{}_mean'.format(roles) in all_levels[node]:
                     row[column] = all_level_text(gene, r['rna_log2FC'], all_levels[node], roles)
+            supported.update({column: None for column in support_columns(all_levels[node])})
+            extra[node] = support_columns(all_levels[node])
         rows.append(row)
-    return pd.DataFrame(rows).sort_values('rna_log2FC', key=np.abs, ascending=False)
+    table = pd.DataFrame(rows)
+    # support of the contacts that carry the explanation: appended after the other columns
+    for column in supported:
+        table[column] = [extra.get(n, {}).get(column, '' if column in ('first_level_support', 'support_note',
+                                                                        'threshold_sensitive_levels', 'provenance')
+                                              else False) for n in table['node']]
+    return table.sort_values('rna_log2FC', key=np.abs, ascending=False)
 
 
 def community_report(graph, prefix, changes, marks, fdr):

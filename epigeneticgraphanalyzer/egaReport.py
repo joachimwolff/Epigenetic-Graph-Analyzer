@@ -64,8 +64,10 @@ from matplotlib.patches import Arc  # noqa: E402
 from ._cli import base_parser, setup_logging  # noqa: E402
 from ._version import __version__  # noqa: E402
 from .egaPlotDifferential import (IGNORED_GENE_PREFIXES, INK, STATUS_COLORS,  # noqa: E402
-                                  draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, mark_change, separate,
-                                  place_labels, shape_handles, spread_layout, status_handles, width_handles)
+                                  draw_arcs, draw_graph, edge_norm, edge_strength, edge_width, has_support, mark_change,
+                                  separate, place_labels, shape_handles, spread_layout, status_handles,
+                                  support_handles, support_style, width_handles)
+from .support import PROVENANCE_LEVELS, PROVENANCE_TAGS, PROVENANCE_TEXT, SUPPORT_CLASSES  # noqa: E402
 from .egaPlotRegion import ordered_subgraph  # noqa: E402
 from .egaTadCrossing import add_tad_arguments, tad_kwargs  # noqa: E402
 from .graph import read_graph  # noqa: E402
@@ -79,6 +81,8 @@ MARK_COLORS = ['#0072B2', '#E69F00', '#009E73', '#CC79A7', '#56B4E9', '#D55E00',
 BAR_COLOR = '#3d6f99'
 EXPLAINING = '#6a3d9a'
 FADED = '#d6d5cf'
+# an explaining level that rests only on threshold-sensitive contacts (ladder)
+SENSITIVE_FILL = '#a9a8a2'
 # membership changes of hubs and communities: colour and line style differ (colour-blind safe on the red-blue fill)
 LEFT_COLOR = '#E69F00'
 JOINED_COLOR = '#009E73'
@@ -129,6 +133,18 @@ def parse_arguments(args=None):
     parser.add_argument('--maxNodes', type=int, default=80,
                         help='Largest neighbourhood drawn; larger neighbourhoods keep the promoter, its strongest '
                              'partners and the paths to the explaining nodes')
+    parser.add_argument('--overlay', action='store_true',
+                        help='Gene reports: add the plain overlay view, one figure of two panels for the region of the '
+                             'gene: the inputs as a track overlay (called interactions per condition, mark bigWig '
+                             'tracks of both conditions, expression change of the promoters) next to the elements of '
+                             'the report (ranked levels with provenance and contact support, distance control, 3D '
+                             'support, boundary crossings); every panel is also written as a PDF '
+                             '(<name>_gene_<gene>_overlay_inputs.pdf, _overlay_ega.pdf)')
+    parser.add_argument('--overlayTracksA', nargs='*', default=None,
+                        help='mark=file.bw[,rep.bw] of condition A for the overlay (default: the --tracksA of '
+                             'egaDifferential from <prefix>_support.json; without bigWig files the fragment means of '
+                             'the graph are drawn)')
+    parser.add_argument('--overlayTracksB', nargs='*', default=None, help='as --overlayTracksA for condition B')
     parser.add_argument('--rnaThreshold', type=float, default=None,
                         help='|log2FC| of a differential gene (default: from the run log, else 1, as egaDifferential)')
     parser.add_argument('--chromatinThreshold', type=float, default=None,
@@ -448,6 +464,10 @@ class Run:
         self.combinations = self.table('_explanation_combinations.tsv')
         self.community_summary = self.json('_community_summary.json')
         self.permutation = self.json('_permutation.json')
+        # support classes of the gained and lost contacts (egaDifferential): edges per class, lowest score per input
+        self.support_edges = self.table('_support.tsv')
+        self.support_inputs = self.table('_support_inputs.tsv')
+        self.support_info = self.json('_support.json')
         self.tests = {}
         for path in sorted(os.listdir(os.path.dirname(os.path.abspath(prefix)))):
             match = re.fullmatch(re.escape(os.path.basename(prefix)) + r'_(direct|indirect|hop\d+)_gene_test\.tsv',
@@ -702,7 +722,14 @@ class Run:
                  nodes=col(('nodes_tested', 'nodes', 'n_nodes')), support=col(('proximity_support', 'support_3d')),
                  support_ci=col(('proximity_support_ci', 'support_3d_ci', 'proximity_ci')),
                  rna=col(('rna_log2FC',)), gained=col(('contacts_gained',)), lost=col(('contacts_lost',)),
-                 shared=col(('contacts_shared',)), contact=col(('contact_log2',)))
+                 shared=col(('contacts_shared',)), contact=col(('contact_log2',)),
+                 contact_support=col((), 'support_' + key if key else None),
+                 support_detail=col((), 'support_detail_' + key if key else None),
+                 sensitive_only=col((), 'threshold_sensitive_only_' + key if key else None),
+                 edges_stable=col((), 'edges_stable_' + key if key else None),
+                 edges_sensitive=col((), 'edges_threshold_sensitive_' + key if key else None),
+                 edges_untested=col((), 'edges_not_testable_' + key if key else None),
+                 provenance=col(('provenance',)), chain=col(('provenance_chain',)))
 
         def value(r, name):
             return r[c[name]] if c[name] else np.nan
@@ -790,6 +817,18 @@ class Run:
             row['state_fragment'] = value(r, 'state_fragment') if not isnan(value(r, 'state_fragment')) else ''
             row['detail_raw'] = value(r, 'detail') if not isnan(value(r, 'detail')) else ''
             row['contacts'] = tuple(value(r, k) for k in ('gained', 'lost', 'shared', 'contact'))
+            # support of the contacts that carry the level and provenance of its values (egaDifferential)
+            text = value(r, 'contact_support')
+            row['contact_support'] = text if isinstance(text, str) else ''
+            text = value(r, 'support_detail')
+            row['support_detail'] = text if isinstance(text, str) else ''
+            row['sensitive_only'] = truthy(value(r, 'sensitive_only'))
+            row['support_edges'] = tuple(0 if isnan(value(r, k)) else int(value(r, k))
+                                         for k in ('edges_stable', 'edges_sensitive', 'edges_untested'))
+            text = value(r, 'provenance')
+            row['provenance'] = text if isinstance(text, str) else ''
+            text = value(r, 'chain')
+            row['provenance_chain'] = text if isinstance(text, str) else ''
             row['signs_declared'] = value(r, 'signs') if not isnan(value(r, 'signs')) else ''
             row['learned_explains'] = row['learned_result'] = row['learned_p'] = row['learned_q'] = np.nan
             row['signs_learned'] = ''
@@ -822,6 +861,9 @@ class Run:
                     'explains' if truthy(r['explains_' + max_key]) else 'does not explain',
                     ' ({})'.format(other) if isinstance(other, str) and other else '')
             for column in columns:
+                if column.startswith(('support_', 'threshold_sensitive_only_', 'edges_stable_',
+                                      'edges_threshold_sensitive_', 'edges_not_testable_')):
+                    continue
                 if column not in used and not column.endswith(('_learned_mean', '_learned_max1kb', '_learned')) \
                         and not isnan(r[column]) and column not in ('rank', 'hops'):
                     if roles and (column.endswith('_' + roles) or column.endswith('_' + key) or
@@ -1317,8 +1359,9 @@ def arcs_figure(run, sub, seeds, explaining):
                 continue
             count += 1
             x0, x1 = sorted((middle[u], middle[v]))
+            style, alpha = support_style(data)
             ax.add_patch(Arc(((x0 + x1) / 2, 0), x1 - x0, 2 * np.sqrt((x1 - x0) / longest), theta1=0, theta2=180,
-                             color='#7f7f7a', lw=edge_width(edge_strength(data, which)), alpha=0.9))
+                             color='#7f7f7a', lw=edge_width(edge_strength(data, which)), alpha=alpha, ls=style))
         ax.axhline(0, color=INK, lw=0.6)
         for n in sub.nodes:
             if sub.nodes[n].get('bait'):
@@ -1346,6 +1389,7 @@ def arcs_figure(run, sub, seeds, explaining):
                plt.Line2D([0], [0], color=STATUS_COLORS['shared'], lw=2, label='shared')] + width_handles() + \
         [plt.Line2D([0], [0], marker='s', ls='', color=INK, ms=4, label='baited promoter'),
          plt.Line2D([0], [0], marker='o', ls='', mfc='white', mec=EXPLAINING, mew=1.2, ms=5, label='explaining node')]
+    handles += support_handles(has_support(sub))
     if boundaries:
         handles.append(plt.Line2D([0], [0], color=BOUNDARY_COLOR, lw=1.4, ls=BOUNDARY_DASH,
                                   label='TAD boundary (thick: strongest decile)'))
@@ -1375,9 +1419,10 @@ def tad_lines(run, sub, axes, span, pad):
     return len(found)
 
 
-def graph_panel_legend(fig, ax, mode, names, mark, max_log2, highlight=True):
-    """Legend and colour bar below one graph panel, with the highlight outlines."""
-    extra = highlight_handles() if highlight else []
+def graph_panel_legend(fig, ax, mode, names, mark, max_log2, highlight=True, support=()):
+    """Legend and colour bar below one graph panel, with the highlight outlines (and the line styles of the support
+    classes in `support`)."""
+    extra = (highlight_handles() if highlight else []) + (support_handles(support) if mode != 'nodes' else [])
     if mode in ('A', 'B'):
         handles = width_handles() + shape_handles() + extra
         offset = -0.04
@@ -1423,7 +1468,7 @@ def neighbourhood_figures(run, sub, seeds, explaining, mark, max_log2):
                    drivers=set(explaining) if mode == 'nodes' else (), title=titles[mode])
         if mode != 'nodes':
             overlay_highlights(ax, sub, positions, seeds, explaining)
-        graph_panel_legend(fig, ax, mode, names, mark, max_log2)
+        graph_panel_legend(fig, ax, mode, names, mark, max_log2, support=has_support(sub))
         figures.append(fig)
     return figures
 
@@ -1587,9 +1632,11 @@ def roles_figure(run):
 def ladder_figure(columns, levels, support=None):
     """Explanation ladder: one row per level from the promoter outwards, one column per promoter fragment. Filled
     marker: the level explains the expression change; open: it does not; ring: significant (q < 0.05) and beyond the
-    distance-matched mirror loci. `support` maps levels to the 3D support written at the right."""
+    distance-matched mirror loci; half-tone with a dotted outline: the level explains the change but rests only on
+    threshold-sensitive contacts. `support` maps levels to the 3D support written at the right."""
     n_rows, n_cols = len(levels), len(columns)
     has_support = bool(support)
+    flagged = False
     width = 2.15 + 0.62 * n_cols + (0.62 if has_support else 0)
     fig = new_figure(width, 0.255 * n_rows + 0.95)
     ax = fig.add_axes([2.0 / width, 0.62 / (0.255 * n_rows + 0.95), 1 - 2.05 / width,
@@ -1604,7 +1651,12 @@ def ladder_figure(columns, levels, support=None):
             if row is None:
                 continue
             y = y_of[lv]
-            if row['explains']:
+            if sensitive_only(row):
+                # explains, but every carrying contact is threshold-sensitive: half-tone marker, dotted outline
+                flagged = True
+                ax.scatter(j, y, s=42, facecolor=SENSITIVE_FILL, edgecolor=INK, lw=1.0, linestyle=(0, (1, 1)),
+                           zorder=3)
+            elif row['explains']:
                 ax.scatter(j, y, s=42, color=INK, zorder=3, lw=0)
             else:
                 ax.scatter(j, y, s=42, facecolor='white', edgecolor='#8c8b85', lw=1.0, zorder=3)
@@ -1629,8 +1681,224 @@ def ladder_figure(columns, levels, support=None):
                plt.Line2D([0], [0], marker='o', ls='', mfc='white', mec='#8c8b85', ms=6, label='does not explain'),
                plt.Line2D([0], [0], marker='o', ls='', mfc='none', mec=ACCENT, mew=1.6, ms=10,
                           label='significant, passes the distance control')]
+    if flagged:
+        handles.append(plt.Line2D([0], [0], marker='o', ls='', mfc=SENSITIVE_FILL, mec=INK, ms=6,
+                                  label='explains, threshold-sensitive contacts only'))
     fig.legend(handles=handles, loc='lower left', bbox_to_anchor=(0.01, 0.0), ncol=2, fontsize=6.3, frameon=False,
                handletextpad=0.3, columnspacing=1.0)
+    return fig
+
+
+# --------------------------------------------------------------------------------------------------------------------
+# plain overlay view: the inputs of a region as tracks next to the elements of the report
+
+def bigwig_bins(paths, chrom, start, end, bins):
+    """Mean signal over `bins` equal bins of a region, averaged over the files (replicates); None when no file can be
+    read (missing file, pyBigWig not installed, chromosome not in the file)."""
+    try:
+        import pyBigWig
+    except ImportError:
+        return None
+    values = []
+    for path in paths:
+        if not path or not os.path.exists(path):
+            continue
+        handle = pyBigWig.open(path)
+        try:
+            names = handle.chroms()
+            name = chrom if chrom in names else chrom[3:] if chrom.startswith('chr') and chrom[3:] in names else \
+                'chr' + chrom if 'chr' + chrom in names else None
+            if name is None:
+                continue
+            stop = min(int(end), int(names[name]))
+            if stop <= start:
+                continue
+            row = handle.stats(name, int(start), stop, nBins=int(bins), type='mean')
+            values.append([np.nan if v is None else float(v) for v in row])
+        finally:
+            handle.close()
+    if not values:
+        return None
+    values = np.array(values, dtype=float)
+    counts = np.isfinite(values).sum(axis=0)
+    return np.where(counts > 0, np.nansum(values, axis=0) / np.maximum(counts, 1), np.nan)
+
+
+def region_edges(graph, chrom, start, end, limit=4000):
+    """Edges of the graph with both ends in the region, the strongest `limit` (strength of the union)."""
+    nodes = [n for n, d in graph.nodes(data=True) if d.get('chrom') == chrom and int(d['end']) >= start and
+             int(d['start']) <= end]
+    inside = set(nodes)
+    edges = [(u, v, d) for u in nodes for v, d in graph.adj[u].items() if v in inside and u < v]
+    edges.sort(key=lambda e: -edge_strength(e[2]))
+    return nodes, edges[:limit]
+
+
+def overlay_inputs_figure(run, region, seeds, tracks):
+    """Plain overlay of the inputs of a region: called interactions of condition A and of B (grey arcs, those of the
+    report's promoter dark), the mark signal of both conditions (bigWig bins, else fragment means of the graph) and
+    the expression change of the baited promoters."""
+    graph, names = run.graph, run.names
+    chrom, start, end = region
+    nodes, edges = region_edges(graph, chrom, start, end)
+    marks = list(run.marks)
+    n_tracks = 2 + len(marks) + 1
+    heights = [1.0, 1.0] + [0.55] * len(marks) + [0.75]
+    fig = new_figure(4.6, 0.62 * sum(heights) + 0.7)
+    grid = fig.add_gridspec(n_tracks, 1, height_ratios=heights, hspace=0.18)
+    axes = [fig.add_subplot(grid[k, 0]) for k in range(n_tracks)]
+    middle = {n: node_middle(graph, n) for n in nodes}
+    longest = max((abs(middle[u] - middle[v]) for u, v, _ in edges), default=1.0) or 1.0
+    seed_set = set(seeds)
+    for ax, which, k in ((axes[0], 'A', 0), (axes[1], 'B', 1)):
+        count = 0
+        for u, v, data in edges:
+            status = data.get('status', 'shared')
+            if which == 'A' and status == 'gained' or which == 'B' and status == 'lost':
+                continue
+            count += 1
+            x0, x1 = sorted((middle[u], middle[v]))
+            own = u in seed_set or v in seed_set
+            ax.add_patch(Arc(((x0 + x1) / 2, 0), x1 - x0, 2 * np.sqrt((x1 - x0) / longest), theta1=0, theta2=180,
+                             color=INK if own else '#b3b2ac', lw=0.9 if own else 0.4, alpha=0.9 if own else 0.6,
+                             zorder=2 if own else 1))
+        ax.set_ylim(0, 1.15)
+        ax.text(0.0, 0.98, '{}: {} called interactions'.format(names[k], count), transform=ax.transAxes, fontsize=6.5,
+                va='top', color=INK)
+    bins = 400
+    edges_x = np.linspace(start, end, bins + 1)
+    centres = (edges_x[:-1] + edges_x[1:]) / 2
+    sources = []
+    for j, mark in enumerate(marks):
+        ax = axes[2 + j]
+        color = MARK_COLORS[j % len(MARK_COLORS)]
+        top = 0.0
+        for k, (name, style) in enumerate(((names[0], '#8c8b85'), (names[1], color))):
+            values = bigwig_bins(tracks.get(name, {}).get(mark, []), chrom, start, end, bins)
+            if values is not None:
+                sources.append('bigWig')
+                if k == 0:
+                    # condition A as a grey line over the filled signal of B
+                    ax.step(centres, np.nan_to_num(values), where='mid', color='#5f5e58', lw=0.5, zorder=3)
+                else:
+                    ax.fill_between(centres, 0, np.nan_to_num(values), step='mid', color=style, alpha=0.6, lw=0)
+                top = max(top, float(np.nanmax(values)) if np.isfinite(values).any() else 0.0)
+            else:
+                sources.append('fragment mean')
+                for n in nodes:
+                    value = graph.nodes[n].get('{}_{}'.format(mark, name))
+                    if value is None or isnan(value):
+                        continue
+                    d = graph.nodes[n]
+                    ax.fill_between([int(d['start']), int(d['end'])], 0, float(value), color=style,
+                                    alpha=0.45 if k == 0 else 0.6, lw=0)
+                    top = max(top, float(value))
+        ax.set_ylim(0, top * 1.1 if top > 0 else 1.0)
+        ax.text(0.0, 0.98, '{}: {} (grey line), {} (colour)'.format(mark, names[0], names[1]), transform=ax.transAxes,
+                fontsize=6.3, va='top', color=INK)
+        ax.tick_params(axis='y', labelsize=5.5, length=2)
+    ax = axes[-1]
+    for n in nodes:
+        data = graph.nodes[n]
+        value = data.get('rna_log2FC')
+        if not data.get('bait') or value is None or isnan(value):
+            continue
+        own = n in seed_set
+        color = INK if own else (STATUS_COLORS['gained'] if value > 0 else STATUS_COLORS['lost'])
+        ax.plot([middle[n], middle[n]], [0, float(value)], color=color, lw=1.2 if own else 0.7,
+                alpha=1.0 if own else 0.6)
+        ax.plot([middle[n]], [float(value)], marker='o', ms=3.2 if own else 2, color=color)
+    ax.axhline(0, color=INK, lw=0.5)
+    ax.text(0.0, 0.98, 'expression log2 {} / {} (promoters)'.format(names[1], names[0]), transform=ax.transAxes,
+            fontsize=6.3, va='top', color=INK)
+    ax.tick_params(axis='y', labelsize=5.5, length=2)
+    for k, ax in enumerate(axes):
+        ax.set_xlim(start, end)
+        for side in ('top', 'right'):
+            ax.spines[side].set_visible(False)
+        if k < 2:
+            ax.set_yticks([])
+            ax.spines['left'].set_visible(False)
+        for n in seeds:
+            if n in middle:
+                ax.axvline(middle[n], color=INK, lw=0.5, ls=(0, (1, 2)), zorder=0)
+        if k < len(axes) - 1:
+            ax.set_xticks([])
+            ax.spines['bottom'].set_visible(k < 2)
+    axes[-1].set_xlabel('{} (Mb)'.format(chrom), fontsize=6.5)
+    axes[-1].xaxis.set_major_formatter(matplotlib.ticker.FuncFormatter(lambda x, _: '{:.2f}'.format(x / 1e6)))
+    axes[-1].tick_params(axis='x', labelsize=5.8)
+    axes[0].set_title('Plain overlay of the inputs', loc='left', fontsize=7.5)
+    return fig, ('bigWig' if 'bigWig' in sources else 'fragment mean'), len(edges)
+
+
+def overlay_ega_figure(rows, names, crossing=None, threshold_text=''):
+    """The elements of the report for one promoter fragment: the levels in rank order with the explanation, the
+    provenance chain, the support of the carrying contacts, the distance control, q and the 3D support; below, the
+    boundary crossings of the own contacts (`crossing`: {status: (crossing, n)} or None without TAD calls)."""
+    levels = sorted(rows, key=level_order)
+    n = len(levels)
+    height = 0.24 * n + 1.25
+    fig = new_figure(4.6, height)
+    ax = fig.add_axes([0.0, 0.0, 1.0, 1.0])
+    ax.set_xlim(0, 100)
+    ax.set_ylim(0, height)
+    ax.set_axis_off()
+    y = height - 0.22
+    ax.text(0.5, y, 'Elements of the report', fontsize=7.5, va='center')
+    y -= 0.3
+    columns = ((0.5, 'rank'), (6.0, 'level'), (44.0, 'source'), (55.0, 'contacts'), (75.0, 'distance'), (86.0, 'q'),
+               (93.0, '3D'))
+    for x, label in columns:
+        ax.text(x, y, label, fontsize=6, color='#5b5b57', va='center')
+    ax.plot([0.5, 99.5], [y - 0.12, y - 0.12], color=INK, lw=0.5)
+    rank = 0
+    for lv in levels:
+        row = rows[lv]
+        y -= 0.24
+        explains = bool(row['explains'])
+        if explains:
+            rank += 1
+        flagged = sensitive_only(row)
+        ax.text(0.5, y, str(rank) if explains else '', fontsize=6.3, va='center')
+        ax.scatter([4.2], [y], s=16, facecolor=SENSITIVE_FILL if flagged else INK if explains else 'white',
+                   edgecolor=INK if explains else '#8c8b85', lw=0.8, linestyle=(0, (1, 1)) if flagged else '-',
+                   zorder=3)
+        label = textwrap.shorten(level_label(lv), 42, placeholder='...')
+        ax.text(6.0, y, label, fontsize=6.3, va='center', color=INK if explains else '#8c8b85')
+        ax.text(44.0, y, row.get('provenance_chain') or '', fontsize=6.0, va='center', family='monospace',
+                color='#5b5b57')
+        kind = row.get('contact_support') or ''
+        if kind:
+            stable, sensitive, untested = row.get('support_edges') or (0, 0, 0)
+            text = 'TS only ({})'.format(sensitive) if flagged else '{} ({}/{}/{})'.format(
+                {'stable': 'stable', 'threshold-sensitive': 'TS', 'not testable': 'n.t.'}.get(kind, kind), stable,
+                sensitive, untested)
+        else:
+            text = ''
+        ax.text(55.0, y, text, fontsize=6.0, va='center', color=INK if explains else '#8c8b85')
+        control = ''
+        if is_step(lv) and not isnan(row.get('beyond_mirror')):
+            control = 'passed' if truthy(row['beyond_mirror']) else 'not passed'
+        ax.text(75.0, y, control, fontsize=6.0, va='center')
+        ax.text(86.0, y, '' if isnan(row.get('q')) else fmt_p(row['q']), fontsize=6.0, va='center')
+        support = row.get('support')
+        ax.text(93.0, y, '' if isnan(support) or level_hops(lv) == 0 else sig(support, 2), fontsize=6.0, va='center')
+    y -= 0.3
+    ax.plot([0.5, 99.5], [y + 0.14, y + 0.14], color=INK, lw=0.5)
+    if crossing is None:
+        text = 'Boundary crossings: no TAD calls given (--tads).'
+    else:
+        parts = ['{} {} of {}'.format(status, c, total) for status, (c, total) in crossing.items() if total]
+        text = 'Own contacts crossing a TAD boundary: {}.'.format(', '.join(parts) if parts else 'none')
+    ax.text(0.5, y, text, fontsize=6.0, va='center')
+    y -= 0.22
+    ax.text(0.5, y, 'contacts: stable / threshold-sensitive (TS) / not testable (n.t.) on the carrying paths{}; '
+                    'source: M measured, C called,'.format(threshold_text), fontsize=5.4, va='center',
+            color='#5b5b57')
+    y -= 0.17
+    ax.text(0.5, y, 'D derived, I interpretation; distance: change beyond distance-matched mirror loci; 3D: proximity '
+                    'support of the step', fontsize=5.4, va='center', color='#5b5b57')
     return fig
 
 
@@ -1836,6 +2104,42 @@ def supported(row):
 
 def is_step(level):
     return re.fullmatch(r'step\d+', str(level)) is not None
+
+
+def sensitive_only(row):
+    """The level explains the gene and rests only on threshold-sensitive contacts."""
+    return bool(row.get('explains')) and bool(row.get('sensitive_only'))
+
+
+def prov_tags(chain):
+    """Provenance chain 'MC>D>I' as small tags (M measured, C called, D derived, I interpretation)."""
+    if not chain or not isinstance(chain, str):
+        return ''
+    names = {v: k for k, v in PROVENANCE_TAGS.items()}
+    steps = []
+    for step in chain.split('>'):
+        steps.append(''.join('<span class="prov prov-{t}" title="{n}">{t}</span>'.format(t=t, n=names.get(t, ''))
+                             for t in step))
+    return '<span class="prov-chain">{}</span>'.format('<span class="prov-arrow">&#8250;</span>'.join(steps))
+
+
+def prov_legend():
+    """One-line legend of the provenance tags."""
+    return '; '.join('{} {}'.format(prov_tags(PROVENANCE_TAGS[k]), k) for k in PROVENANCE_LEVELS)
+
+
+def support_cell(row):
+    """Support of the contacts that carry a level, for the evidence table ('' without carrying contacts)."""
+    kind = row.get('contact_support') or ''
+    if not isinstance(kind, str) or not kind:
+        return ''
+    stable, sensitive, untested = row.get('support_edges') or (0, 0, 0)
+    if sensitive_only(row):
+        return '<span class="support-ts">rests on {} threshold-sensitive contact{}</span>'.format(
+            sensitive, '' if sensitive == 1 else 's')
+    parts = ['{} {}'.format(n, cls) for n, cls in zip((stable, sensitive, untested), SUPPORT_CLASSES) if n]
+    css = {'stable': 'support-stable', 'threshold-sensitive': 'support-ts', 'not testable': 'support-nt'}.get(kind, '')
+    return '<span class="{}">{}</span>{}'.format(css, esc(kind), ' ({})'.format(', '.join(parts)) if parts else '')
 
 
 def parse_transition(text):
@@ -2260,6 +2564,35 @@ class GeneStory:
         return 'the marks change {}'.format('against the expression change' if result == 'discordant' else
                                            'below the threshold' if result == 'below threshold' else result)
 
+    def support_sentence(self, rows):
+        """Support of the contacts that carry the explaining levels: the levels that rest only on threshold-sensitive
+        contacts, those whose contacts cannot be tested below the threshold, and those carried by stable contacts."""
+        explaining = [r for lv, r in sorted(rows.items(), key=lambda x: level_order(x[0]))
+                      if r['explains'] and r.get('contact_support')]
+        if not explaining:
+            return ''
+        sensitive = [r for r in explaining if sensitive_only(r)]
+        untested = [r for r in explaining if r.get('contact_support') == 'not testable']
+        stable = [r for r in explaining if r.get('contact_support') == 'stable']
+        out = []
+        if sensitive:
+            items = ['{} rests on {} threshold-sensitive contact{}'.format(
+                level_phrase(r['level']), r['support_edges'][1], '' if r['support_edges'][1] == 1 else 's')
+                for r in sensitive]
+            out.append('{}: the other {} lists these pairs below the calling threshold or in only some replicates, '
+                       'so the explanation depends on the threshold {}.'.format(
+                           capitalise(join_words(items)), self.run.kind, prov_tags('C>D')))
+        if untested:
+            out.append('The contacts that carry {} cannot be tested below the calling threshold: the input of the '
+                       'other {} lists called pairs only {}.'.format(
+                           join_words([level_phrase(r['level']) for r in untested]), self.run.kind,
+                           prov_tags('C>D')))
+        if stable:
+            out.append('{} {} carried by stable contacts (called in both {}s or far below the threshold in the '
+                       'other) {}.'.format(capitalise(join_words([level_phrase(r['level']) for r in stable])),
+                                           'is' if len(stable) == 1 else 'are', self.run.kind, prov_tags('C>D')))
+        return ' '.join(out)
+
     def fragments_sentence(self):
         if len(self.fragments) < 2:
             return ''
@@ -2292,6 +2625,7 @@ class GeneStory:
         sentences.append(self.state_sentence(rows, nearest))
         sentences += self.structural_sentences(rows, nearest)
         sentences += self.step_sentence(node, rows, nearest)
+        sentences.append(self.support_sentence(rows))
         sentences.append(self.fragments_sentence())
         return ' '.join(s for s in sentences if s)
 
@@ -2363,16 +2697,25 @@ class GeneStory:
         return 'all below log2 {:g}{}'.format(threshold, ' ({})'.format(listing) if listing else '')
 
     def evidence_frame(self, node, rows, with_support):
+        """Evidence table of one promoter fragment; with the provenance of every level (column Source: tags M, C,
+        D, I) and the support of the contacts that carry it (column Contacts) when the all-level table holds them."""
         out = []
         classes = []
+        with_source = any(r.get('provenance_chain') for r in rows.values())
+        with_contacts = any(r.get('contact_support') for r in rows.values())
         for lv in sorted(rows, key=level_order):
             row = rows[lv]
             control = 'n.a.'
             if is_step(lv) and not isnan(row.get('beyond_mirror')):
                 control = 'passed' if truthy(row['beyond_mirror']) else 'not passed'
-            entry = {'Level': level_label(lv), 'Explains': 'yes' if row['explains'] else 'no',
-                     'What changed': self.what_changed(row, node), 'P': fmt_pq(row['p']), 'q': fmt_pq(row['q']),
-                     'Distance control': control}
+            entry = {'Level': level_label(lv)}
+            if with_source:
+                entry['Source'] = prov_tags(row.get('provenance_chain'))
+            entry.update({'Explains': 'yes' if row['explains'] else 'no',
+                          'What changed': self.what_changed(row, node)})
+            if with_contacts:
+                entry['Contacts'] = support_cell(row)
+            entry.update({'P': fmt_pq(row['p']), 'q': fmt_pq(row['q']), 'Distance control': control})
             if with_support:
                 support = ''
                 if level_hops(lv) > 0 and not isnan(row.get('support')):
@@ -2381,7 +2724,8 @@ class GeneStory:
                                             if ci and ci != 'NA' else '')
                 entry['3D support'] = support
             out.append(entry)
-            classes.append(('explains' if row['explains'] else 'muted') + (' supported' if supported(row) else ''))
+            classes.append(('explains' if row['explains'] else 'muted') + (' supported' if supported(row) else '') +
+                           (' sensitive' if sensitive_only(row) else ''))
         return pd.DataFrame(out), classes
 
     def learned_items(self, rows):
@@ -2424,6 +2768,34 @@ class Report:
             nodes, _ = self.run.gene_nodes(gene)
         return GeneStory(self.run, self.places, gene, nodes)
 
+    def support_limits(self):
+        """(calling score, floor) of the support classes, from <prefix>_support.json / _support.tsv."""
+        info = self.run.support_info or {}
+        threshold, floor = info.get('threshold'), info.get('floor')
+        table = self.run.support_edges
+        if (threshold is None or floor is None) and table is not None and 'threshold' in table and len(table):
+            threshold, floor = float(table['threshold'].iloc[0]), float(table['floor'].iloc[0])
+        return threshold, floor
+
+    def support_definition(self):
+        threshold, floor = self.support_limits()
+        limits = ' (floor {:g}, calling score {:g})'.format(floor, threshold) if threshold is not None else ''
+        return ('stable: called in both {k}s, or below the floor in every replicate of the other {k}; '
+                'threshold-sensitive: listed in the other {k} at a score between the floor and the calling score, or '
+                'called in only some replicates; not testable: absent from an input of the other {k} that lists '
+                'called pairs only, so absence cannot be told apart from a sub-threshold score{l}'.format(
+                    k=self.run.kind, l=limits))
+
+    def evidence_legend(self, frame):
+        text = ''
+        if 'Source' in frame:
+            text += ' Source: what the statement of a level rests on, from the inputs to the explanation ({}).'.format(
+                prov_legend())
+        if 'Contacts' in frame:
+            text += (' Contacts: support of the contacts on the shortest paths from the promoter to the nodes that '
+                     'carry the level ({}).'.format(self.support_definition()))
+        return text
+
     def title_block(self, title, subtitle, kicker):
         return ('<p class="kicker">{}</p><h1>{}</h1><p class="subtitle">{}</p><p class="date">{}</p>'.format(
             kicker, title, subtitle, datetime.date.today().isoformat()))
@@ -2444,8 +2816,11 @@ class Report:
             doc.first_ladder = doc.figure_count + 1
         caption = 'Explanation ladder of {}, read as Figure {}.'.format(story.g(), first) if first else ('Explanation ladder of {g}{f}: each row is a level, from the promoter (top) outwards. Filled '
                    'marker: the level explains the expression change; open: it does not; blue ring: significant '
-                   '(q &lt; 0.05) and beyond distance-matched mirror loci.{s}{x}'.format(
+                   '(q &lt; 0.05) and beyond distance-matched mirror loci.{h}{s}{x}'.format(
                        g=story.g(), f=', one column per promoter fragment' if cols > 1 else '',
+                       h=' Half-tone marker with a dotted outline: the level explains the change but rests only on '
+                         'threshold-sensitive contacts.' if any(sensitive_only(r) for _, rows in story.fragments
+                                                                for r in rows.values()) else '',
                        s=' 3D support at the right: how much closer graph neighbours at this step are in the nucleus '
                          'than distance-matched pairs (0.5: no relation).' if any(
                            is_step(lv) and not isnan(r.get('support')) for _, rows in story.fragments
@@ -2496,7 +2871,22 @@ class Report:
                                                  'the paths to the explaining nodes' if sub.number_of_nodes() >=
                                                  self.args.maxNodes else '',
                                                  t=' Dashed vertical lines: TAD boundaries (thick: strongest decile).'
-                                                 if self.run.tad_analysis is not None else ''))
+                                                 if self.run.tad_analysis is not None else '')) + \
+            self.support_caption(sub)
+
+    def support_caption(self, sub):
+        """Line styles of the support classes present in `sub` (gained and lost contacts)."""
+        present = has_support(sub)
+        if not present:
+            return ''
+        parts = []
+        if 'threshold-sensitive' in present:
+            parts.append('dotted and lighter: threshold-sensitive (the other {} lists the pair below the calling '
+                         'threshold or in only some replicates)'.format(self.run.kind))
+        if 'not testable' in present:
+            parts.append('dash-dotted: not testable (the input of the other {} lists called pairs only)'.format(
+                self.run.kind))
+        return ' Gained and lost contacts {}; solid: stable.'.format('; '.join(parts))
 
     def gene_figures(self, doc, gene, nodes, story, arcs_only=False):
         hood = self.gene_neighbourhood(gene, nodes, story)
@@ -2859,6 +3249,8 @@ class Report:
         doc.section('interactions', 'Interactions')
         self.gene_figures(doc, gene, nodes, story)
         self.tad_block(doc, gene, nodes, story)
+        if getattr(self.args, 'overlay', False):
+            self.overlay_block(doc, gene, nodes, story)
         if story.fragments:
             doc.section('evidence', 'Evidence by level')
             with_support = any(not isnan(r.get('support')) and level_hops(lv) > 0 for _, rows in story.fragments
@@ -2880,11 +3272,12 @@ class Report:
                                    if len(story.fragments) > 1 else '', a=a, b=b, t=run.chromatin_threshold,
                                    s=' 3D support: probability that graph neighbours at this step are closer in the '
                                      'nucleus than distance-matched pairs.' if with_support else ''))
+                    caption += self.evidence_legend(frame)
                 else:
                     caption = 'As Table {}, for the {}.'.format(first_table, story.fragment_name(node)[4:])
                 number = doc.table(frame, caption, markup=tuple(frame.columns), escape=False,
-                                   nowrap=('Level', 'P', 'q', 'Distance control', 'Explains'),
-                                   long=('What changed',), row_classes=classes, cls='evidence')
+                                   nowrap=('Level', 'P', 'q', 'Distance control', 'Explains', 'Source'),
+                                   long=('What changed', 'Contacts'), row_classes=classes, cls='evidence')
                 first_table = first_table or number
                 for item in story.learned_items(rows):
                     learned.setdefault(item, []).append(node)
@@ -2907,6 +3300,64 @@ class Report:
         self.hub_block(doc, gene, nodes, prose=False)
         self.appendix(doc, genes=[(gene, nodes, story)], community=community)
         return doc, heading
+
+    def overlay_tracks(self):
+        """{condition: {mark: [bigWig paths]}} of the overlay: --overlayTracksA / B, else the tracks of the run."""
+        from .annotation import parse_track_arguments
+        names = self.run.names
+        tracks = {name: {} for name in names}
+        info = self.run.support_info or {}
+        for name in names:
+            tracks[name].update(info.get('tracks', {}).get(name, {}) or {})
+        for name, given in ((names[0], self.args.overlayTracksA), (names[1], self.args.overlayTracksB)):
+            if given:
+                tracks[name].update(parse_track_arguments(given))
+        return tracks
+
+    def overlay_block(self, doc, gene, nodes, story):
+        """Plain overlay view of the region of a gene (--overlay): the inputs as tracks next to the elements of the
+        report; one figure, every panel also written as a PDF next to the report."""
+        hood = self.gene_neighbourhood(gene, nodes, story)
+        if hood is None or hood['sub'].number_of_nodes() == 0 or not story.fragments:
+            return
+        sub, graph = hood['sub'], self.run.graph
+        chrom = graph.nodes[hood['seeds'][0]]['chrom']
+        starts = [int(graph.nodes[n]['start']) for n in sub.nodes if graph.nodes[n].get('chrom') == chrom]
+        ends = [int(graph.nodes[n]['end']) for n in sub.nodes if graph.nodes[n].get('chrom') == chrom]
+        pad = 0.03 * (max(ends) - min(starts))
+        region = (chrom, max(0, int(min(starts) - pad)), int(max(ends) + pad))
+        doc.section('overlay', 'Plain overlay and EGA')
+        inputs, source, n_edges = overlay_inputs_figure(self.run, region, hood['seeds'], self.overlay_tracks())
+        node, rows = story.fragments[0]
+        crossing = None
+        analysis = self.run.tad_analysis
+        if analysis is not None and node in analysis.genes:
+            infos = analysis.crossing.gene_row(node, gene)['_infos']
+            crossing = {status: (int((infos.get(status) or {}).get('crossing') or 0),
+                                 int((infos.get(status) or {}).get('n') or 0)) for status in ('gained', 'lost', 'shared')}
+        threshold, floor = self.support_limits()
+        ega = overlay_ega_figure(rows, self.run.names, crossing,
+                                 ' (floor {:g}, calling score {:g})'.format(floor, threshold)
+                                 if threshold is not None else '')
+        stem = os.path.join(self.args.outputDir, '{}_gene_{}_overlay'.format(slug(self.run.name), slug(gene)))
+        for fig, part in ((inputs, 'inputs'), (ega, 'ega')):
+            fig.savefig('{}_{}.pdf'.format(stem, part), bbox_inches='tight', pad_inches=0.04, metadata={'CreationDate': None})
+        a, b = (esc(n) for n in self.run.names)
+        doc.figure([inputs, ega], 'The region of {g} ({c}:{s:.2f}-{e:.2f} Mb) as a plain track overlay of the inputs '
+                                  '(left) and as read by the report (right). Left, from the top: the called '
+                                  'interactions of {a} and of {b} ({n} in the region; dark: those of the promoter of '
+                                  '{g}), the mark signal of {a} (grey) and {b} (colour; {src}) and the expression '
+                                  'change of the baited promoters. Right: every level of the {f} in rank order with '
+                                  'whether it explains the change (filled; half-tone with a dotted outline: only '
+                                  'threshold-sensitive contacts carry it), the provenance chain, the support of the '
+                                  'contacts that carry it, the distance control, q and the 3D support, and the own '
+                                  'contacts that cross a TAD boundary. Panels written as {p}_inputs.pdf and '
+                                  '{p}_ega.pdf.'.format(
+                                      g=gene_span(gene), c=esc(region[0]), s=region[1] / 1e6, e=region[2] / 1e6, a=a,
+                                      b=b, n=fmt_int(n_edges), src='bigWig tracks of the run' if source == 'bigWig'
+                                      else 'fragment means of the graph', f='promoter fragment' if
+                                      len(story.fragments) == 1 else story.fragment_name(node)[4:],
+                                      p=esc(os.path.basename(stem))), cols=2, cls='overlay')
 
     def tad_block(self, doc, gene, nodes, story=None):
         """Contacts of the promoter that cross TAD boundaries (--tads): sentence, table per status, the genome-wide
@@ -3587,6 +4038,7 @@ class Report:
                       m=self.args.maxNodes,
                       rc=' Re-ChIP signal from <code>{}</code> (fragment mean; at least 2 confirms a bivalent call).'
                       .format(esc(run.rechip_path)) if run.rechip is not None else ''))
+        self.provenance_methods(doc)
         for gene, nodes, story in genes:
             self.appendix_gene(doc, gene, nodes, story)
         if community is not None:
@@ -3597,6 +4049,48 @@ class Report:
         if main:
             self.appendix_run_tables(doc)
         self.appendix_files(doc)
+
+    def provenance_methods(self, doc):
+        """Legend of the provenance tags and, with the support columns of egaDifferential, the support classes of the
+        contacts with their counts per status and the lowest score of every input file."""
+        doc.p('Provenance of the statements. Every statement of the report rests on a chain of four kinds of '
+              'evidence, marked by small tags: {m} measured signal values (mark fold enrichment, read counts, '
+              'expression change); {c} calls made on a threshold (interaction calls, chromatin states, element '
+              'classes, structural variant joins); {d} values derived from calls and signals (graph steps and paths, '
+              'contact-weighted mark sums, communities, hubs, the support class of the contacts); {i} the '
+              'interpretation, the attribution of the expression change to a level. A mark change at the promoter '
+              'reads {pm}; the own contacts {pc}; a chromatin state {ps}; a step k {sk}: the mark signal of the nodes '
+              '(measured) is summed over called contacts along the graph paths (derived) before the change is '
+              'attributed to that step (interpretation).'
+              .format(m=prov_tags('M'), c=prov_tags('C'), d=prov_tags('D'), i=prov_tags('I'),
+                      pm=prov_tags('M>I'), pc=prov_tags('C>I'), ps=prov_tags('M>C>I'), sk=prov_tags('MC>D>I')))
+        table = self.run.support_edges
+        if not run_has(table):
+            return
+        doc.p('Support of the contacts. A gained or lost contact is a call on a threshold in one condition and its '
+              'absence in the other. Its support class reads the score of the pair in the other condition, as listed '
+              'by the input files ({}). The contacts that carry a level are those on the shortest paths from the '
+              'promoter to the nodes carrying it (the concordant nodes of a step, else its strongest node; the gained '
+              'or lost own contacts in the direction of the contact change; the contacting fragment of a step 1 '
+              'state). A level rests only on threshold-sensitive contacts when every carrying node is reached on '
+              'paths with a threshold-sensitive contact; such levels are marked in the ladder (half-tone, dotted) '
+              'and in the evidence table. In the figures, threshold-sensitive contacts are dotted and lighter, '
+              'contacts that cannot be tested dash-dotted.'.format(self.support_definition()))
+        show = table[table['status'] != 'gained+lost'] if 'status' in table else table
+        columns = [c for c in ('status', 'support', 'edges', 'fraction') if c in show]
+        doc.table(show[columns], 'Contacts of the union graph per status and support class (fraction of the '
+                                 'status).', formats={'edges': fmt_int, 'fraction': fmt_pct},
+                  numeric=('edges', 'fraction'))
+        inputs = self.run.support_inputs
+        if run_has(inputs):
+            frame = pd.DataFrame({'condition': inputs['condition'], 'replicate': inputs['replicate'],
+                                  'file': inputs['file'].map(lambda p: os.path.basename(str(p))),
+                                  'pairs': inputs['pairs'], 'lowest score': inputs['min_score'],
+                                  'absence means': inputs['absence']})
+            doc.table(frame, 'Input files of the interactions: pairs listed and the lowest score; absence of a pair '
+                             'from a file whose lowest score is above the floor is not testable.',
+                      formats={'pairs': fmt_int, 'lowest score': fmt_num}, numeric=('pairs', 'lowest score'),
+                      long=('file',))
 
     def appendix_gene(self, doc, gene, nodes, story):
         run = self.run
@@ -3641,15 +4135,21 @@ class Report:
                                   r.get('alt_transition') or r.get('alt_result') or ''),
                               '3D support': '{}{}'.format(fmt_num(r.get('support')), ' ({})'.format(r['support_ci'])
                                                           if r.get('support_ci') and r['support_ci'] != 'NA' else '')
-                              if not isnan(r.get('support')) else ''})
+                              if not isnan(r.get('support')) else '',
+                              'source': r.get('provenance_chain') or '',
+                              'contacts': '{}{}'.format(r.get('contact_support') or '',
+                                                        ': {}'.format(r['support_detail'])
+                                                        if r.get('support_detail') else '')})
             frame = pd.DataFrame(frame)
             frame = frame[[c for c in frame.columns if (frame[c] != '').any()]]
             doc.table(frame, 'All levels of {} at fragment {} (declared roles, fragment mean), with the mark changes '
                              'at the mirrored loci in brackets (states: calls with the fold enrichment {} / {} and '
                              'the state fragment), the coordinates of the strongest node, the result under the '
-                             'learned roles and on the strongest 1 kb window, and the 3D support with its '
-                             'interval.'.format(gene_span(gene), esc(node), esc(run.names[0]), esc(run.names[1])),
-                      long=('changes (mirror)', 'strongest'), numeric=('nodes', 'concordant', 'P', 'q'),
+                             'learned roles and on the strongest 1 kb window, the 3D support with its interval, the '
+                             'provenance chain (M measured, C called, D derived, I interpretation) and the support of '
+                             'the carrying contacts.'.format(gene_span(gene), esc(node), esc(run.names[0]),
+                                                             esc(run.names[1])),
+                      long=('changes (mirror)', 'strongest', 'contacts'), numeric=('nodes', 'concordant', 'P', 'q'),
                       cls='full')
 
     def appendix_community(self, doc, community_a, community_b, nodes=()):
