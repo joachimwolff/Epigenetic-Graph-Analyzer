@@ -73,7 +73,7 @@ virtual_capture)
     # matched number: the 39% highest-scoring cis calls of the Micro-C calls
     awk -F'\t' 'NR==1{print; next} $1==$5' "$vc/H1/hicx_H1.ibed" > "$out/H1_microc_cis.ibed"
     n=$(( $(wc -l < "$out/H1_microc_cis.ibed") - 1 ))
-    (head -1 "$out/H1_microc_cis.ibed"; tail -n +2 "$out/H1_microc_cis.ibed" | sort -t$'\t' -k10,10gr | head -n $((n * 39 / 100))) \
+    (head -1 "$out/H1_microc_cis.ibed"; tail -n +2 "$out/H1_microc_cis.ibed" | sort -t$'\t' -k10,10gr | awk -v n=$((n * 39 / 100)) 'NR <= n') \
         > "$out/H1_microc_top.ibed"
     bench "$h1_real" ibed - "$chain" "$out/H1_microc_top.ibed" "$vc/H1/H1.baitmap" 5000 "$out/H1_microc_matched" \
         > "$out/H1_microc_matched.log" 2>&1
