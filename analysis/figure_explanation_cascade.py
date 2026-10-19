@@ -42,7 +42,7 @@ TYPES = (('marks', '#2a78d6', 'marks'), ('interactions', '#eb6834', 'own interac
 ROWS = {'gene': {'marks': 'gene_marks_only', 'interactions': 'gene_interactions_only', 'both': 'gene_both',
                  'state': 'gene_state', 'poised_unresolved': 'gene_poised_unresolved'},
         'step1': {'marks': 'step1_marks', 'state': 'step1_state', 'poised_unresolved': 'step1_poised_unresolved'}}
-UNEXPLAINED = '#e3e2dc'
+UNEXPLAINED = '#7f7f7a'
 INK = '#1f1f1e'
 MUTED = '#6b6a66'
 
@@ -87,7 +87,7 @@ def draw(table, path):
                     ax.barh(y, dark, left=left, color='none', height=0.62, lw=0, hatch='//////', edgecolor='white')
                 left += width
         elif level == 'unexplained':
-            ax.barh(y, n, color=UNEXPLAINED, height=0.62, lw=0.4, edgecolor='#8c8c88')
+            ax.barh(y, n, color=UNEXPLAINED, height=0.62, lw=0)
         else:
             dark = int(value(table, level, 'beyond_mirror_p_lt_0.05'))
             ax.barh(y, n, color=TYPES[0][1], height=0.62, lw=0)
@@ -155,7 +155,7 @@ def draw_levels(table, roles, path):
                 ax.barh(y, width, left=left, color=colour, height=0.62, lw=0)
                 left += width
         elif level == 'none':
-            ax.barh(y, n, color=UNEXPLAINED, height=0.62, lw=0.4, edgecolor='#8c8c88')
+            ax.barh(y, n, color=UNEXPLAINED, height=0.62, lw=0)
         else:
             colour = TYPES[1][1] if level == 'promoter_contacts' else TYPES[0][1]
             used.add('interactions' if level == 'promoter_contacts' else 'marks')
