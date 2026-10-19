@@ -74,6 +74,34 @@ egaDifferential --interactionsA H1.tsv.gz --interactionsB NPC.tsv.gz --names H1 
     --expression 57epigenomes.RPKM.pc.gz --expressionColumns E003 E007 -o differential/H1_vs_NPC
 ```
 
+### Mark presence in the chromatin states
+
+The chromatin states of `egaDifferential` (bivalent, active and repressed promoters, poised and active
+enhancers, element classes, learned mark combinations) need the presence of every mark on every fragment.
+By default a mark is present when its signal over the fragment reaches `--stateThreshold` (fold enrichment
+over input, default 2; statistics: fragment mean and maximum 1 kb window, `--stateWindow`; separate tracks
+with `--stateTracksA` / `--stateTracksB`).
+
+Peak calls of any caller (MACS2 / MACS3 narrowPeak or broadPeak, SEACR, generic BED; the columns chrom,
+start, end are read) can define the presence instead, per mark and condition:
+
+```bash
+egaDifferential ... \
+    --statePeaksA H3K4me3=H1_H3K4me3_peaks.narrowPeak H3K27me3=H1_H3K27me3_peaks.broadPeak \
+    --statePeaksB H3K4me3=NPC_H3K4me3_peaks.narrowPeak H3K27me3=NPC_H3K27me3_peaks.broadPeak \
+    --statePeakMinOverlap 1
+```
+
+A mark with peaks is present on a fragment when at least one peak overlaps the fragment by at least
+`--statePeakMinOverlap` bp (default 1); several files of one mark (`mark=a.bed,b.bed`) are pooled. A
+mark given with peaks needs peaks in both conditions. Marks without peaks keep the fold-enrichment rule,
+so both rules can be mixed (e.g. peaks for H3K27me3, fold enrichment for H3K4me3). Peaks define presence
+only: a state transition still needs the signal of every crossing mark to change by `--stateMinChange`
+in the direction of the crossing, the state summaries show the signal values, and the mark changes of
+the explanation levels (promoter, steps 1 .. `--maxHops`) always come from the signal tracks. In
+`<prefix>_state_marks.tsv` a peak-defined mark has the scale `peaks` and the same fraction of present
+fragments at every threshold.
+
 The analyses of the manuscript are scripted in `analysis/` (`scripts/download_data.sh` fetches all
 public input data).
 

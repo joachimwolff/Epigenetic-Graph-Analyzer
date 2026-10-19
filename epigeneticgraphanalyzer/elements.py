@@ -10,7 +10,8 @@ Promoter status
 
 Chromatin class
     A mark is present on a fragment in a condition when its signal reaches the presence threshold of the states
-    (fold enrichment, statistic fragment mean or maximum 1 kb window). The class follows from the roles of the
+    (fold enrichment, statistic fragment mean or maximum 1 kb window), or, for a mark with peak calls
+    (--statePeaksA / --statePeaksB), when a peak overlaps the fragment (states.mark_present). The class follows from the roles of the
     present marks only; no mark name enters the rules. In order of precedence:
 
     promoters: an active-role and a repressive mark 'bivalent promoter'; an active-role mark 'active promoter'; an
@@ -42,6 +43,7 @@ import pandas as pd
 
 from .differential import _pool_map, level_hops, level_name
 from .io import normalize_chrom, open_text
+from .states import mark_present
 from .validation import block_resamples
 
 log = logging.getLogger(__name__)
@@ -147,8 +149,7 @@ def node_elements(graph, state_signals_by, threshold, roles_by, status, names=('
                               'tss_genes': [g for _, _, g in info]})
         for presence, signals in state_signals_by.items():
             marks = list(signals)
-            present = {m: np.array([signals[m][c].get(n, 0.0) for n in nodes], dtype=float) >= threshold
-                       for m in marks}
+            present = {m: mark_present(signals[m], c, nodes, threshold) for m in marks}
             frame['present_marks_' + presence] = present_marks(present, marks)
             for roles_name in roles_by:
                 other = element_classes(present, roles_by[roles_name], is_promoter, primary)

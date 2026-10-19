@@ -20,9 +20,10 @@ from .differential import (REPLICATE_MODES, STEP_FEATURES, ActivityOperators, _b
                            union_graph, explanation_details, explanation_types, explanation_levels,
                            explanation_level_summary, explanation_level_counts, explanation_combinations,
                            PRESENCE_STATISTICS)
-from .states import (MARK_ROLES, bigwig_genome_mean, gene_states, learn_mark_roles, learned_level_signs,
-                     learned_roles, learned_state_transitions, level_states_callable, parse_mark_roles,
-                     resolve_mark_roles, role_signs, state_transition_table)
+from .states import (MARK_ROLES, PeakPresence, bigwig_genome_mean, gene_states, learn_mark_roles,
+                     learned_level_signs, learned_roles, learned_state_transitions, level_states_callable,
+                     parse_mark_roles, peak_nodes, read_peaks, resolve_mark_roles, role_signs,
+                     state_transition_table)
 from .elements import (assign_elements, element_agreement, element_class_counts, element_transitions,
                        node_elements, node_types, read_element_bed, roles_per_element_type, stratum_masks, tss_status)
 from .egaCreateGraph import load_tss
@@ -126,7 +127,8 @@ def parse_arguments(args=None):
                         help='Chromatin states: a mark is present on a fragment if its mean signal over the fragment '
                              'is at least this value (fold enrichment; see --stateScale). Bivalent promoter (bait): an '
                              'active-role and a repressive-role mark present; poised enhancer (other fragment): an '
-                             'active- or enhancer-role and a repressive-role mark present')
+                             'active- or enhancer-role and a repressive-role mark present. Marks with peak calls '
+                             '(--statePeaksA / --statePeaksB) are present where a peak overlaps the fragment instead')
     parser.add_argument('--stateThresholds', type=float, nargs='*', default=[1.5, 2.0, 3.0],
                         help='Presence thresholds of the state transition report (<prefix>_bivalent_transitions.tsv, '
                              '<prefix>_state_thresholds.tsv); the cascade uses --stateThreshold')
@@ -155,6 +157,21 @@ def parse_arguments(args=None):
                         help='mark=file.bw for the chromatin states of condition A (e.g. fold enrichment over input), '
                              'when the --tracksA signal is not on a fold-enrichment scale; marks not listed use --tracksA')
     parser.add_argument('--stateTracksB', nargs='+', help='as --stateTracksA for condition B')
+    parser.add_argument('--statePeaksA', nargs='+',
+                        help='mark=peaks.bed[,rep.bed] for the chromatin states of condition A: peak calls of any '
+                             'caller (MACS2 / MACS3 narrowPeak or broadPeak, SEACR, generic BED; columns chrom, start, '
+                             'end are read, several files of a mark are pooled). A mark with peaks is present on a '
+                             'fragment when at least one peak overlaps it by at least --statePeakMinOverlap bp, under '
+                             'both presence statistics and every --stateThresholds value (bivalent promoters, poised '
+                             'enhancers, element classes, learned states); marks without peaks keep the threshold '
+                             'rule. The signal of the mark (--stateTracksA, else --tracksA) still gives the change '
+                             'required by --stateMinChange and the values in the state summaries; the mark changes '
+                             'of the explanation levels always come from the signal tracks. A mark given here needs '
+                             'peaks in --statePeaksB too')
+    parser.add_argument('--statePeaksB', nargs='+', help='as --statePeaksA for condition B')
+    parser.add_argument('--statePeakMinOverlap', type=int, default=1,
+                        help='Overlap in bp of a peak with a fragment that makes the mark present (--statePeaksA / '
+                             '--statePeaksB)')
     parser.add_argument('--stateWindow', type=int, default=1000,
                         help='Chromatin states are called under two presence statistics of a mark on a fragment, both '
                              'reported: the mean signal over the fragment (outputs without suffix, columns *_mean) '
@@ -230,6 +247,28 @@ def expression_change(table, args):
     values = table[[a, b]].astype(float)
     values = values[(values[a] >= args.minExpression) | (values[b] >= args.minExpression)]
     return np.log2((values[b] + args.expressionPseudoCount) / (values[a] + args.expressionPseudoCount))
+
+
+def state_peak_presence(args, graph, node_list, marks, names):
+    """mark -> (set of nodes with a peak in A, set in B) of the marks given in --statePeaksA / --statePeaksB."""
+    peaks_a = parse_track_arguments(args.statePeaksA)
+    peaks_b = parse_track_arguments(args.statePeaksB)
+    if set(peaks_a) != set(peaks_b):
+        raise ValueError('--statePeaksA and --statePeaksB need the same marks: {} vs {}'.format(sorted(peaks_a),
+                                                                                               sorted(peaks_b)))
+    unknown = sorted(set(peaks_a) - set(marks))
+    if unknown:
+        raise ValueError('Peaks of marks without tracks (--tracksA / --tracksB): {}'.format(', '.join(unknown)))
+    chroms = [graph.nodes[n]['chrom'] for n in node_list]
+    starts = [int(graph.nodes[n]['start']) for n in node_list]
+    ends = [int(graph.nodes[n]['end']) for n in node_list]
+    out = {}
+    for mark in peaks_a:
+        out[mark] = tuple(peak_nodes(read_peaks(paths[mark]), node_list, chroms, starts, ends,
+                                     args.statePeakMinOverlap) for paths in (peaks_a, peaks_b))
+        log.info('%s: presence from peaks (overlap >= %d bp): %d fragments in %s, %d in %s', mark,
+                 args.statePeakMinOverlap, len(out[mark][0]), names[0], len(out[mark][1]), names[1])
+    return out
 
 
 def main(args=None):
@@ -344,23 +383,33 @@ def main(args=None):
     if args.stateScale == 'genomeMean':
         scale = {p: 1.0 / bigwig_genome_mean(p) for p in paths}
     thresholds = sorted(set(args.stateThresholds) | {args.stateThreshold})
+    # peak calls defining the presence of a mark (instead of the threshold rule)
+    peak_present = state_peak_presence(args, graph, node_list, list(marks), (name_a, name_b))
     state_signals_by = {}
     state_rows = []
     for presence, source in (('mean', read), ('max1kb', read_max)):
         state_signals_by[presence] = {}
         for mark in marks:
             values = []
-            for condition, tracks in ((name_a, state_tracks_a), (name_b, state_tracks_b)):
+            for c, (condition, tracks) in enumerate(((name_a, state_tracks_a), (name_b, state_tracks_b))):
                 signal = np.mean([np.array([source[p][n] for n in node_list]) * scale[p] for p in tracks[mark]],
                                  axis=0)
                 values.append(dict(zip(node_list, signal.tolist())))
                 row = {'mark': mark, 'declared_role': declared[mark], 'condition': condition, 'presence': presence,
                        'scale': ';'.join('{:.4g}'.format(scale[p]) for p in tracks[mark]), 'fragments': len(signal),
                        'median': float(np.median(signal))}
-                for threshold in thresholds:
-                    row['fraction_ge_{:g}'.format(threshold)] = float(np.mean(signal >= threshold))
+                if mark in peak_present:
+                    # presence from the peaks: the same fraction at every threshold
+                    row['scale'] = 'peaks'
+                    fraction = float(np.mean([n in peak_present[mark][c] for n in node_list]))
+                    for threshold in thresholds:
+                        row['fraction_ge_{:g}'.format(threshold)] = fraction
+                else:
+                    for threshold in thresholds:
+                        row['fraction_ge_{:g}'.format(threshold)] = float(np.mean(signal >= threshold))
                 state_rows.append(row)
-            state_signals_by[presence][mark] = tuple(values)
+            state_signals_by[presence][mark] = PeakPresence(values, peak_present[mark]) if mark in peak_present \
+                else tuple(values)
     state_signals = state_signals_by['mean']
     write_table(pd.DataFrame(state_rows), prefix + '_state_marks.tsv')
 
