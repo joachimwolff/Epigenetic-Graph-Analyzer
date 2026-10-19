@@ -16,6 +16,11 @@ States
     'active', 'repressed', 'unmarked'; other fragments: 'poised enhancer' (both), 'active enhancer', 'repressed',
     'unmarked'. No mark name enters these rules; only the roles do.
 
+    Peak calls (--statePeaksA / --statePeaksB) can define the presence of a mark instead: the mark is present on a
+    fragment when at least one peak overlaps it by at least a minimum number of bp (PeakPresence, read_peaks,
+    peak_nodes). Marks without peaks keep the threshold rule. The signal of such a mark is still read and gives the
+    log2 change of a crossing (mark_crossings) and the values shown in the state summaries.
+
 Learned states
     learned_state_transitions describes every fragment by the combination of present marks (all marks, whatever
     their role) in each condition, keeps the combinations seen at least `min_fragments` times and rates each
@@ -30,6 +35,7 @@ import pandas as pd
 from scipy import stats
 
 from .differential import LevelSigns, hop_levels, level_hops
+from .genome import normalize_chrom, open_text
 from .validation import block_resample_items, block_resamples
 
 log = logging.getLogger(__name__)
@@ -89,6 +95,74 @@ def resolve_mark_roles(marks, mark_sign=(), mark_roles=None):
     return roles
 
 
+def read_peaks(paths):
+    """Peaks of one mark and condition from one or more files of any peak caller (MACS2 / MACS3 narrowPeak or
+    broadPeak, SEACR, generic BED; gzip allowed): the first three columns chrom, start, end (0-based, half-open) of
+    every line; track, browser and '#' lines are skipped. Several files are pooled. Returns chrom -> (starts, ends)
+    sorted by start; chromosome names as normalized for the interactions (genome.normalize_chrom)."""
+    by_chrom = {}
+    for path in paths:
+        with open_text(path) as handle:
+            for line in handle:
+                if line.startswith(('#', 'track', 'browser')) or not line.strip():
+                    continue
+                fields = line.split('\t') if '\t' in line else line.split()
+                if len(fields) < 3:
+                    raise ValueError('{}: a peak needs the columns chrom, start, end: {}'.format(path, line.strip()))
+                chrom = normalize_chrom(fields[0])
+                by_chrom.setdefault(chrom, []).append((int(fields[1]), int(fields[2])))
+    peaks = {}
+    for chrom, intervals in by_chrom.items():
+        values = np.array(sorted(intervals), dtype=np.int64)
+        peaks[chrom] = (values[:, 0].copy(), values[:, 1].copy())
+    return peaks
+
+
+def peak_nodes(peaks, nodes, chroms, starts, ends, min_overlap=1):
+    """Set of the `nodes` (fragments chroms / starts / ends, half-open) overlapped by at least one peak of `peaks`
+    (read_peaks) by at least `min_overlap` bp."""
+    min_overlap = max(1, int(min_overlap))
+    longest = {c: int((e - s).max()) if len(s) else 0 for c, (s, e) in peaks.items()}
+    out = set()
+    for node, chrom, start, end in zip(nodes, chroms, starts, ends):
+        chrom = str(chrom)
+        if chrom not in peaks:
+            continue
+        peak_starts, peak_ends = peaks[chrom]
+        low = np.searchsorted(peak_starts, int(start) - longest[chrom], side='left')
+        high = np.searchsorted(peak_starts, int(end), side='left')
+        if high <= low:
+            continue
+        overlap = np.minimum(peak_ends[low:high], int(end)) - np.maximum(peak_starts[low:high], int(start))
+        if (overlap >= min_overlap).any():
+            out.add(node)
+    return out
+
+
+class PeakPresence(tuple):
+    """State signal of a mark whose presence is defined by peak calls: the pair (node -> signal in A, node -> signal
+    in B) as for a mark with the threshold rule, and `present` = (set of nodes with a peak in A, set in B)."""
+
+    def __new__(cls, signals, present):
+        entry = tuple.__new__(cls, tuple(signals))
+        entry.present = tuple(set(p) for p in present)
+        return entry
+
+
+def peak_marks(state_signals):
+    """Marks of `state_signals` whose presence comes from peak calls."""
+    return [m for m, entry in state_signals.items() if isinstance(entry, PeakPresence)]
+
+
+def mark_present(entry, condition, nodes, threshold):
+    """Bool array: the mark of `entry` (a state_signals value) present on `nodes` in condition 0 (A) or 1 (B): a
+    peak overlapping the fragment for a PeakPresence entry, otherwise signal >= `threshold`."""
+    if isinstance(entry, PeakPresence):
+        present = entry.present[condition]
+        return np.array([n in present for n in nodes], dtype=bool)
+    return np.array([entry[condition].get(n, 0.0) for n in nodes], dtype=float) >= threshold
+
+
 def role_signs(roles):
     """mark -> expected direction of its change on expression (+1, -1, 0)."""
     return {m: ROLE_SIGN[r] for m, r in roles.items()}
@@ -106,20 +180,24 @@ def states_callable(roles):
             'step1': bool(marks['active'] or marks['enhancer']) and bool(marks['repressive'])}
 
 
-def _any_present(signal, marks, threshold, n):
+def _any_present(signal, marks, threshold, n, present=None):
     if not marks:
         return np.zeros(n, dtype=bool)
-    return np.any([np.asarray(signal[m], dtype=float) >= threshold for m in marks], axis=0)
+    present = present or {}
+    return np.any([np.asarray(present[m], dtype=bool) if m in present
+                   else np.asarray(signal[m], dtype=float) >= threshold for m in marks], axis=0)
 
 
-def fragment_states(signal, roles, threshold, is_bait):
-    """State of every fragment in one condition (`signal`: mark -> array, `is_bait`: bool array)."""
+def fragment_states(signal, roles, threshold, is_bait, present=None):
+    """State of every fragment in one condition (`signal`: mark -> array, `is_bait`: bool array). `present` (mark ->
+    bool array, e.g. from peak calls) gives the presence of the marks it lists; the others are present when their
+    signal reaches `threshold`."""
     is_bait = np.asarray(is_bait, dtype=bool)
     marks = role_marks(roles)
     n = len(is_bait)
-    active = np.where(is_bait, _any_present(signal, marks['active'], threshold, n),
-                      _any_present(signal, marks['active'] + marks['enhancer'], threshold, n))
-    repressive = _any_present(signal, marks['repressive'], threshold, n)
+    active = np.where(is_bait, _any_present(signal, marks['active'], threshold, n, present),
+                      _any_present(signal, marks['active'] + marks['enhancer'], threshold, n, present))
+    repressive = _any_present(signal, marks['repressive'], threshold, n, present)
     bait = np.select([active & repressive, active, repressive], ['bivalent', 'active', 'repressed'], 'unmarked')
     other = np.select([active & repressive, active, repressive], ['poised enhancer', 'active enhancer', 'repressed'],
                       'unmarked')
@@ -150,18 +228,24 @@ def label_states(label):
     return a, b
 
 
-def mark_crossings(values_a, values_b, threshold, min_change=0.5, pseudo_count=1.0):
+def mark_crossings(values_a, values_b, threshold, min_change=0.5, pseudo_count=1.0, present_a=None,
+                   present_b=None):
     """Marks whose presence differs between the conditions: (gained, lost, supported). `values_a` / `values_b` map
     mark -> signal of one fragment; supported: every crossing mark changes by at least `min_change`
     (log2 (B + pseudo) / (A + pseudo)) in the direction of the crossing, so that a signal moving from just below to
-    just above the threshold does not make a transition."""
+    just above the threshold does not make a transition. `present_a` / `present_b` (mark -> bool, e.g. a peak on the
+    fragment) give the presence of the marks they list instead of the threshold; the change is still that of the
+    signal."""
+    present_a, present_b = present_a or {}, present_b or {}
     gained, lost, supported = [], [], True
     for mark in values_a:
         a, b = float(values_a[mark]), float(values_b[mark])
-        if (a >= threshold) == (b >= threshold):
+        in_a = bool(present_a[mark]) if mark in present_a else a >= threshold
+        in_b = bool(present_b[mark]) if mark in present_b else b >= threshold
+        if in_a == in_b:
             continue
         change = np.log2((b + pseudo_count) / (a + pseudo_count))
-        if b >= threshold:
+        if in_b:
             gained.append(mark)
         else:
             lost.append(mark)
@@ -178,13 +262,14 @@ def _state_marks(roles, bait):
     return (marks['active'] if bait else marks['active'] + marks['enhancer']), marks['repressive']
 
 
-def _transition(values_a, values_b, state_a, state_b, roles, bait, threshold, min_change, pseudo_count):
+def _transition(values_a, values_b, state_a, state_b, roles, bait, threshold, min_change, pseudo_count,
+                present_a=None, present_b=None):
     """Crossing marks of the flags that change (gained, lost, supported)."""
     active, repressive = _state_marks(roles, bait)
     fa, fb = STATE_FLAGS[state_a], STATE_FLAGS[state_b]
     used = (active if fa[0] != fb[0] else []) + (repressive if fa[1] != fb[1] else [])
     return mark_crossings({m: values_a[m] for m in used}, {m: values_b[m] for m in used}, threshold, min_change,
-                          pseudo_count)
+                          pseudo_count, present_a, present_b)
 
 
 def _signal_text(values):
@@ -250,6 +335,7 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
     H3K27me3 67/80') at the promoter and at the chosen contacting fragment (step1_fragment_state_A / _B, of
     step1_contacting_fragments).
     `step1_roles` (default `roles`) are the roles at step 1, e.g. those learned there (learned_roles).
+    Marks whose entry is a PeakPresence are present where a peak overlaps the fragment (mark_present).
     """
     step1_roles = roles if step1_roles is None else step1_roles
     callable_ = level_states_callable(roles, step1_roles)
@@ -259,14 +345,22 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
     used_marks = list(dict.fromkeys(m for given in (roles, step1_roles) for m, r in given.items()
                                     if r in ('active', 'enhancer', 'repressive')))
 
+    peaks = [m for m in peak_marks(state_signals) if m in used_marks]
+
     def values(node, marks, condition):
         return {m: float(state_signals[m][condition].get(node, 0.0)) for m in marks}
+
+    def flags(node, marks, condition):
+        """Presence of the peak-defined marks among `marks` on `node`."""
+        return {m: node in state_signals[m].present[condition] for m in marks if m in peaks}
 
     def states_of(fragments, bait, level_roles):
         signal_a = {m: np.array([state_signals[m][0].get(f, 0.0) for f in fragments]) for m in used_marks}
         signal_b = {m: np.array([state_signals[m][1].get(f, 0.0) for f in fragments]) for m in used_marks}
-        return (fragment_states(signal_a, level_roles, threshold, bait),
-                fragment_states(signal_b, level_roles, threshold, bait))
+        present_a = {m: mark_present(state_signals[m], 0, fragments, threshold) for m in peaks}
+        present_b = {m: mark_present(state_signals[m], 1, fragments, threshold) for m in peaks}
+        return (fragment_states(signal_a, level_roles, threshold, bait, present_a),
+                fragment_states(signal_b, level_roles, threshold, bait, present_b))
 
     if callable_['promoter']:
         active, repressive = _state_marks(roles, True)
@@ -280,7 +374,8 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
             va, vb = values(node, promoter_marks, 0), values(node, promoter_marks, 1)
             paired.append(paired_values(va, vb))
             gained, lost, ok = _transition(va, vb, state_a[i], state_b[i], roles, True, threshold, min_change,
-                                           pseudo_count)
+                                           pseudo_count, flags(node, promoter_marks, 0),
+                                           flags(node, promoter_marks, 1))
             labels.append(transition_label(state_a[i], state_b[i]))
             directions.append(transition_direction(state_a[i], state_b[i]))
             supported.append(ok)
@@ -327,7 +422,7 @@ def gene_states(classes, graph, state_signals, roles, threshold=2.0, min_change=
                 shown = list(dict.fromkeys(active + repressive))
                 va, vb = values(fragment, shown, 0), values(fragment, shown, 1)
                 gained, lost, ok = _transition(va, vb, sa, sb, step1_roles, is_bait[j], threshold, min_change,
-                                               pseudo_count)
+                                               pseudo_count, flags(fragment, shown, 0), flags(fragment, shown, 1))
                 d = transition_direction(sa, sb)
                 strength = max([abs(np.log2((vb[m] + pseudo_count) / (va[m] + pseudo_count))) for m in gained + lost]
                                + [0.0])
@@ -561,7 +656,7 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
     """Recurring mark combinations of fragments and their transitions, rated by the expression changes that follow.
 
     Every fragment of the union graph is described in each condition by the combination of marks present
-    (state_signals >= `threshold`; all marks, whatever their role). Combinations seen at least `min_fragments` times
+    (state_signals >= `threshold`, or a peak for PeakPresence marks; all marks, whatever their role). Combinations seen at least `min_fragments` times
     over both conditions are kept, the rest are pooled as 'other'. A transition is the pair (combination in A,
     combination in B) of a fragment. Rows of kind 'transition' (level step0: the promoter of the gene makes it;
     step1: at least one fragment in contact with the promoter makes it) give the genes of `features` with that
@@ -578,8 +673,7 @@ def learned_state_transitions(features, graph, state_signals, learned_signs, thr
     marks = list(state_signals)
     nodes = list(graph.nodes)
     position = {n: i for i, n in enumerate(nodes)}
-    present = [{m: np.array([state_signals[m][c].get(n, 0.0) for n in nodes]) >= threshold for m in marks}
-               for c in (0, 1)]
+    present = [{m: mark_present(state_signals[m], c, nodes, threshold) for m in marks} for c in (0, 1)]
     combo = [mark_combinations(p, marks) for p in present]
     counts = pd.Series(np.concatenate(combo)).value_counts()
     kept = set(counts.index[counts >= min_fragments])
