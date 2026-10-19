@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "Epigenetic Graph Analyzer (EGA)"
+abstract: "Graph analysis of promoter capture Hi-C with chromatin and expression data, validated with multi-way contact data."
+type: software
+version: 1.0.0
+date-released: 2026-10-19
+license: MIT
+repository-code: "https://github.com/joachimwolff/Epigenetic-Graph-Analyzer"
+authors:
+  - family-names: Wolff
+    given-names: Joachim
+    email: wolff.joachim@mh-hannover.de
+    affiliation: "Department of Hematology, Hemostasis, Oncology, and Cell Therapy, Hannover Medical School"
+keywords:
+  - promoter capture Hi-C
+  - chromatin
+  - multi-way contacts
+  - graph analysis

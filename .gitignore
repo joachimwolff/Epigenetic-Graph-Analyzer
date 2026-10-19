@@ -4,3 +4,4 @@ docs/_build/
 *.egg-info/
 __pycache__/
 .pytest_cache/
+example/output/

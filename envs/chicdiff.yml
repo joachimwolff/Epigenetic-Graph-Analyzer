@@ -1,0 +1,12 @@
+# Chicdiff, the competitor of the differential analysis (kasumi_chicdiff.sh; RSCRIPT). The R package Chicdiff 0.6
+# is not on conda; it is installed from its source with remotes.
+name: chicdiff
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - r-base=4.5.3
+  - bioconductor-chicago=1.38.0
+  - bioconductor-deseq2=1.50.2
+  - bioconductor-ihw=1.38.0
+  - r-remotes=2.5.0
