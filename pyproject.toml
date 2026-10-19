@@ -76,3 +76,4 @@ epigeneticgraphanalyzer = ["templates/*.html", "templates/*.css", "templates/exp
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: runs about a minute or longer (the example of example/run_example.sh); deselect with -m 'not slow'"]

@@ -1,0 +1,14 @@
+level	genes	genes_reaching	fraction_of_differential	fraction_of_remaining	beyond_mirror	p_lt_0.05	beyond_mirror_p_lt_0.05	q_lt_0.1	q_lt_0.05	median_nodes_tested	genes_q_lt_0.05
+gene	4	5	0.8	0.8						1	
+gene_marks_only	2	5	0.4	0.4							
+gene_interactions_only	0	5	0	0							
+gene_both	1	5	0.2	0.2							
+gene_state	0	5	0	0							
+gene_poised_unresolved	1	5	0.2	0.2							
+step1	1	1	0.2	1	0	0	0	0	0	19	
+step1_marks	0	1	0	0							
+step1_state	0	1	0	0							
+step1_poised_unresolved	1	1	0.2	1							
+step2	0	0	0		0	0	0	0	0		
+step3	0	0	0		0	0	0	0	0		
+unexplained	0	0	0								
