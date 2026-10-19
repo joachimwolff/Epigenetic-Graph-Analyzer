@@ -68,7 +68,7 @@ def draw(table, path):
     steps = [lv for lv in table.index if lv.startswith('step') and lv[4:].isdigit()]
     levels = ['gene'] + steps + ['unexplained']
     not_callable = 'note' in table.columns and (table['note'] == 'states not callable').any()
-    fig, ax = plt.subplots(figsize=(3.6, 2.4))
+    fig, ax = plt.subplots(figsize=(2.9, 2.6))
     largest = max(table.loc[levels, 'genes'].max(), 1)
     used = set()
     for y, level in enumerate(levels):
@@ -103,13 +103,13 @@ def draw(table, path):
                 text += ', 3D {:.2f}'.format(support)
                 if isinstance(interval, str) and interval:
                     text += ' ({})'.format(interval)
-        ax.text(n + 0.02 * largest, y, text, va='center', ha='left', fontsize=6, color=INK)
+        ax.text(n + 0.02 * largest, y, text, va='center', ha='left', fontsize=8.5, color=INK)
     ax.set_yticks(range(len(levels)))
-    ax.set_yticklabels([label(lv) for lv in levels], fontsize=7)
+    ax.set_yticklabels([label(lv) for lv in levels], fontsize=9.5)
     ax.invert_yaxis()
     ax.set_xlim(0, largest * 1.8)
-    ax.set_xlabel('differentially expressed promoter fragments', fontsize=7)
-    ax.tick_params(axis='x', labelsize=6)
+    ax.set_xlabel('differentially expressed promoter fragments', fontsize=9.5)
+    ax.tick_params(axis='x', labelsize=8.5)
     for side in ('top', 'right'):
         ax.spines[side].set_visible(False)
     kinds = [t for t in TYPES if t[0] in used or (t[0] in ('marks',))]
@@ -117,10 +117,10 @@ def draw(table, path):
     names = [name for _, _, name in kinds]
     handles.append(plt.Rectangle((0, 0), 1, 1, facecolor=TYPES[0][1], hatch='//////', edgecolor='white', lw=0))
     names.append('marks beyond mirror, P < 0.05')
-    ax.legend(handles, names, fontsize=5.5, frameon=False, loc='upper center', bbox_to_anchor=(0.45, -0.2), ncol=2)
+    ax.legend(handles, names, fontsize=8, frameon=False, loc='upper center', bbox_to_anchor=(0.4, -0.24), ncol=2)
     if not_callable:
         ax.text(0.99, 0.99, 'states not callable (no repressive mark)', transform=ax.transAxes, ha='right',
-                va='top', fontsize=5.5, color=MUTED)
+                va='top', fontsize=8, color=MUTED)
     fig.savefig(path, bbox_inches='tight')
     plt.close(fig)
 

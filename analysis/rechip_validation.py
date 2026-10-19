@@ -137,7 +137,7 @@ def transition_rows(values, index, scope, threshold, stable):
 
 
 def figure(values, path, presence='mean'):
-    fig, ax = plt.subplots(figsize=(3.6, 2.4))
+    fig, ax = plt.subplots(figsize=(3.0, 2.6))
     width = 0.36
     counts = {c: [] for c in ORDER}
     for k, condition in enumerate(CONDITIONS):
@@ -155,19 +155,20 @@ def figure(values, path, presence='mean'):
     ax.set_yscale('log')
     ax.set_ylim(0.05, None)
     ax.set_xticks(range(len(ORDER)))
-    ax.set_xticklabels(['{}\n{}'.format(c.replace(' only', '\nonly') if ' ' in c else c + '\n', ' / '.join(counts[c]))
-                        for c in ORDER], fontsize=6)
+    ax.set_xticklabels([{'repressive only': 'repressed', 'active only': 'active'}.get(c, c) for c in ORDER], fontsize=8.5)
+    for i, c in enumerate(ORDER):
+        ax.text(i, -0.13, '\n'.join(counts[c]), transform=ax.get_xaxis_transform(), ha='center', va='top',
+                fontsize=6.5, color=MUTED)
     statistic = 'fragment mean' if presence == 'mean' else 'max. 1 kb window'
-    ax.set_ylabel('re-ChIP fold enrichment ({})'.format(statistic), fontsize=7)
-    ax.set_xlabel('EGA call of the promoter fragment (FE $\\geq$ 2, {}; fragments Md / PA2)'.format(statistic),
-                  fontsize=7)
-    ax.tick_params(axis='y', labelsize=6)
+    ax.set_ylabel('re-ChIP fold enrichment', fontsize=9.5)
+    ax.set_xlabel('EGA state call (fragments Md / PA2)', fontsize=9, labelpad=24)
+    ax.tick_params(axis='y', labelsize=8.5)
     ax.grid(axis='y', color=GRID, lw=0.4)
     ax.set_axisbelow(True)
     for side in ('top', 'right'):
         ax.spines[side].set_visible(False)
     handles = [plt.Rectangle((0, 0), 1, 1, color=COLOURS[c]) for c in CONDITIONS]
-    ax.legend(handles, CONDITIONS, fontsize=6, frameon=False, loc='upper right')
+    ax.legend(handles, CONDITIONS, fontsize=8.5, frameon=False, loc='upper right')
     fig.savefig(path, bbox_inches='tight')
     plt.close(fig)
 
