@@ -54,7 +54,7 @@ analysis/31_step_decomposition.sh <data> <results> <results>/revision_bioinf/dec
 analysis/32_step_decomposition_aml.sh <results> <kasumi1 dir> <assi2019 dir> <results>/revision_bioinf/decomposed 200000 6
 analysis/30_revision_graph.sh <data> <results>              # B1, B6, B7, B9 to B13 -> <results>/revision_bioinf/
 analysis/30_crispr_revision.sh <data> <results> <results>/revision_bioinf   # pairs, B2, B3 (CRISPRi)
-
+analysis/33_runtime.sh <data> <results> <kasumi1 dir> <results>/revision_bioinf/runtime 8   # run time and memory
 ```
 
 ## Random seeds
@@ -120,3 +120,18 @@ comparison cut to the Hoxa locus (chr6:49.5-54.5 Mb, mm10; 2.2 MB of public data
 outputs are compared with `example/expected/` by `tests/test_example.py` (`pytest -m slow tests/test_example.py`).
 As in the genome-wide run, Hoxa3 is explained at step 2 by the H3K27ac gain at the Hoxa2 promoter; P values differ
 from the genome-wide run because the per-gene null draws from the window only.
+
+## Run time and memory
+
+`analysis/33_runtime.sh` (GNU time; every run pinned to 8 cores with taskset and run alone; workstation with 32
+cores and 125 GB of memory, 2026-10-19). Peak memory is the maximum resident set size of the largest single process;
+the worker processes share the input by fork. Outputs in
+`/mnt/processed/wolffjoa/ega/results/revision_bioinf/runtime/` (`runtime.tsv`); the differential and validation
+outputs are identical to those of the manuscript runs.
+
+| Run | Input | Wall time | Peak memory |
+|---|---|---|---|
+| `egaCreateGraph` with Leiden communities | largest graph: GM12878 strong core of Mifsud et al. 2015, 207,957 nodes, 332,078 edges | 32 s | 2.9 GB |
+| `egaDifferential --stepFeature decomposed`, 200,000 per-gene permutations, 200 community permutations, 1,000 bootstrap samples, `--threads 8` | largest comparison: Kasumi-1 siMM / siRE, two replicates each, union graph of 147,525 nodes and 286,493 edges | 8.1 min | 4.2 GB |
+| `egaValidateMultiway` against GM12878 SPRITE, `--threads 8` | GM12878 graph (CHiCAGO, 88,124 edges) | 3.2 min | 4.1 GB |
+| `egaValidateMultiway` against GM12878 SPRITE, `--threads 8` | GM12878 strong core (332,078 edges) | 12.9 min | 8.7 GB |
