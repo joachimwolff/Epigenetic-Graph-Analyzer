@@ -25,6 +25,15 @@ the manuscript analyses is `environment.yml` (`mamba env create -f environment.y
 analysis drivers are in `envs/`. `REPRODUCE.md` maps every figure and table of the manuscript to its script, and
 `example/run_example.sh` runs a small Md / PA2 comparison at the Hoxa locus (about one minute).
 
+## Quick start
+
+```bash
+mamba env create -f environment.yml && conda activate ega && pip install .
+bash example/run_example.sh          # Md / PA2 comparison at the Hoxa locus, about one minute
+```
+
+The outputs are compared with `example/expected/` by `pytest -m slow tests/test_example.py`.
+
 ## Command line tools
 
 | Tool | Purpose |
