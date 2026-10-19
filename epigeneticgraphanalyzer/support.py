@@ -312,7 +312,8 @@ def counterfactual_values(graph, operators, mark_vectors, drop, pseudo_count=1.0
         reduced.add_edge(u, v, r_a=0.0 if zero else data['r_a'], r_b=0.0 if zero else data['r_b'])
     # the step feature of `operators` (mark term: r_bar of the reduced graph in both conditions)
     reduced_ops = ActivityOperators(reduced, operators.sources, max_hops=operators.max_hops,
-                                    step_feature=operators.step_feature)
+                                    step_feature=operators.step_feature,
+                                    step_weighting=getattr(operators, 'step_weighting', 'product'))
     out = {}
     vectors = {m: reduced_ops.step_vectors(va, vb) for m, (va, vb) in mark_vectors.items()}
     for level in reduced_ops.levels:
@@ -320,7 +321,7 @@ def counterfactual_values(graph, operators, mark_vectors, drop, pseudo_count=1.0
         out[level] = {m: np.log2((H_b @ vb + pseudo_count) / (H_a @ va + pseudo_count))
                       for m, (va, vb) in vectors.items()}
     ones = np.ones(len(reduced_ops.nodes))
-    H_a, H_b, _ = reduced_ops.condition_level('direct')
+    H_a, H_b, _ = reduced_ops.strength_level('direct')
     out['contact'] = np.log2((H_b @ ones + pseudo_count) / (H_a @ ones + pseudo_count))
     return out
 

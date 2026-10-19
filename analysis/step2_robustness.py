@@ -69,6 +69,12 @@ class Restricted:
             return (H_a @ self.diag).tocsr(), (H_b @ self.diag).tocsr(), n
         return H_a, H_b, n
 
+    def strength_level(self, level):
+        H_a, H_b, n = self.ops.strength_level(level)
+        if level in self.levels_masked:
+            return (H_a @ self.diag).tocsr(), (H_b @ self.diag).tocsr(), n
+        return H_a, H_b, n
+
 
 def gains(df, marks, indirect_suffix='', mirror_suffix=None):
     """(gain of direct, gain of indirect, gain of the indirect mirror) on the rows of df."""
