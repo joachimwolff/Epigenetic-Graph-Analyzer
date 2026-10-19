@@ -20,7 +20,10 @@ pip install .            # core
 pip install .[leiden]    # Leiden community detection (python-igraph, leidenalg), recommended
 ```
 
-Python >= 3.9 with numpy, scipy, pandas, networkx, pyBigWig, matplotlib and pyliftover.
+Python >= 3.9 with numpy, scipy, pandas, networkx, pyBigWig, matplotlib and pyliftover. The exact environment of
+the manuscript analyses is `environment.yml` (`mamba env create -f environment.yml`); the external tools of the
+analysis drivers are in `envs/`. `REPRODUCE.md` maps every figure and table of the manuscript to its script, and
+`example/run_example.sh` runs a small Md / PA2 comparison at the Hoxa locus (about one minute).
 
 ## Command line tools
 
@@ -54,12 +57,9 @@ Every tool prints its options with `--help`.
 ## Example
 
 ```bash
-# 1. significant interactions (Jung et al. 2019 raw count tables)
-egaCallInteractions -f jung -i H1.po.all.txt.bz2 H1.pp.all.txt.bz2 \
-    --minDistance 15000 --pvalueThreshold 0.01 --minCount 6 -o H1.tsv.gz --summary H1.json
-
+# 1. interactions called by CHiCAGO (ibed; analysis/01_h1_chicago.sh for the H1-hESC reads of Jung et al. 2019)
 # 2. graph, communities and indirect contacts
-egaCreateGraph -i H1.tsv.gz --tss gencode.v19.annotation.gtf.gz -o graphs/H1
+egaCreateGraph -i H1.ibed.gz -f ibed --scoreThreshold 5 --tss gencode.v19.annotation.gtf.gz -o graphs/H1
 egaIndirectContacts -g graphs/H1.graphml -o graphs/H1 --triplets
 
 # 3. validation with GAM (hg38) of a graph built on hg19
@@ -67,7 +67,7 @@ egaBuildMultiway --type gam --input rep1_30kb.csv rep2_30kb.csv --chromSizes hg3
 egaValidateMultiway -g graphs/H1.graphml -m gam.npz --chain hg19ToHg38.over.chain.gz -o validation/H1_gam
 
 # 4. differential mode
-egaDifferential --interactionsA H1.tsv.gz --interactionsB NPC.tsv.gz --names H1 NPC \
+egaDifferential --interactionsA H1.ibed.gz --interactionsB NPC.ibed.gz --format ibed --scoreThreshold 5 --names H1 NPC \
     --tss gencode.v19.annotation.gtf.gz \
     --tracksA H3K27ac=E003-H3K27ac.bw H3K27me3=E003-H3K27me3.bw \
     --tracksB H3K27ac=E007-H3K27ac.bw H3K27me3=E007-H3K27me3.bw --markSign H3K27me3=-1 \
