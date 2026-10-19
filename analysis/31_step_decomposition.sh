@@ -5,19 +5,24 @@
 # r_bar = (r_A + r_B) / 2); the combined feature and the contact term are written beside it. The Md / PA2 expression
 # table is recomputed by kessler_deseq2.py (repeated GEO libraries used once). Outputs in <out>/ only;
 # step_decomposition_summary.py compares the three features per level and the learned roles with the combined
-# feature of <results>/hops_n.
+# feature of <results>/hops_n. An optional sixth argument sets egaDifferential --stepWeighting (product, the default,
+# unweighted or normalised; 33_step_weighting.sh).
 set -euo pipefail
-data=${1:?usage: 31_step_decomposition.sh <data_dir> <results_dir> <out_dir> [gene permutations] [threads]}
+data=${1:?usage: 31_step_decomposition.sh <data_dir> <results_dir> <out_dir> [gene permutations] [threads] [step weighting]}
 results=${2:?}
 out=${3:?}
 gene_permutations=${4:-200000}
 threads=${5:-6}
+weighting=${6:-product}
 here=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$out"
 common=(--verbose --maxHops 3 --genePermutations "$gene_permutations" --rnaThreshold 1 --chromatinThreshold 1
         --permutations 200 --bootstrap 1000 --seed 0 --threads "$threads"
         --roles both --roleBootstrap 1000 --stateThreshold 2 --stateThresholds 1.5 2 3 --stateWindow 1000
         --stepFeature decomposed)
+if [ "$weighting" != product ]; then
+    common+=(--stepWeighting "$weighting")
+fi
 
 # hESC / hNEC
 study="$data/chicago_calls/GSE86821_freire_pritchett_2017_H9_hESC_hNPC"
