@@ -225,6 +225,33 @@ def hop_levels(features, marks):
 
 STEP_FEATURES = ('combined', 'marks', 'contacts', 'decomposed')
 STEP_TERMS = ('combined', 'marks', 'contacts')
+STEP_WEIGHTINGS = ('product', 'unweighted', 'normalised')
+
+
+def weight_paths(H, weighting='product'):
+    """Path weights of one step level under a weighting of the step feature (rows: sources, columns: nodes at
+    exactly k steps; H holds the sums over the shortest paths of the products of r along each path).
+
+    product     H unchanged: S_k = sum over the nodes m at distance k of sum over the shortest paths of prod r, x(m);
+    unweighted  1 for every node m at distance k with a positive path weight (no path multiplicity, no strengths):
+                S_k = sum over those nodes of x(m);
+    normalised  H divided by its row sum (the sum of the path weights over the nodes at distance k): S_k is the mean
+                of x over the nodes at distance k weighted by their share of the path weight (no dependence on the
+                number of nodes or the overall size of the path weights; a source without nodes keeps 0)."""
+    if weighting not in STEP_WEIGHTINGS:
+        raise ValueError('Unknown step weighting {} (one of {})'.format(weighting, ', '.join(STEP_WEIGHTINGS)))
+    if weighting == 'product':
+        return H
+    import scipy.sparse as sp
+    H = sp.csr_matrix(H, dtype=float, copy=True)
+    H.data[H.data < 0] = 0.0   # path weights are products of non-negative strengths
+    H.eliminate_zeros()
+    if weighting == 'unweighted':
+        H.data[:] = 1.0
+        return H
+    total = np.asarray(H.sum(axis=1)).ravel()
+    scale = np.divide(1.0, total, out=np.zeros_like(total), where=total > 0)
+    return sp.csr_matrix(sp.diags(scale) @ H)
 
 
 def step_terms(H_a, H_b, H_mean, vector_a, vector_b, pseudo_count=1.0):
@@ -262,6 +289,11 @@ class ActivityOperators:
     weights of r_bar = (r_A + r_B) / 2 in both conditions (hop_a = hop_b; 'decomposed' adds the columns of all three
     terms, step_terms); 'contacts' the contact term, the condition weights applied to the mean signal
     (step_vectors). condition_a / condition_b (condition_level) always hold the weights of the two conditions.
+    `step_weighting` (weight_paths) transforms the path weights of every level after the recursion: 'product'
+    (default) keeps the sums of path products, 'unweighted' gives every node at distance k weight 1, 'normalised'
+    divides by the row sum (a weighted mean of the signal over the nodes at distance k); it applies to the weights of
+    each condition and to those of r_bar alike. contact_<level> (strength_level) keeps the summed path products of
+    the two conditions under every weighting.
 
     The activity of source s at k hops in condition c is H_c^(k) @ signal_c with
     H_c^(k)[s, m] = sum over the shortest paths s = n_0, n_1, ..., n_k = m of prod_i r_c(n_{i-1}, n_i),
@@ -272,13 +304,17 @@ class ActivityOperators:
     r_c(s, n) r_c(n, m), m at exactly two hops) as before; hop_a[k], hop_b[k] and n_hop[k] hold every level.
     """
 
-    def __init__(self, graph, sources, max_hops=2, step_feature='combined'):
+    def __init__(self, graph, sources, max_hops=2, step_feature='combined', step_weighting='product'):
         import scipy.sparse as sp
         if max_hops < 2:
             raise ValueError('max_hops must be at least 2')
         if step_feature not in STEP_FEATURES:
             raise ValueError('Unknown step feature {} (one of {})'.format(step_feature, ', '.join(STEP_FEATURES)))
+        if step_weighting not in STEP_WEIGHTINGS:
+            raise ValueError('Unknown step weighting {} (one of {})'.format(step_weighting,
+                                                                            ', '.join(STEP_WEIGHTINGS)))
         self.step_feature = step_feature
+        self.step_weighting = step_weighting
         self.max_hops = int(max_hops)
         self.levels = [level_name(k) for k in range(1, self.max_hops + 1)]
         self.nodes = list(graph.nodes)
@@ -327,9 +363,15 @@ class ActivityOperators:
                 frontier = mask
         # path weights of the two conditions (contact_<level>, the contact term); hop_a / hop_b are the weights of
         # the step feature: the condition weights, or r_bar in both conditions for the mark term
-        self.condition_a = dict(self.hop_a)
-        self.condition_b = dict(self.hop_b)
+        # summed path products of the two conditions under every weighting (contact_<level>, strength_level)
+        self.strength_a = dict(self.hop_a)
+        self.strength_b = dict(self.hop_b)
+        self.condition_a = {k: weight_paths(H, step_weighting) for k, H in self.hop_a.items()}
+        self.condition_b = {k: weight_paths(H, step_weighting) for k, H in self.hop_b.items()}
+        self.hop_a = dict(self.condition_a)
+        self.hop_b = dict(self.condition_b)
         if mean_weights:
+            hop_m = {k: weight_paths(H, step_weighting) for k, H in hop_m.items()}
             self.hop_a = dict(hop_m)
             self.hop_b = dict(hop_m)
         self.direct_a = self.hop_a[1]
@@ -352,6 +394,12 @@ class ActivityOperators:
         """(H_a, H_b, number of nodes) with the path weights of the two conditions, whatever the step feature."""
         k = level_hops(level)
         return self.condition_a[k], self.condition_b[k], self.n_hop[k]
+
+    def strength_level(self, level):
+        """(H_a, H_b, number of nodes) with the summed path products of the two conditions (step weighting
+        'product'), whatever the step feature and the step weighting."""
+        k = level_hops(level)
+        return self.strength_a[k], self.strength_b[k], self.n_hop[k]
 
     def step_vectors(self, vector_a, vector_b):
         """Node signals entering the step levels: the signals of the two conditions, or for the contact term
@@ -401,7 +449,7 @@ def gene_features(graph, marks, expression_change, pseudo_count=1.0, operators=N
     features = pd.DataFrame(columns)
     ones = np.ones(len(operators.nodes))
     for level in levels:
-        H_a, H_b, _ = operators.condition_level(level)
+        H_a, H_b, _ = operators.strength_level(level)
         features['contact_' + level] = np.log2((H_b @ ones + pseudo_count) / (H_a @ ones + pseudo_count))
     src = operators.source_index
     decomposed = operators.step_feature == 'decomposed'
@@ -1939,7 +1987,8 @@ def indirect_only_genes(graph, operators, mark_vectors, features, marks, mark_si
 
 
 def permutation_test(graph, marks, expression_change, mark_signs, n_permutations=100, seed=0,
-                     rna_threshold=1.0, chromatin_threshold=1.0, max_hops=2, step_feature='combined'):
+                     rna_threshold=1.0, chromatin_threshold=1.0, max_hops=2, step_feature='combined',
+                     step_weighting='product'):
     """Null distribution of the contribution of every level at k >= 2 hops.
 
     Mark signals of all non-source nodes are permuted jointly (A and B values of
@@ -1953,7 +2002,8 @@ def permutation_test(graph, marks, expression_change, mark_signs, n_permutations
     rng = np.random.default_rng(seed)
     # the step feature of the levels (decomposed: the mark term, without the columns of the other terms)
     operators = ActivityOperators(graph, list(expression_change), max_hops=max_hops,
-                                  step_feature='marks' if step_feature == 'decomposed' else step_feature)
+                                  step_feature='marks' if step_feature == 'decomposed' else step_feature,
+                                  step_weighting=step_weighting)
     levels = operators.levels
     tested = levels[1:]   # indirect, hop3, ...
     position = {level: levels.index(level) + 1 for level in tested}   # row of the level in nested_models

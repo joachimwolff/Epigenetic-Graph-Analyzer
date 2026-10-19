@@ -11,7 +11,8 @@ from scipy import stats
 
 from ._cli import base_parser, ensure_parent, setup_logging, write_table
 from .annotation import gene_values_to_nodes, parse_track_arguments
-from .differential import (REPLICATE_MODES, STEP_FEATURES, ActivityOperators, _benjamini_hochberg, annotate_chicdiff,
+from .differential import (REPLICATE_MODES, STEP_FEATURES, STEP_WEIGHTINGS, ActivityOperators, _benjamini_hochberg,
+                           annotate_chicdiff,
                            classify_genes, consensus_scores, differential_edges_from_scores, feature_correlations,
                            gene_features, community_expression_changes, community_transitions,
                            gene_community_changes, gene_level_hop_test, indirect_only_genes, level_name,
@@ -118,6 +119,14 @@ def parse_arguments(args=None):
                              "concordant_combined_R, concordant_mark_term_R, concordant_contact_term_R and driver_R "
                              "(marks, contacts, both, neither: which term changes concordantly at the level). The "
                              "promoter levels and contact_<level> are the same under every choice")
+    parser.add_argument('--stepWeighting', choices=STEP_WEIGHTINGS, default='product',
+                        help="Weights of the nodes at k steps in S (for every --stepFeature). 'product': the sum over "
+                             "the shortest paths to a node of the product of the strengths r along the path; "
+                             "'unweighted': every node at k steps enters once (no path multiplicity, no strengths); "
+                             "'normalised': the product weights divided by their sum over the nodes at k steps, so S "
+                             "is a weighted mean of the mark signal over those nodes (no dependence on the number of "
+                             "nodes and paths). The promoter levels and contact_<level> are the same under every "
+                             "choice")
     parser.add_argument('--proximitySupport',
                         help='Step curve of analysis/hop_distance.py (TSV with steps, concordance, ci_low, ci_high): '
                              'adds to every explained gene the probability that graph neighbours at its explaining '
@@ -426,8 +435,9 @@ def main(args=None):
     if args.maxHops < 2:
         raise ValueError('--maxHops must be at least 2')
     proximity = read_proximity_support(args.proximitySupport) if args.proximitySupport else None
-    operators = ActivityOperators(graph, list(change), max_hops=args.maxHops, step_feature=args.stepFeature)
-    log.info('step feature: %s', args.stepFeature)
+    operators = ActivityOperators(graph, list(change), max_hops=args.maxHops, step_feature=args.stepFeature,
+                                  step_weighting=args.stepWeighting)
+    log.info('step feature: %s, step weighting: %s', args.stepFeature, args.stepWeighting)
     log.info('nodes per level (median over genes): %s',
              {level: float(np.median(operators.level(level)[2])) for level in operators.levels})
     mark_vectors = {m: (operators.vector(a), operators.vector(b)) for m, (a, b) in marks.items()}
@@ -697,8 +707,11 @@ def main(args=None):
     result = permutation_test(graph, marks, informative_change, mark_signs, n_permutations=args.permutations,
                               seed=args.seed,
                               rna_threshold=args.rnaThreshold, chromatin_threshold=args.chromatinThreshold,
-                              max_hops=args.maxHops, step_feature=args.stepFeature)
+                              max_hops=args.maxHops, step_feature=args.stepFeature,
+                              step_weighting=args.stepWeighting)
     result['step_feature'] = args.stepFeature
+    if args.stepWeighting != 'product':
+        result['step_weighting'] = args.stepWeighting
     result['class_counts'] = classes['explanation'].value_counts().to_dict()
     result['informative_genes'] = int(len(informative))
     result['mirror_comparison'] = comparison
