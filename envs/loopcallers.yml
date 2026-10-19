@@ -1,0 +1,12 @@
+# Loop callers of the benchmark (12_loopcaller_benchmark.sh, conda run -n loopcallers)
+name: loopcallers
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10.22
+  - chromosight=1.6.3
+  - cooler=0.10.4
+  - pip
+  - pip:
+      - mustache-hic==1.3.3

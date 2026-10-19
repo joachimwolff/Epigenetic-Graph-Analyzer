@@ -1,0 +1,10 @@
+# bedGraphToBigWig and liftOver (07_aml_assi.sh, 08_aml_kasumi1.sh); run_all.sh appends
+# ~/miniconda3/envs/__ucsc_kent/bin to PATH
+name: __ucsc_kent
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - ucsc-bedgraphtobigwig=482
+  - ucsc-bigwigtobedgraph=482
+  - ucsc-liftover=482

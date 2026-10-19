@@ -1,0 +1,13 @@
+# HiCExplorer (hicFindTADs, hicPCA; 23_hic_reference.sh, 27_boundaries.sh, 28_tad_crossing.sh), cooler for
+# hic_eigenvectors.py and boundaries_hic.py, hic2cool for the .hic files of Kessler et al. 2023
+# (run_all.sh HICEXPLORER_PREFIX, HICEXPLORER_BIN, HICEXPLORER_PYTHON)
+name: hicexplorer
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.10.14
+  - hicexplorer=3.7.5
+  - cooler=0.10.2
+  - hic2cool=1.0.1
+  - pygenometracks=3.9

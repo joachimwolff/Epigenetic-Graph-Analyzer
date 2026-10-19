@@ -1,0 +1,7 @@
+# RNA-seq quantification of Kasumi-1 (kasumi_rna.sh)
+name: salmon
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - salmon=2.8.0
