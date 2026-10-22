@@ -396,7 +396,8 @@ def panel_paths(graph, source, targets, step, mark, a, b, name, path):
                                             change).lstrip('\n')
             above = int(x) % 2 == 1 and len(columns[int(x)]) == 1
             ax.text(x, y + 0.06 if above else y - 0.06, text, ha='center', va='bottom' if above else 'top',
-                    fontsize=7, color=INK, linespacing=1.1, fontweight='bold' if n == source else 'normal')
+                    fontsize=7, color=INK, linespacing=1.1, fontweight='bold' if n == source else 'normal',
+                    bbox=dict(facecolor='white', edgecolor='none', pad=0.6), zorder=4)
     for k in range(step + 1):
         ax.text(k, 1.1, 'promoter' if k == 0 else 'step {}'.format(k), ha='center', va='bottom', fontsize=7.5)
     ax.set_xlim(-0.45, step + 1.25)

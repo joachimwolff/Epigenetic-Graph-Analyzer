@@ -65,8 +65,11 @@ def panel_levels(rows, mark, path):
             q = row.get('q_declared')
             if isinstance(q, float) and not np.isnan(q):
                 text += ', q = {:.2g}'.format(q)
-            ax.text(max(graph, mirror if not np.isnan(mirror) else 0) + 0.08, y, text, va='center', fontsize=8,
-                    color=INK)
+            x = max(graph, mirror if not np.isnan(mirror) else 0) + 0.08
+            # labels starting near the two-fold line move past it
+            x = 1.08 if 0.7 < x < 1.08 else x
+            ax.text(x, y, text, va='center', fontsize=8,
+                    color=INK, bbox=dict(facecolor='white', edgecolor='none', pad=0.6), zorder=4)
     ax.axvline(1, color=MUTED, lw=0.8, ls='--')
     ax.axvline(0, color=INK, lw=0.6)
     ax.set_yticks(range(len(levels)))
