@@ -12,6 +12,7 @@ Left out on purpose (public or rebuilt in minutes by the scripts): genome FASTA 
 CHiCAGO .Rds and .chinput files, all-pair score tables, rescaled time-course bigWig files, BAM files, the salmon index.
 
 Usage: python build_zenodo.py <out_dir> [--tag v1.0.0] [--repo <EGA checkout>] [--threads 8] [--no-tar]
+                              [--only RECORD ...]   (rebuild these records, keep the others of records.json)
 <out_dir>/records/<record>/  MANIFEST.tsv, README.md
 <out_dir>/upload/            <record>.tar.gz, <record>.README.md, SHA256SUMS, README.md, records.json
 """
@@ -158,26 +159,38 @@ def main():
     parser.add_argument('--repo', default=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     parser.add_argument('--threads', type=int, default=8)
     parser.add_argument('--no-tar', action='store_true')
+    parser.add_argument('--only', nargs='+', help='Records to rebuild; the others are kept from records.json')
     args = parser.parse_args()
     records_dir, upload = os.path.join(args.out, 'records'), os.path.join(args.out, 'upload')
     os.makedirs(records_dir, exist_ok=True)
     os.makedirs(upload, exist_ok=True)
     summary = {}
+    previous = os.path.join(upload, 'records.json')
+    if args.only and os.path.exists(previous):
+        summary = json.load(open(previous))
+    wanted = (lambda name: not args.only or name in args.only)
+    built = []
     # 01_software: source archive of the tag and the reproduction documents
+    record_items = {}
     software = os.path.join(records_dir, '01_software')
-    os.makedirs(software, exist_ok=True)
-    archive = os.path.join(software, 'Epigenetic-Graph-Analyzer-{}.tar.gz'.format(args.tag))
-    subprocess.run(['git', '-C', args.repo, 'archive', '--format=tar.gz',
-                    '--prefix=Epigenetic-Graph-Analyzer-{}/'.format(args.tag), '-o', archive, args.tag], check=True)
-    for name in ('REPRODUCE.md', 'environment.yml', 'CITATION.cff', 'README.md'):
-        out = subprocess.run(['git', '-C', args.repo, 'show', '{}:{}'.format(args.tag, name)], check=True,
-                             capture_output=True).stdout
-        open(os.path.join(software, name), 'wb').write(out)
-    items = [(os.path.join(software, f), f) for f in sorted(os.listdir(software)) if f != 'MANIFEST.tsv']
-    rows = write_manifest(items, software, args.threads)
-    summary['01_software'] = {'files': len(rows), 'bytes': sum(n for _, n, _ in rows)}
-    record_items = {'01_software': items}
+    if wanted('01_software'):
+        os.makedirs(software, exist_ok=True)
+        archive = os.path.join(software, 'Epigenetic-Graph-Analyzer-{}.tar.gz'.format(args.tag))
+        subprocess.run(['git', '-C', args.repo, 'archive', '--format=tar.gz',
+                        '--prefix=Epigenetic-Graph-Analyzer-{}/'.format(args.tag), '-o', archive, args.tag], check=True)
+        for name in ('REPRODUCE.md', 'environment.yml', 'CITATION.cff', 'README.md'):
+            out = subprocess.run(['git', '-C', args.repo, 'show', '{}:{}'.format(args.tag, name)], check=True,
+                                 capture_output=True).stdout
+            open(os.path.join(software, name), 'wb').write(out)
+        items = [(os.path.join(software, f), f) for f in sorted(os.listdir(software)) if f != 'MANIFEST.tsv']
+        rows = write_manifest(items, software, args.threads)
+        summary['01_software'] = {'files': len(rows), 'bytes': sum(n for _, n, _ in rows)}
+        record_items['01_software'] = items
+        built.append('01_software')
     for name, record in RECORDS.items():
+        if not wanted(name):
+            continue
+        built.append(name)
         directory = os.path.join(records_dir, name)
         os.makedirs(directory, exist_ok=True)
         items = collect(record)
@@ -187,7 +200,7 @@ def main():
         record_items[name] = items
         print('{}: {} files, {:.2f} GB'.format(name, len(rows), summary[name]['bytes'] / 1e9), flush=True)
     if not args.no_tar:
-        for name in summary:
+        for name in built:
             target = os.path.join(upload, name + '.tar.gz')
             write_tar(record_items[name], name, os.path.join(records_dir, name), target, args.threads)
             readme_path = os.path.join(records_dir, name, 'README.md')
