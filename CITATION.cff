@@ -1,10 +1,10 @@
 cff-version: 1.2.0
 message: "If you use this software, please cite it as below."
 title: "Epigenetic Graph Analyzer (EGA)"
-abstract: "Graph analysis of promoter capture Hi-C with chromatin and expression data, validated with multi-way contact data."
+abstract: "Graph-based analysis of promoter capture Hi-C with chromatin states and gene expression: indirect contacts and promoter hubs evaluated against multi-way chromatin data, and gene-centred reports that offer candidate explanations of expression changes at the promoter, its direct contacts and its graph neighbours."
 type: software
 version: 1.0.0
-date-released: 2026-10-19
+date-released: 2026-10-22
 license: MIT
 repository-code: "https://github.com/joachimwolff/Epigenetic-Graph-Analyzer"
 authors:
