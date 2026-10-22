@@ -2,8 +2,8 @@
 
 (a) A promoter and three enhancers assemble in one nucleus; proximity ligation joins two fragments per molecule, and
 the capture step keeps only molecules with the baited promoter, so the assembly is read out as three pairs with
-exactly two interacting sides each. (b) Transitivity: two measured contacts through a shared fragment imply
-proximity of the two unmeasured ends. (c) The pairwise interactions drawn as arcs along the genome become a graph of the measured
+exactly two interacting sides each. (b) Indirect contact: two measured contacts through a shared fragment connect
+the two ends, which were never measured as a pair. (c) The pairwise interactions drawn as arcs along the genome become a graph of the measured
 interactions; in the same graph with the measured interactions in grey, all pairs at two steps (indirect contacts)
 and the communities are shown.
 
@@ -97,7 +97,7 @@ def panel_ligation(ax):
     panel_label(ax, 'a', 'Proximity ligation records pairs')
 
 
-def panel_transitivity(ax):
+def panel_indirect(ax):
     p, e1, e2 = np.array([1.0, 2.15]), np.array([0.3, 1.0]), np.array([1.7, 1.0])
     ax.plot(*zip(p, e1), color=BLUE, lw=1.8, zorder=2)
     ax.plot(*zip(p, e2), color=BLUE, lw=1.8, zorder=2)
@@ -109,13 +109,13 @@ def panel_transitivity(ax):
     ax.text(e2[0], e2[1] - 0.3, 'w', ha='center', fontsize=7, color=INK)
     ax.text(0.38, 1.72, 'measured', rotation=58, ha='center', va='center', fontsize=6.5, color=BLUE)
     ax.text(1.62, 1.72, 'measured', rotation=-58, ha='center', va='center', fontsize=6.5, color=BLUE)
-    ax.text(1.0, 0.82, 'inferred', ha='center', fontsize=6.5, color=ORANGE)
-    ax.text(1.0, 0.2, 'u ~ v and v ~ w\n$\\Rightarrow$ u near w', ha='center', fontsize=7, color=INK)
+    ax.text(1.0, 0.82, 'indirect', ha='center', fontsize=6.5, color=ORANGE)
+    ax.text(1.0, 0.2, 'u - v and v - w measured\n$\\Rightarrow$ u - w indirect contact', ha='center', fontsize=6.5, color=INK)
     ax.set_xlim(-0.1, 2.1)
     ax.set_ylim(-0.3, 2.75)
     ax.set_aspect('equal')
     ax.axis('off')
-    panel_label(ax, 'b', 'Transitivity')
+    panel_label(ax, 'b', 'Indirect contact')
 
 
 EDGES = [('P1', 'E1'), ('P1', 'E2'), ('P1', 'E3'), ('P2', 'E2'), ('P2', 'E3'), ('P2', 'E4'), ('P3', 'E4'),
@@ -216,7 +216,7 @@ def save(fig, path):
 def main():
     prefix = sys.argv[1]
     plt.rcParams.update({'font.size': 8})
-    for letter, panel, size in (('a', panel_ligation, (4.6, 2.75)), ('b', panel_transitivity, (1.95, 2.75))):
+    for letter, panel, size in (('a', panel_ligation, (4.6, 2.75)), ('b', panel_indirect, (1.95, 2.75))):
         fig, ax = plt.subplots(figsize=size)
         panel(ax)
         save(fig, '{}{}.pdf'.format(prefix, letter))

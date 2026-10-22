@@ -432,7 +432,7 @@ def plot_graph_multiway(sub, colors, data, output, min_loci=3, max_overlap=0.5, 
     fig.savefig('{}_sizes.pdf'.format(stem), bbox_inches='tight')
     plt.close(fig)
     # the largest example with its graph neighbourhood: interactions with at least one fragment of the group and the
-    # nodes they reach, which by transitivity are expected close to the group
+    # nodes they reach, which are indirect contacts of the group
     if examples:
         members = max(examples, key=len)
         inside = {n for n, b in node_bin.items() if b in members}
