@@ -23,7 +23,7 @@ driver that calls the script and the output file. Paths of outputs are relative 
 | pyGenomeTracks | 3.9 | `envs/hicdiff.yml` | `06_loci.sh` (`PGT`) |
 | UCSC bedGraphToBigWig, liftOver | 482 | `envs/ucsc_kent.yml` | `07_aml_assi.sh`, `08_aml_kasumi1.sh` |
 | salmon | 2.8.0 | `envs/salmon.yml` | `kasumi_rna.sh` |
-| PyDESeq2 | 0.5.4 | `environment.yml` | `hesc_deseq2.py`, `kessler_deseq2.py`, `kasumi_deseq2.py`, `rubin_deseq2.py` |
+| PyDESeq2 | 0.5.4 | `environment.yml` | `hesc_deseq2.py`, `kessler_deseq2.py`, `kasumi_deseq2.py` |
 | MOODS-python | 1.9.4.1 | `environment.yml` | `egaTriggers` (`20_triggers.sh`) |
 | chromosight / mustache-hic | 1.6.3 / 1.3.3 | `envs/loopcallers.yml` | `12_loopcaller_benchmark.sh` |
 | Chicdiff (R) | 0.6, installed from source | `envs/chicdiff.yml` | `kasumi_chicdiff.sh` |
@@ -108,7 +108,7 @@ analysis/33_runtime.sh <data> <results> <kasumi1 dir> <results>/revision_bioinf/
 | Table S10 (report levels) | `egaDifferential --stepFeature decomposed`, `egaExplain` | `31_step_decomposition.sh`, `32_step_decomposition_aml.sh` | `revision_bioinf/decomposed/*_explanation_levels.tsv`, `*_explanation_cascade.tsv` |
 | Table S11 (robustness to threshold and depth) | `differential_robustness.py`, `support_summary.py`, `subthreshold_contacts.py`; `supplement_tables.py` | `14_differential_robustness.sh`, `29_threshold_support.sh`, `13_candidate_robustness.sh`; step `tables` | `robustness_differential/*_{variants,status_transfer}.tsv`, `flags_demo/support_summary.tsv`, `robustness_candidates/*.json` |
 | Table S12 (boundaries crossed) | `egaTadCrossing`, `tad_crossing_summary.py`, `table_tad_crossing.py` | `28_tad_crossing.sh`; step `tables` | `tad_crossing/tables/table_s36.tex` |
-| Table S13 (further modules) | none, written by hand; numbers from `18`, `19`, `20`, `22`, `24`, `26`, `27` and step `virtual_capture` | | |
+| Table S13 (further modules) | none, written by hand; numbers from `18`, `19`, `20`, `24`, `26`, `27` and step `virtual_capture` | | |
 | Table S14 (features of related methods) | none, written by hand (literature) | | |
 | Table S15 (sensitivity at two steps) | `hop_distance.py`, `rewired_null.py`, `graph_comparability.py`, `path_ensemble.py`, `ascertainment.py`, `dependence.py`, `balance.py`, `gam_windows.py`, `liftover_report.py` | `30_revision_graph.sh` (B1, B6, B7, B9 to B13) | `revision_bioinf/B*/`, summary `revision_bioinf/SUMMARY_graph.md` |
 

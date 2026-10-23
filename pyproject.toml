@@ -59,7 +59,6 @@ egaSwitching = "epigeneticgraphanalyzer.switching:main"
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
 egaTriggers = "epigeneticgraphanalyzer.egaTriggers:main"
 egaCompartments = "epigeneticgraphanalyzer.egaCompartments:main"
-egaTimecourse = "epigeneticgraphanalyzer.egaTimecourse:main"
 egaBoundaries = "epigeneticgraphanalyzer.egaBoundaries:main"
 egaTadCrossing = "epigeneticgraphanalyzer.egaTadCrossing:main"
 

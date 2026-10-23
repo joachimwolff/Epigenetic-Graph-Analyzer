@@ -58,7 +58,6 @@ Experimental modules (their evaluation gave weak or null results; the output is 
 | `egaTriggers` | Motif enrichment at changing nodes |
 | `egaCompartments` | A/B compartments from chromatin tracks or capture data |
 | `egaBoundaries` | Rule-based domain boundaries from capture contacts and CTCF |
-| `egaTimecourse` | Order of changes in time courses |
 
 Every tool prints its options with `--help`.
 

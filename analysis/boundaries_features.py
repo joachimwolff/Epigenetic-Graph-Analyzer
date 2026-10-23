@@ -4,14 +4,13 @@ Data sets (graph, CTCF and cohesin ChIP, genome):
   GM12878  GM_chicago graph (hg19, nodes lifted to GRCh38 by midpoint), ENCODE CTCF + RAD21 (GRCh38)
   K562     K562 graph (GRCh38), ENCODE CTCF + RAD21
   H1       H1_jung graph (hg19, lifted), ENCODE CTCF + RAD21
-  rubin_D0/D3/D6  keratinocyte day graphs (hg19), CTCF (one sample per day) and SMC1A (two donors, averaged), hg19
 CTCF sites: summits of the CTCF signal (100 bp windows, smoothed over 300 bp, local maximum within +-500 bp,
 >= 10 x the genome-wide mean and >= 4 x the mean over +-10 kb), cohesin enrichment = maximum of the cohesin signal
 within +-200 bp of the summit over its genome-wide mean (cohesin-bound: >= 3 and >= 2 x its mean over +-10 kb),
 CTCF motif = JASPAR 2024 MA0139.2, best hit within +-150 bp on either strand at P < 1e-4 (exact score distribution,
 uniform background). Convergent cohesin-CTCF loops among the graph edges (end = node interval +- 1 kb).
 Per resolution (10, 25, 50 kb): capture insulation (mirror and global null) and the Hi-C insulation track of the same
-cell / day (boundaries_hic.py) as reference.
+cell (boundaries_hic.py) as reference.
 
 Usage: python boundaries_features.py <raw dir> <results dir> [threads]
 Output: <results>/boundaries/cache/sites_<set>.tsv.gz, tables/sites_qc.tsv, tables/loop_orientation.tsv,
@@ -39,8 +38,6 @@ HG38_FASTA = os.path.expanduser('~/data/hic-multiome/genome/hg38.fa')
 
 
 def datasets(raw, results):
-    rubin = os.path.join(raw, 'rubin2017_keratinocyte', 'GSE84657_RAW')
-    tc = os.path.join(results, 'timecourse_rubin2017', 'graphs')
     sets = []
     for cell, graph, asm in (('GM12878', 'GM_chicago', 'hg19'), ('K562', 'K562', 'hg38'), ('H1', 'H1', 'hg19')):
         sets.append({'name': cell, 'assembly': 'hg38', 'graph_assembly': asm,
@@ -49,15 +46,6 @@ def datasets(raw, results):
                      'ctcf': [os.path.join(ENC[cell], 'CTCF.bigwig')],
                      'cohesin': [os.path.join(ENC[cell], 'RAD21.bigwig')],
                      'hic': 'hic_insulation_{}'.format(cell)})
-    gsm = {0: ('47', '50', '53'), 3: ('48', '51', '54'), 6: ('49', '52', '55')}
-    for day, (c, s1, s2) in gsm.items():
-        sets.append({'name': 'rubin_D{}'.format(day), 'assembly': 'hg19', 'graph_assembly': 'hg19',
-                     'nodes': os.path.join(tc, 'D{}_nodes.tsv'.format(day)),
-                     'edges': os.path.join(tc, 'D{}_edges.tsv'.format(day)),
-                     'ctcf': [os.path.join(rubin, 'GSM22472{}_CTCF_ChIPseq_Day{}.bigWig'.format(c, day))],
-                     'cohesin': [os.path.join(rubin, 'GSM22472{}_SMC1A_ChIPseq_Donor1_Day{}.bigWig'.format(s1, day)),
-                                 os.path.join(rubin, 'GSM22472{}_SMC1A_ChIPseq_Donor2_Day{}.bigWig'.format(s2, day))],
-                     'hic': 'hic_insulation_rubin_D{}'.format(day)})
     return sets
 
 

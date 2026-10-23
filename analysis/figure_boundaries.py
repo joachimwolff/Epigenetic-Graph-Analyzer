@@ -9,7 +9,7 @@ CTCF sites with motif orientation, calls of the rules and Hi-C boundaries), prec
 (every rule and cell type against the Hi-C insulation boundaries), auprc_<res>kb.pdf (rules with a score),
 delta_dip.pdf (change of precision and recall when the dip is added to CTCF, bootstrap intervals), coverage.pdf,
 profile_capture.pdf and profile_orientation.pdf (capture insulation and forward / reverse cohesin-bound CTCF sites
-around Hi-C boundaries, 25 kb), loop_orientation.pdf, timecourse_insulation_change.pdf, timecourse_changes.pdf.
+around Hi-C boundaries, 25 kb), loop_orientation.pdf.
 """
 
 import glob
@@ -22,7 +22,6 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 import pandas as pd  # noqa: E402
-from scipy.stats import spearmanr  # noqa: E402
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from epigeneticgraphanalyzer import boundaries as bd  # noqa: E402
@@ -272,33 +271,6 @@ def loop_plot(lo, out):
     save(fig, out, 'loop_orientation.pdf')
 
 
-def timecourse_plot(base, out):
-    t = pd.read_csv(os.path.join(base, 'cache', 'timecourse_bins_50kb.tsv.gz'), sep='\t')
-    dh = t.hic_insulation_D6 - t.hic_insulation_D0
-    dc = t.capture_insulation_D6 - t.capture_insulation_D0
-    ok = np.isfinite(dh) & np.isfinite(dc)
-    fig, ax = plt.subplots(figsize=(2.6, 2.4))
-    ax.hexbin(dh[ok], dc[ok], gridsize=40, cmap='Greys', mincnt=1, bins='log', extent=(-1.5, 1.5, -2, 2))
-    ax.set_xlabel('Hi-C insulation change\nday 6 - day 0 (log2)')
-    ax.set_ylabel('capture insulation change\nday 6 - day 0 (log2)')
-    rho = spearmanr(dh[ok], dc[ok])[0]
-    ax.text(0.03, 0.97, 'Spearman {:.2f}, n = {}'.format(rho, int(ok.sum())), transform=ax.transAxes, va='top',
-            fontsize=7)
-    save(fig, out, 'timecourse_insulation_change.pdf')
-    ch = pd.read_csv(os.path.join(base, 'tables', 'timecourse_changes.tsv'), sep='\t')
-    fig, ax = plt.subplots(figsize=(3.6, 3.6))
-    labels = []
-    for i, r in ch.iterrows():
-        ax.barh(i, r.fraction_hic_changes_matched, color=RULE_COLOUR.get(r.rule, GREY), height=0.7)
-        ax.plot([r.expected_shifted], [i], '|', color=DARK, ms=7)
-        labels.append('{} {} {}'.format(r.pair.replace('_', '-'), r.change, RULE_LABEL.get(r.rule, r.rule)))
-    ax.set_yticks(range(len(ch)))
-    ax.set_yticklabels(labels, fontsize=5)
-    ax.invert_yaxis()
-    ax.set_xlabel('fraction of Hi-C boundary changes matched\nby changes of the rule calls (| = shifted)')
-    save(fig, out, 'timecourse_changes.pdf')
-
-
 def main():
     mode, results = sys.argv[1], sys.argv[2]
     base = os.path.join(results, 'boundaries')
@@ -320,8 +292,6 @@ def main():
     coverage_plot(pd.read_csv(os.path.join(base, 'tables', 'coverage.tsv'), sep='\t'), out)
     profiles(base, out)
     loop_plot(pd.read_csv(os.path.join(base, 'tables', 'loop_orientation.tsv'), sep='\t'), out)
-    if os.path.exists(os.path.join(base, 'cache', 'timecourse_bins_50kb.tsv.gz')):
-        timecourse_plot(base, out)
 
 
 if __name__ == '__main__':
