@@ -152,7 +152,6 @@ step_competitors() { support competitors; }
 step_15_block_bootstrap() { bash "$here/15_block_bootstrap.sh" "$results" 1000; }
 step_17_minoux_fold() { bash "$here/17_minoux_fold.sh" "$data" "$results"; }
 step_16_hops_n() { bash "$here/16_hops_n.sh" "$data" "$results" "$kasumi" "$assi" "$permutations" "$threads"; }
-step_18_switching() { bash "$here/18_enhancer_switching.sh" "$results" 10000 4; }
 step_19_eqtl() { bash "$here/19_eqtl.sh" 8 "$data" "$results"; }
 step_21_blind_roles() { bash "$here/21_blind_roles.sh" "$data" "$results" "$permutations" "$threads"; }
 step_23_hic_reference() { bash "$here/23_hic_reference.sh" "$mcool" "$data" "$results" 8; }
@@ -171,12 +170,11 @@ step_tables() {
     local out="$results/tables" t
     mkdir -p "$out"
     python "$here/supplement_tables.py" "$results" "$out" > "$out/supplement_tables.log" 2>&1
-    python "$here/table_switching.py" "$results/enhancer_switching" "$results/enhancer_switching"
     python "$here/table_eqtl.py" "$results/eqtl_validation" "$results/eqtl_validation/tables"
     python "$here/table_sv.py" "$results" "$results/sv/tables"
     python "$here/table_boundaries.py" "$results/boundaries" "$results/boundaries/tables"
     python "$here/table_tad_crossing.py" "$results/tad_crossing" "$results/tad_crossing/tables"
-    for t in "$results"/enhancer_switching/table_s*.tex "$results"/{eqtl_validation,sv,boundaries,tad_crossing}/tables/table_s*.tex; do
+    for t in "$results"/{eqtl_validation,sv,boundaries,tad_crossing}/tables/table_s*.tex; do
         [[ -e "$t" ]] && cp "$t" "$out/"
     done
     ls "$out"
@@ -187,7 +185,7 @@ step_reports() { support reports; }
 steps=(reuse 01_h1_chicago 02_graphs k562_graph 03_validate virtual_capture kasumi_rna 04_differential 05_kessler
        07_aml_assi 08_aml_kasumi1 06_loci 09_porec hubs 10_differential_figures 11_reviewer_controls 12_loopcallers
        13_candidate_robustness 14_differential_robustness explain competitors 15_block_bootstrap 17_minoux_fold
-       16_hops_n 18_switching 19_eqtl 21_blind_roles 23_hic_reference
+       16_hops_n 19_eqtl 21_blind_roles 23_hic_reference
        24_compartments_domains 26_structural_variants 27_boundaries 28_tad_crossing 29_threshold_support
        community_robustness
        crispr_benchmark kasumi_sv_cnv sprite_resolution tables figures reports)

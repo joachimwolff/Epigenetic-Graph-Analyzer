@@ -443,8 +443,7 @@
     }
     state.view = p.view || 'overview';
     if (state.view === 'gene' && state.gene) { renderGene(false); markTab(); return; }
-    var views = { overview: renderOverview, genes: renderGenes, communities: renderCommunities,
-                  switching: renderSwitching };
+    var views = { overview: renderOverview, genes: renderGenes, communities: renderCommunities };
     (views[state.view] || renderOverview)();
     markTab();
   }
@@ -692,7 +691,6 @@
       '<li>A gene page holds the text of the gene report (egaReport): at a glance, the explanation ladder, the evidence by level, chromatin states, element classes, hub and community.</li>' +
       '<li>The arc view and the neighbourhood graph are drawn from the embedded graph for 1 to 3 steps. Hover a node or an interaction for its details; click a node to see what it explains.</li>' +
       '<li>The browse views list the differential genes, the communities and their transitions' +
-      (D.switching ? ' and the enhancer switching events' : '') +
       '; their columns sort on click and gene names open the gene.</li>'));
     section(v, 'Comparison');
     v.appendChild(el('p', null, 'Condition A: ' + esc(M.labels[0]) + (M.labels[0] !== M.names[0] ? ' (' + esc(M.names[0]) + ')' : '') +
@@ -779,7 +777,6 @@
       if (info.hub) page.appendChild(el('div', null, info.hub.h));
       if (info.community) page.appendChild(el('div', null, info.community.h));
     }
-    geneSwitching(page, gene);
     linkGenes(page);
     drawFigures();
   }
@@ -1214,23 +1211,8 @@
     if (!quiet && ctx.panel && window.innerWidth <= 860) ctx.panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  // switching events of the gene ------------------------------------------------------------------------------------
+  // column positions of an embedded table ----------------------------------------------------------------------------
   function columnIndex(table) { var out = {}; table.cols.forEach(function (c, k) { out[c] = k; }); return out; }
-
-  function geneSwitching(page, gene) {
-    if (!D.switching) return;
-    var c = columnIndex(D.switching);
-    var rows = D.switching.rows.filter(function (r) {
-      return [r[c.genes_lost], r[c.genes_gained]].some(function (t) { return String(t || '').split(',').indexOf(gene) >= 0; });
-    });
-    if (!rows.length) return;
-    section(page, 'Enhancer switching', 'switching');
-    page.appendChild(el('p', { class: 'note' }, 'Elements that lose their contact with one promoter and gain one with another between ' + esc(D.meta.names[0]) + ' and ' +
-      esc(D.meta.names[1]) + ', where <x-g>' + esc(gene) + '</x-g> is one of the two promoters.'));
-    var host = el('div');
-    page.appendChild(host);
-    makeTable(host, { rows: rows, columns: switchColumns(c), sort: 'rank', page: 20, noun: ['event', 'events'] });
-  }
 
   // ------------------------------------------------------------------------------------------------------------------
   // browse: differential genes
@@ -1398,71 +1380,6 @@
       '<p><strong>Joined in ' + esc(M.names[1]) + ' (' + joined.n + '):</strong> ' + (joined.text || 'none') + '</p></div>';
     host.innerHTML = html;
     linkGenes(host);
-  }
-
-  // ------------------------------------------------------------------------------------------------------------------
-  // browse: enhancer switching
-
-  function switchColumns(c) {
-    var M = D.meta;
-    function promoter(kind) {
-      return function (r) {
-        var genes = String(r[c['genes_' + kind]] || '').split(',').filter(Boolean);
-        return genes.slice(0, 3).map(geneTag).join(', ') + (genes.length > 3 ? ', ...' : '') +
-          (isnum(r[c['rna_log2FC_' + kind]]) ? ' <span class="note">' + log2txt(r[c['rna_log2FC_' + kind]]) + '</span>' : '');
-      };
-    }
-    var cols = [
-      { id: 'rank', label: 'Rank', num: true, value: function (r) { return r[c.rank]; } },
-      { id: 'element', label: 'Element', value: function (r) { return r[c.element]; }, render: function (r) {
-        var i = r[c.element];
-        var type = esc(r[c.element_type] || '');
-        var genes = String(r[c.element_genes] || '').split(',').filter(Boolean);
-        return type + (genes.length ? ' (' + genes.slice(0, 2).map(geneTag).join(', ') + ')' : '') + (i !== null && i !== undefined ? '<br><span class="note mono">' + esc(coord(i)) + '</span>' : '');
-      }, cls: 'long' }
-    ];
-    if (c.class_a !== undefined) cols.push({ id: 'class', label: 'Class ' + M.names[0] + ' → ' + M.names[1], value: function (r) { return r[c.class_a] + r[c.class_b]; },
-      render: function (r) { return r[c.class_a] === r[c.class_b] ? esc(r[c.class_a]) : esc(r[c.class_a]) + ' → ' + esc(r[c.class_b]); } });
-    cols = cols.concat([
-      { id: 'lost', label: 'Contact lost', value: function (r) { return r[c.genes_lost]; }, render: promoter('lost') },
-      { id: 'dlost', label: 'Distance', num: true, value: function (r) { return r[c.distance_lost]; }, render: function (r) { return isnum(r[c.distance_lost]) ? distance(r[c.distance_lost]) : ''; } },
-      { id: 'gained', label: 'Contact gained', value: function (r) { return r[c.genes_gained]; }, render: promoter('gained') },
-      { id: 'dgained', label: 'Distance', num: true, value: function (r) { return r[c.distance_gained]; }, render: function (r) { return isnum(r[c.distance_gained]) ? distance(r[c.distance_gained]) : ''; } },
-      { id: 'concordant', label: 'Concordant', value: function (r) { return -r[c.concordant]; }, render: function (r) { return r[c.concordant] ? '<span class="yes">yes</span>' : 'no'; },
-        title: 'the gene that gains the contact goes up and the gene that loses it goes down' },
-      { id: 'evidence', label: 'Evidence', num: true, value: function (r) { return r[c.evidence]; }, render: function (r) { return sig(r[c.evidence], 3); } }
-    ]);
-    return cols;
-  }
-
-  function renderSwitching() {
-    var v = view(), S = D.switching, M = D.meta;
-    v.appendChild(el('h2', { text: 'Enhancer switching' }));
-    if (!S) { v.appendChild(el('p', { class: 'note', text: 'No enhancer switching events for this comparison (egaSwitching output not found).' })); return; }
-    var c = columnIndex(S);
-    v.appendChild(el('p', { class: 'note' }, 'Elements that lose their contact with one promoter and gain a contact with another promoter between ' + esc(M.names[0]) + ' and ' + esc(M.names[1]) +
-      ', from ' + esc(S.file) + (S.rows.length < S.total ? ' (the ' + int(S.rows.length) + ' best ranked of ' + int(S.total) + ' events)' : ' (' + int(S.total) + ' events)') +
-      '. Concordant: the promoter that gains the contact goes up and the one that loses it goes down. Gene names open the gene.'));
-    var f = { text: '', concordant: false, type: '', changed: false };
-    var controls = controlsRow(v);
-    textControl(controls, 'Filter', 'gene name', function (x) { f.text = x; apply(); });
-    var types = {};
-    S.rows.forEach(function (r) { types[r[c.element_type]] = 1; });
-    selectControl(controls, 'Element type', [['', 'any']].concat(Object.keys(types).sort().map(function (t) { return [t, t]; })), '', function (x) { f.type = x; apply(); });
-    checkControl(controls, 'concordant only', function (x) { f.concordant = x; apply(); });
-    if (c.element_class_changed !== undefined) checkControl(controls, 'element class changes', function (x) { f.changed = x; apply(); });
-    var host = el('div');
-    v.appendChild(host);
-    var table = makeTable(host, { rows: S.rows, columns: switchColumns(c), sort: 'rank', page: 100, noun: ['event', 'events'] });
-    function apply() {
-      table.filter(function (r) {
-        if (f.concordant && !r[c.concordant]) return false;
-        if (f.type && r[c.element_type] !== f.type) return false;
-        if (f.changed && !r[c.element_class_changed]) return false;
-        if (f.text && (String(r[c.genes_lost]) + ',' + String(r[c.genes_gained]) + ',' + String(r[c.element_genes])).toLowerCase().indexOf(f.text) < 0) return false;
-        return true;
-      });
-    }
   }
 
   // redraw the figures at a new width

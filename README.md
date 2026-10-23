@@ -54,7 +54,6 @@ Experimental modules (their evaluation gave weak or null results; the output is 
 
 | Tool | Purpose |
 |---|---|
-| `egaSwitching` | Enhancer switching between promoters |
 | `egaCompartments` | A/B compartments from chromatin tracks or capture data |
 | `egaBoundaries` | Rule-based domain boundaries from capture contacts and CTCF |
 

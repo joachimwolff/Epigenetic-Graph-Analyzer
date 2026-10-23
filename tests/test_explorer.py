@@ -65,8 +65,8 @@ def test_search_index_and_data(run, tmp_path):  # noqa: F811
 
 
 def test_differential_only(run, tmp_path):  # noqa: F811
-    _, text = build(run, tmp_path, '--differentialOnly', '--switching', 'none')
+    _, text = build(run, tmp_path, '--differentialOnly')
     index = explorer.search_index(text)
     assert all(g[1] for g in index['genes'])
     data = explorer.decode(text)
-    assert data['switching'] is None
+    assert 'switching' not in data and 'triggers' not in data

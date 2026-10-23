@@ -1,8 +1,7 @@
 """egaExplorer: one self-contained, offline HTML file per comparison to search and browse a differential run.
 
 The explorer reads the outputs of egaDifferential (<prefix>_*: gene classes, all-level explanations, elements,
-communities, mark roles, states, the union graph) and, when present, the enhancer switching events
-(<results>/enhancer_switching/<name>_switch_events.tsv). It writes one HTML file with inline CSS and JavaScript and the data
+communities, mark roles, states, the union graph). It writes one HTML file with inline CSS and JavaScript and the data
 embedded as gzip-compressed JSON (base64), decompressed in the browser; the page makes no network request.
 
 The text of every gene ('At a glance', evidence by level, chromatin states, element classes, hub and community) is
@@ -10,7 +9,7 @@ written by the generators of egaReport, so that the explorer and the reports rea
 neighbourhood graph, explanation ladder) are drawn in the browser as SVG from the embedded graph.
 
 A gene opens directly with the URL hash '#gene=NAME' (optionally '&k=2' for the steps of the neighbourhood);
-'#view=genes', '#view=communities' and '#view=switching' open the browse views.
+'#view=genes' and '#view=communities' open the browse views.
 """
 
 import argparse
@@ -26,7 +25,6 @@ import sys
 import time
 
 import numpy as np
-import pandas as pd
 
 from ._cli import base_parser, setup_logging
 from .egaTadCrossing import add_tad_arguments
@@ -40,9 +38,6 @@ from .egaReport import (GeneStory, Places, Report, Run, esc, explaining_nodes, g
 log = logging.getLogger(__name__)
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templates', 'explorer')
-SWITCH_COLUMNS = ('rank', 'element', 'element_type', 'element_genes', 'element_class_changed', 'genes_lost',
-                  'rna_log2FC_lost', 'distance_lost', 'promoter_lost', 'genes_gained', 'rna_log2FC_gained',
-                  'distance_gained', 'promoter_gained', 'concordant', 'evidence')
 STATUS_CODE = {'shared': 0, 'gained': 1, 'lost': 2}
 # support class of an edge (egaDifferential attribute support): stable, threshold-sensitive, not testable
 SUPPORT_CODE = {'stable': 0, 'threshold-sensitive': 1, 'not testable': 2}
@@ -54,7 +49,7 @@ SUPPORT_CODE = {'stable': 0, 'threshold-sensitive': 1, 'not testable': 2}
 def parse_arguments(args=None):
     parser = base_parser('Self-contained offline HTML explorer of a differential run of egaDifferential: gene search '
                          'with the text of egaReport, interactive arc view and neighbourhood graph, and browse views '
-                         'of the differential genes, communities and enhancer switching events.')
+                         'of the differential genes and communities.')
     parser.add_argument('--prefix', '-p', required=True, help='Output prefix of egaDifferential')
     parser.add_argument('--explainPrefix', default=None,
                         help='Output prefix of egaExplain (default: <prefix dir>/explain/<prefix name> if present)')
@@ -63,11 +58,6 @@ def parse_arguments(args=None):
     parser.add_argument('--annotation', default=None,
                         help='Gene annotation (GTF, GTF.gz or BED with strand) for upstream / downstream')
     parser.add_argument('--rechip', default=None, help='Re-ChIP signal per bait (default as egaReport)')
-    parser.add_argument('--switching', default=None,
-                        help='Enhancer switching events (default: <results>/enhancer_switching/<name>_switch_events'
-                             '.tsv if present; "none" to leave out)')
-    parser.add_argument('--maxSwitchEvents', type=int, default=10000,
-                        help='Switching events embedded, by rank (the concordant ones first)')
     parser.add_argument('--differentialOnly', action='store_true',
                         help='Search index of the differential genes only (default: every baited gene of the graph)')
     parser.add_argument('--maxNodes', type=int, default=80,
@@ -150,14 +140,6 @@ class Capture:
             out['n'] = list(self.refs)
         self.parts, self.refs = [], []
         return out if out['h'] or self.refs else None
-
-
-def default_path(prefix, folder, suffix, explicit):
-    if explicit is not None:
-        return None if explicit.lower() == 'none' else explicit
-    results = os.path.dirname(os.path.dirname(os.path.abspath(prefix)))
-    path = os.path.join(results, folder, os.path.basename(prefix) + suffix)
-    return path if os.path.exists(path) else None
 
 
 # --------------------------------------------------------------------------------------------------------------------
@@ -406,37 +388,6 @@ class Builder:
                    'p', 'q', 'rewired']
         return {'cols': columns, 'rows': rows, 'members': members}
 
-    def switching(self, path):
-        if not path or not os.path.exists(path):
-            return None
-        table = pd.read_csv(path, sep='\t', low_memory=False)
-        total = len(table)
-        if 'rank' in table:
-            table = table.sort_values('rank')
-        table = table.head(self.args.maxSwitchEvents)
-        names = self.run.names
-        columns = [c for c in SWITCH_COLUMNS if c in table] + \
-            [c for c in ('element_class_{}'.format(names[0]), 'element_class_{}'.format(names[1])) if c in table]
-        rows = []
-        for r in table[columns].itertuples(index=False):
-            row = []
-            for c, v in zip(columns, r):
-                if c in ('element', 'promoter_lost', 'promoter_gained'):
-                    row.append(self.index.get(v))
-                elif isinstance(v, (bool, np.bool_)):
-                    row.append(1 if v else 0)
-                elif isinstance(v, (float, np.floating)):
-                    row.append(number(v, 3))
-                elif isinstance(v, (int, np.integer)):
-                    row.append(int(v))
-                else:
-                    row.append('' if isnan(v) else str(v))
-            rows.append(row)
-        log.info('switching: %d of %d events from %s', len(rows), total, path)
-        return {'cols': [c.replace('element_class_' + names[0], 'class_a').replace('element_class_' + names[1],
-                                                                                   'class_b') for c in columns],
-                'rows': rows, 'total': total, 'file': os.path.basename(path)}
-
     def tads(self):
         """Boundaries counted as crossed (--tads), per chromosome: [position, strength rank, strong (top decile)]."""
         analysis = self.run.tad_analysis
@@ -535,9 +486,7 @@ def build(args):
         log.info('strand of %d of %d genes from %s', len(places.strands), len(index), args.annotation)
     genes = builder.genes()
     data = {'graph': builder.graph_data(), 'genes': genes, 'table': builder.gene_table(),
-            'communities': builder.communities(),
-            'switching': builder.switching(default_path(args.prefix, 'enhancer_switching', '_switch_events.tsv',
-                                                        args.switching))}
+            'communities': builder.communities()}
     tads = builder.tads()
     if tads is not None:
         data['tads'] = tads
