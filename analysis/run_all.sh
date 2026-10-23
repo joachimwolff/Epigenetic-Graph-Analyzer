@@ -159,7 +159,6 @@ step_21_blind_roles() { bash "$here/21_blind_roles.sh" "$data" "$results" "$perm
 step_22_timecourse() { bash "$here/22_timecourse.sh" "$data" "$results" 12 "$permutations"; }
 step_23_hic_reference() { bash "$here/23_hic_reference.sh" "$mcool" "$data" "$results" 8; }
 step_24_compartments_domains() { bash "$here/24_compartments_domains.sh" 1000; }
-step_25_design() { bash "$here/25_design.sh" "$data" "$results" "$kasumi" "$assi" "$results/hops_n" 8; }
 step_26_structural_variants() { bash "$here/26_structural_variants.sh" "$data" "$results" "$kasumi" "$assi" 12 "$SAMTOOLS"; }
 step_27_boundaries() { bash "$here/27_boundaries.sh" "$mcool" "$data" "$results" 12 500; }
 step_28_tad_crossing() { bash "$here/28_tad_crossing.sh" "$data" "$results" 12; }
@@ -178,11 +177,10 @@ step_tables() {
     python "$here/table_eqtl.py" "$results/eqtl_validation" "$results/eqtl_validation/tables"
     python "$here/table_triggers.py" "$results/triggers" "$results/triggers/tables"
     python "$here/table_timecourse.py" "$results/timecourse_rubin2017" "$results/timecourse_rubin2017/tables"
-    python "$here/table_design.py" "$results/design" "$results/design/tables"
     python "$here/table_sv.py" "$results" "$results/sv/tables"
     python "$here/table_boundaries.py" "$results/boundaries" "$results/boundaries/tables"
     python "$here/table_tad_crossing.py" "$results/tad_crossing" "$results/tad_crossing/tables"
-    for t in "$results"/enhancer_switching/table_s*.tex "$results"/{eqtl_validation,triggers,timecourse_rubin2017,design,sv,boundaries,tad_crossing}/tables/table_s*.tex; do
+    for t in "$results"/enhancer_switching/table_s*.tex "$results"/{eqtl_validation,triggers,timecourse_rubin2017,sv,boundaries,tad_crossing}/tables/table_s*.tex; do
         [[ -e "$t" ]] && cp "$t" "$out/"
     done
     ls "$out"
@@ -194,7 +192,7 @@ steps=(reuse 01_h1_chicago 02_graphs k562_graph 03_validate virtual_capture kasu
        07_aml_assi 08_aml_kasumi1 06_loci 09_porec hubs 10_differential_figures 11_reviewer_controls 12_loopcallers
        13_candidate_robustness 14_differential_robustness explain competitors 15_block_bootstrap 17_minoux_fold
        16_hops_n 18_switching 19_eqtl 20_triggers 21_blind_roles 22_timecourse 23_hic_reference
-       24_compartments_domains 25_design 26_structural_variants 27_boundaries 28_tad_crossing 29_threshold_support
+       24_compartments_domains 26_structural_variants 27_boundaries 28_tad_crossing 29_threshold_support
        community_robustness
        crispr_benchmark kasumi_sv_cnv sprite_resolution tables figures reports)
 

@@ -2,7 +2,7 @@
 # Analyses whose outputs are read by later drivers, the supplementary tables and the figures, but that have no
 # numbered driver of their own. One step per call (run_all.sh calls them in dependency order):
 #   k562_graph            K562 DMSO and PON graphs (GSE250135, GRCh38; washU 'other end' column split into
-#                         chrom,start,end), egaCreateGraph defaults, <results>/k562/          (09, 19, 25, S1)
+#                         chrom,start,end), egaCreateGraph defaults, <results>/k562/          (09, 19, S1)
 #   virtual_capture       graphs of the virtual capture calls (CHiCAGO on promoter bins of Hi-C / Micro-C, 5 kb, in
 #                         <virtual capture dir>) and their agreement with the capture calls,
 #                         <results>/virtual_capture/                                          (11, 19, S1, S9, S20)
