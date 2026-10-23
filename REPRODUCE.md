@@ -12,9 +12,9 @@ driver that calls the script and the output file. Paths of outputs are relative 
 
 | Tool | Version | Environment | Used by |
 |---|---|---|---|
-| HiCUP | 0.9.2 | `envs/capchic.yml` | `01_h1_chicago.sh`, `kasumi_map_runs.sh`, `26_structural_variants.sh` |
+| HiCUP | 0.9.2 | `envs/capchic.yml` | `01_h1_chicago.sh`, `kasumi_map_runs.sh` |
 | bowtie2 | 2.5.5 | `envs/capchic.yml` | HiCUP |
-| samtools | 1.24 | `envs/capchic.yml` | HiCUP, `capture_sv_*.py` (`SAMTOOLS`) |
+| samtools | 1.24 | `envs/capchic.yml` | HiCUP, `01_h1_chicago.sh` |
 | R / CHiCAGO | 4.5.3 / 1.38.0 | `envs/capchic.yml` | `run_chicago.R` (H1-hESC calls) |
 | chicagoTools `bam2chicago.sh` | not versioned (CHiCAGO repository) | | `01_h1_chicago.sh`, `kasumi_call_chicago.sh` |
 | HiCExplorer CHiCAGO tools (C++) | 4.0.0, local build of the HiCExplorer 4 C++ branch | not packaged | `kasumi_call_chicago.sh` (Kasumi-1 calls) |
@@ -32,7 +32,7 @@ driver that calls the script and the output file. Paths of outputs are relative 
 ## Complete run
 
 Downloads: `scripts/download_data.sh <data_dir>`; Kasumi-1 and Assi et al. 2019 raw data are mapped with
-`analysis/kasumi_map_runs.sh`, `kasumi_call_chicago.sh`, `kasumi_rna.sh` and the HiCUP runs of `26_structural_variants.sh`.
+`analysis/kasumi_map_runs.sh`, `kasumi_call_chicago.sh` and `kasumi_rna.sh`.
 The results of the manuscript were produced by
 
 ```bash
@@ -107,7 +107,7 @@ analysis/33_runtime.sh <data> <results> <kasumi1 dir> <results>/revision_bioinf/
 | Table S10 (report levels) | `egaDifferential --stepFeature decomposed`, `egaExplain` | `31_step_decomposition.sh`, `32_step_decomposition_aml.sh` | `revision_bioinf/decomposed/*_explanation_levels.tsv`, `*_explanation_cascade.tsv` |
 | Table S11 (robustness to threshold and depth) | `differential_robustness.py`, `support_summary.py`, `subthreshold_contacts.py`; `supplement_tables.py` | `14_differential_robustness.sh`, `29_threshold_support.sh`, `13_candidate_robustness.sh`; step `tables` | `robustness_differential/*_{variants,status_transfer}.tsv`, `flags_demo/support_summary.tsv`, `robustness_candidates/*.json` |
 | Table S12 (boundaries crossed) | `egaTadCrossing`, `tad_crossing_summary.py`, `table_tad_crossing.py` | `28_tad_crossing.sh`; step `tables` | `tad_crossing/tables/table_s36.tex` |
-| Table S13 (further modules) | none, written by hand; numbers from `19`, `24`, `26`, `27` and step `virtual_capture` | | |
+| Table S13 (further modules) | none, written by hand; numbers from `19`, `24`, `27` and step `virtual_capture` | | |
 | Table S14 (features of related methods) | none, written by hand (literature) | | |
 | Table S15 (sensitivity at two steps) | `hop_distance.py`, `rewired_null.py`, `graph_comparability.py`, `path_ensemble.py`, `ascertainment.py`, `dependence.py`, `balance.py`, `gam_windows.py`, `liftover_report.py` | `30_revision_graph.sh` (B1, B6, B7, B9 to B13) | `revision_bioinf/B*/`, summary `revision_bioinf/SUMMARY_graph.md` |
 

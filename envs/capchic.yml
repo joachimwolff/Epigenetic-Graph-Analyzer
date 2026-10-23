@@ -1,5 +1,5 @@
-# HiCUP mapping, bam2chicago and CHiCAGO (01_h1_chicago.sh, kasumi_map_runs.sh, kasumi_call_chicago.sh,
-# 26_structural_variants.sh) and samtools (run_all.sh SAMTOOLS). bam2chicago.sh comes from chicagoTools
+# HiCUP mapping, bam2chicago and CHiCAGO (01_h1_chicago.sh, kasumi_map_runs.sh, kasumi_call_chicago.sh) and
+# samtools (01_h1_chicago.sh). bam2chicago.sh comes from chicagoTools
 # (bitbucket.org/chicagoTeam/chicago). The Kasumi-1 scoring (kasumi_call_chicago.sh) uses the CHiCAGO tools of the
 # HiCExplorer 4.0.0 C++ build (chicChicagoBackgroundModel, chicChicagoScores, chicChicagoSignificantInteractions),
 # which is not part of this environment.

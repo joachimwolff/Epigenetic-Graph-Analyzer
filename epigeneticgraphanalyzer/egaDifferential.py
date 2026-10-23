@@ -205,30 +205,33 @@ def parse_arguments(args=None):
                         help='Roles learned per chromatin class of the nodes: classes with at least this many genes '
                              'at a level')
     parser.add_argument('--structuralVariants', nargs='+',
-                        help='Breakpoints of structural variants: BEDPE with the conditions in which every join is '
-                             'present (column conditions, present_<condition>, pairs_<condition> / '
-                             'obs_exp_<condition>; analysis/capture_sv_calls.py writes <prefix>_sv.bedpe), '
+                        help='Breakpoints of structural variants called by an external SV caller (e.g. from '
+                             'whole-genome sequencing): BEDPE with the conditions in which every join is present '
+                             '(column conditions, present_<condition>, pairs_<condition> / obs_exp_<condition>), '
                              'condition=file.bedpe (every join of the file present in that condition) or '
-                             'condition=<prefix>_trans_hotspots.tsv of analysis/capture_sv_cnv.py. Adds the level '
+                             'condition=table of inter-chromosomal 1 Mb bin pairs with their read support (columns '
+                             'chrom1 start1 chrom2 start2 pairs expected obs_exp). Adds the level '
                              "'structural variant' after the promoter levels, flags the graph edges that join the two "
                              'sides of a breakpoint (sv=True) and writes <prefix>_sv_genes.tsv, _sv_breakpoints.tsv')
     parser.add_argument('--svContacts',
-                        help='Contacts of baited fragments across the junctions (<prefix>_sv_contacts.tsv of '
-                             'analysis/capture_sv_calls.py): the promoter\'s own contacts with the partner side, '
+                        help='Contacts of baited fragments across the junctions (TSV: join, bait_chrom, bait_start, '
+                             'bait_end, partner_chrom, partner_start, partner_end, pairs_<condition>, '
+                             'inter_total_<condition>): the promoter\'s own contacts with the partner side, '
                              'written as edges sv=True to <prefix>_sv_edges.tsv and <prefix>_union_sv.graphml. With '
                              '--format ibed the called inter-chromosomal and long-range pairs across a breakpoint '
                              '(dropped from the cis graph) are written to <prefix>_sv_called_edges.tsv and added '
                              'to <prefix>_union_sv.graphml as edges sv=True')
     parser.add_argument('--copyNumber', nargs='+',
-                        help="condition=file.bedGraph of the relative copy number per condition: adds the level "
+                        help="condition=file.bedGraph of the relative copy number per condition (from an external "
+                             "copy number caller, e.g. read depth of whole-genome sequencing): adds the level "
                              "'copy number' after the structural variant level")
     parser.add_argument('--svWindow', type=float, default=1.0,
                         help='Mb: promoters within this distance of a breakend, partner nodes within it of the '
                              'partner breakend')
     parser.add_argument('--svMinPairs', type=int, default=50,
-                        help='capture_sv_cnv.py hotspot tables: read pairs of a breakpoint bin pair')
+                        help='Bin-pair tables of --structuralVariants: read pairs of a breakpoint bin pair')
     parser.add_argument('--svMinObsExp', type=float, default=20.0,
-                        help='capture_sv_cnv.py hotspot tables: observed / expected of a breakpoint bin pair')
+                        help='Bin-pair tables of --structuralVariants: observed / expected of a breakpoint bin pair')
     parser.add_argument('--svThreshold', type=float, default=1.0,
                         help='log2 change of the support (obs/exp) of a join present in both conditions counted as '
                              'gained or lost')

@@ -1,18 +1,18 @@
 """Structural variants and copy number as a level of the explanation cascade (egaDifferential --structuralVariants,
 --svContacts, --copyNumber).
 
-Inputs
+Inputs (produced outside EGA; breakpoints and copy number e.g. by SV and copy number callers on whole-genome sequencing)
     Breakpoints: BEDPE (chrom1 start1 end1 chrom2 start2 end2 [name score strand1 strand2 ...]) with the conditions
     in which a join is present, given by a column 'conditions' (comma-separated condition names), by columns
     present_<condition> (0/1) and / or pairs_<condition> / obs_exp_<condition> (read support, observed over expected),
     or for a plain BEDPE by an 11th column with the condition names; 'condition=file.bedpe' marks every join of the
-    file as present in that condition. The output of analysis/capture_sv_calls.py (<prefix>_sv.bedpe) has these
-    columns. The inter-chromosomal hotspot table of analysis/capture_sv_cnv.py (chrom1 start1 chrom2 start2 pairs
-    expected obs_exp, 1 Mb bin pairs) is read as 'condition=<prefix>_trans_hotspots.tsv', one file per condition:
+    file as present in that condition. A table of inter-chromosomal 1 Mb bin pairs with their read support (chrom1
+    start1 chrom2 start2 pairs expected obs_exp) is read as 'condition=table.tsv', one file per condition:
     bin pairs with at least `min_pairs` pairs and an observed / expected of at least `min_obs_exp` are breakpoints,
     bin pairs within 2 Mb of each other on both sides form one join.
-    Junction contacts (optional, <prefix>_sv_contacts.tsv of capture_sv_calls.py): read pairs between a baited
-    fragment near a breakend and 100 kb bins near the partner breakend, per condition.
+    Junction contacts (optional, TSV with join, bait and partner coordinates and pairs_<condition> /
+    inter_total_<condition>): read pairs between a baited fragment near a breakend and 100 kb bins near the partner
+    breakend, per condition.
     Copy number (optional): bedGraph of the relative copy number per condition ('condition=file.bedGraph').
 
 Rules (per differentially expressed gene; the window is --svWindow)
@@ -90,7 +90,7 @@ def _read_header(path):
 
 
 def _hotspot_joins(tables, names, min_pairs, min_obs_exp, gap=2000000):
-    """Joins from capture_sv_cnv.py hotspot tables {condition: table}: candidate 1 Mb bin pairs of every condition
+    """Joins from bin-pair tables {condition: table}: candidate 1 Mb bin pairs of every condition
     clustered within `gap` on both sides; per condition the strongest bin pair of the cluster."""
     candidates = []
     for condition, table in tables.items():
@@ -146,7 +146,7 @@ def read_structural_variants(items, names, min_pairs=50, min_obs_exp=20.0):
         header = _read_header(path)
         if {'chrom1', 'start1', 'chrom2', 'start2', 'pairs', 'obs_exp'} <= set(header) and 'end1' not in header:
             if condition is None:
-                raise ValueError('{}: a hotspot table of capture_sv_cnv.py needs condition=path'.format(path))
+                raise ValueError('{}: a bin-pair table needs condition=path'.format(path))
             hotspots[condition] = pd.read_csv(path, sep='\t')
             continue
         has_header = bool(header) and header[0].lower() in ('chrom1', 'chr1', 'chromosome1')
@@ -249,7 +249,7 @@ def sv_status(svs, names, threshold=1.0, min_pairs=10):
 
 
 def read_sv_contacts(path, names):
-    """Junction contacts of capture_sv_calls.py: join, bait_chrom, bait_start, bait_end, partner_chrom,
+    """Junction contacts across the breakpoints: join, bait_chrom, bait_start, bait_end, partner_chrom,
     partner_start, partner_end, pairs_<c>, inter_total_<c> (per condition)."""
     table = pd.read_csv(path, sep='\t')
     for c in names:

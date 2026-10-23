@@ -2,7 +2,7 @@
 # environment that produced the results of the manuscript (conda env `ega`; run_all.sh EGA_PREFIX).
 #   mamba env create -f environment.yml && conda activate ega && pip install --no-deps -e .
 # The external tools of the analysis drivers need incompatible Python / R versions and run in their own
-# environments (envs/*.yml; run_all.sh finds them through HICEXPLORER_PREFIX, SAMTOOLS, PGT, CHASER_RSCRIPT,
+# environments (envs/*.yml; run_all.sh finds them through HICEXPLORER_PREFIX, PGT, CHASER_RSCRIPT,
 # RSCRIPT and the conda env names `capchic`, `hicexplorer`, `hicdiff`, `__ucsc_kent`, `chaser`, `chicdiff`,
 # `loopcallers`, `salmon`); see REPRODUCE.md for the tool versions.
 name: ega
