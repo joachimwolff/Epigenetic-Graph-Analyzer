@@ -12,7 +12,9 @@ restriction fragments, so that every shifted node covers as many fragments as th
 of the triplet in fragments; every shifted node covered by a group). A random sample of all step-2
 triplets of the graph (--background) gives the same counts for paths that explain nothing.
 
-Outputs: <out>_triplets.tsv (one row per triplet and data set: observed, control mean, empirical P, log2 ratio) and
+Outputs: <out>_triplets.tsv (one row per triplet and data set: observed, control mean, empirical P, log2 ratio),
+<out>_per_gene.tsv (per explained gene and presence: whether at least one explaining triplet has P < 0.05 in each data
+set, and in how many data sets) and
 <out>_summary.tsv (per data set, set (explaining or background) and presence: triplets, median log2 ratio, fraction
 with observed above every control, fraction with P < 0.05) with Mann-Whitney tests of present against absent.
 
@@ -205,7 +207,12 @@ def main():
                 summary.append(dict(data_set=label, set=name, present='present > absent', triplets=len(sub),
                                     median_log2_ratio=x.median() - y.median(), p_mannwhitney=test.pvalue))
         print(label, 'done', flush=True)
-    pd.concat(rows).to_csv(args.output + '_triplets.tsv', sep='\t', index=False)
+    table = pd.concat(rows)
+    table.to_csv(args.output + '_triplets.tsv', sep='\t', index=False)
+    explaining = table[table.set == 'explaining'].assign(significant=lambda x: x.p_empirical < 0.05)
+    per_gene = explaining.groupby(['genes', 'promoter', 'present', 'data_set']).significant.any().unstack()
+    per_gene['data_sets_p_lt_005'] = per_gene.sum(axis=1)
+    per_gene.reset_index().to_csv(args.output + '_per_gene.tsv', sep='\t', index=False)
     summary = pd.DataFrame(summary)
     summary.to_csv(args.output + '_summary.tsv', sep='\t', index=False)
     print(summary.to_string(index=False))
