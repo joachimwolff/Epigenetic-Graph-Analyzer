@@ -5,4 +5,5 @@
 :caption: Contents
 
 readthedocs_workflow
+running_ega
 ```
