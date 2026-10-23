@@ -328,9 +328,52 @@ def legends(fig, ax, mark, a, b, anchor_y=-0.02):
               handlelength=1.8, columnspacing=1.0)
 
 
+def stacked_column(graph, nodes, merge=50000, spacing=1.0, gap=1.8):
+    """Heights (1 top .. 0 bottom) of the nodes of a dense column, ordered by position: nodes within --merge bp of
+    their neighbour form a group, groups are separated by a larger gap. Returns {node: y} and the groups."""
+    nodes = sorted(nodes, key=lambda n: middle(graph.nodes[n]))
+    groups = [[nodes[0]]]
+    for n in nodes[1:]:
+        if middle(graph.nodes[n]) - middle(graph.nodes[groups[-1][-1]]) <= merge:
+            groups[-1].append(n)
+        else:
+            groups.append([n])
+    offsets, y = [], 0.0
+    for i, grp in enumerate(groups):
+        offsets.append([y + j * spacing for j in range(len(grp))])
+        y = offsets[-1][-1] + gap
+    total = max(offsets[-1][-1], 1.0)
+    heights = {n: 1.0 - o / total for grp, offs in zip(groups, offsets) for n, o in zip(grp, offs)}
+    return heights, groups
+
+
+def group_text(graph, group):
+    start = min(int(graph.nodes[n]['start']) for n in group) / 1e6
+    end = max(int(graph.nodes[n]['end']) for n in group) / 1e6
+    span = '{:.2f} Mb'.format(start) if len(group) == 1 else '{:.2f}-{:.2f} Mb'.format(start, end)
+    genes = sorted({g for n in group for g in gene_label(graph, n, max_genes=3).split(',') if g})
+    return '{}\n{} fragment{}'.format(span, len(group), 's' if len(group) > 1 else '') + \
+        ('\n' + ','.join(genes[:2]) if genes else '')
+
+
+def draw_group_labels(ax, graph, x, heights, groups, side):
+    for grp in groups:
+        y = np.mean([heights[n] for n in grp])
+        dx = 0.12 if side == 'right' else -0.12
+        ax.text(x + dx, y, group_text(graph, grp), ha='left' if side == 'right' else 'right', va='center',
+                fontsize=7, color=INK, linespacing=1.1, zorder=4,
+                bbox=dict(facecolor='white', edgecolor='none', pad=0.6))
+
+
+DENSE = 8
+
+
 def panel_step1(graph, source, mark, a, b, name, path):
-    """Promoter (top) and its direct contacts on an arc below, ordered by position."""
+    """Promoter (top) and its direct contacts on an arc below, ordered by position; with more than DENSE contacts,
+    promoter (left) and the contacts in a column grouped by position (right)."""
     contacts = sorted(graph.neighbors(source), key=lambda n: middle(graph.nodes[n]))
+    if len(contacts) > DENSE:
+        return panel_step1_dense(graph, source, contacts, mark, a, b, name, path)
     angles = np.linspace(np.pi * 1.12, np.pi * 1.88, len(contacts)) if len(contacts) > 1 else [1.5 * np.pi]
     pos = {source: (0.0, 0.55)}
     for n, t in zip(contacts, angles):
@@ -362,19 +405,57 @@ def panel_step1(graph, source, mark, a, b, name, path):
     return contacts
 
 
+def panel_step1_dense(graph, source, contacts, mark, a, b, name, path):
+    heights, groups = stacked_column(graph, contacts)
+    pos = {source: (0.0, 0.5)}
+    pos.update({n: (1.0, y) for n, y in heights.items()})
+    fig, ax = plt.subplots(figsize=(3.0, max(2.6, 0.13 * len(contacts) + 0.9)))
+    for n in contacts:
+        draw_edge(ax, pos[source], pos[n], graph.edges[source, n].get('status', 'shared'))
+    for n in [source] + contacts:
+        change, colour, lw = node_style(graph, n, mark, a, b)
+        bait = int(graph.nodes[n].get('bait', 0) or 0) == 1
+        ax.scatter(*pos[n], s=150 if n == source else 45, marker='s' if bait else 'o', c=[colour],
+                   edgecolors=INK, linewidths=lw, zorder=3)
+    change = log2_change(graph.nodes[source], mark, a, b)
+    ax.text(0.0, 0.5 - 0.06, '{}\n{:.2f} Mb\n{:+.2f}'.format(name, middle(graph.nodes[source]) / 1e6, change),
+            ha='center', va='top', fontsize=7, fontweight='bold', linespacing=1.1, zorder=4,
+            bbox=dict(facecolor='white', edgecolor='none', pad=0.6))
+    draw_group_labels(ax, graph, 1.0, heights, groups, 'right')
+    ax.text(0, 1.1, 'promoter', ha='center', va='bottom', fontsize=7.5)
+    ax.text(1, 1.1, 'step 1', ha='center', va='bottom', fontsize=7.5)
+    ax.set_xlim(-0.35, 2.0)
+    ax.set_ylim(-0.08, 1.18)
+    ax.axis('off')
+    legends(fig, ax, mark, a, b)
+    ax.get_legend().set_bbox_to_anchor((0.5, 1.06))
+    fig.savefig(path, bbox_inches='tight')
+    plt.close(fig)
+    return contacts
+
+
 def panel_paths(graph, source, targets, step, mark, a, b, name, path):
     """Columns promoter, step 1 .. step: all nodes on the shortest paths to the targets, individually."""
     paths = explaining_paths(graph, source, targets)
     columns = {0: [source]}
     for k in range(1, step + 1):
         columns[k] = sorted({p[k] for p in paths}, key=lambda n: middle(graph.nodes[n]))
-    height = max(2.6, 0.36 * max(len(v) for v in columns.values()) + 0.6)
+    dense = {k: stacked_column(graph, nodes) for k, nodes in columns.items() if len(nodes) > DENSE}
+    height = max(2.6, max(0.13 * len(v) if k in dense else 0.36 * len(v) for k, v in columns.items()) + 0.6)
+    # room for the group labels left of a dense step-1 column
+    x0 = -0.8 if 1 in dense else 0.0
     pos = {}
     for k, nodes in columns.items():
+        if k == 0:
+            pos[source] = (x0, 0.5)
+            continue
+        if k in dense:
+            pos.update({n: (float(k), y) for n, y in dense[k][0].items()})
+            continue
         ys = np.linspace(1, 0, len(nodes)) if len(nodes) > 1 else [0.5]
         for n, y in zip(nodes, ys):
             pos[n] = (float(k), float(y))
-    fig, ax = plt.subplots(figsize=(3.4, height))
+    fig, ax = plt.subplots(figsize=(3.4 + (0.9 if x0 else 0.0), height))
     drawn = set()
     for p in paths:
         for u, v in zip(p[:-1], p[1:]):
@@ -384,8 +465,10 @@ def panel_paths(graph, source, targets, step, mark, a, b, name, path):
     for n, (x, y) in pos.items():
         change, colour, lw = node_style(graph, n, mark, a, b)
         bait = int(graph.nodes[n].get('bait', 0) or 0) == 1
-        ax.scatter([x], [y], s=150 if n == source else 80, marker='s' if bait else 'o', c=[colour],
-                   edgecolors=INK, linewidths=lw, zorder=3)
+        ax.scatter([x], [y], s=150 if n == source else (45 if int(x) in dense else 80), marker='s' if bait else 'o',
+                   c=[colour], edgecolors=INK, linewidths=lw, zorder=3)
+        if int(x) in dense:
+            continue
         mb = '{:.2f} Mb'.format(middle(graph.nodes[n]) / 1e6)
         genes = gene_label(graph, n)
         if x == step:
@@ -398,9 +481,12 @@ def panel_paths(graph, source, targets, step, mark, a, b, name, path):
             ax.text(x, y + 0.06 if above else y - 0.06, text, ha='center', va='bottom' if above else 'top',
                     fontsize=7, color=INK, linespacing=1.1, fontweight='bold' if n == source else 'normal',
                     bbox=dict(facecolor='white', edgecolor='none', pad=0.6), zorder=4)
+    for k, (heights, groups) in dense.items():
+        draw_group_labels(ax, graph, k, heights, groups, 'left' if k < step else 'right')
     for k in range(step + 1):
-        ax.text(k, 1.1, 'promoter' if k == 0 else 'step {}'.format(k), ha='center', va='bottom', fontsize=7.5)
-    ax.set_xlim(-0.45, step + 1.25)
+        ax.text(x0 if k == 0 else k, 1.1, 'promoter' if k == 0 else 'step {}'.format(k), ha='center', va='bottom',
+                fontsize=7.5)
+    ax.set_xlim(x0 - 0.45, step + 1.25)
     ax.set_ylim(-0.12, 1.18)
     ax.axis('off')
     legends(fig, ax, mark, a, b)
