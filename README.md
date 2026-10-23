@@ -54,7 +54,7 @@ Experimental modules (their evaluation gave weak or null results; the output is 
 
 | Tool | Purpose |
 |---|---|
-| `egaCompartments` | A/B compartments from chromatin tracks or capture data |
+| `egaCompartments` | A/B compartments from chromatin tracks |
 | `egaBoundaries` | Rule-based domain boundaries from capture contacts and CTCF |
 
 Every tool prints its options with `--help`.
