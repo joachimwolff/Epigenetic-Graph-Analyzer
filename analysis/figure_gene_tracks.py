@@ -1,6 +1,8 @@
 """Genome-browser panel of one gene report with pyGenomeTracks, and its expression, two PDFs.
 
-<prefix>_tracks.pdf      genes (the gene of the report in colour, its promoter fragment shaded across all tracks),
+<prefix>_tracks.pdf      genes (the gene of the report in orange, its body shaded across all tracks; the fragments of
+                         step 1 shaded purple, of step 2 green, of step 3 pink; the interactions of the paths coloured
+                         by the step they reach),
                          promoter capture Hi-C arcs of both conditions (interactions of the promoter fragment and of
                          the fragments on the paths of the report), RNA-seq coverage (--rna) and chromatin tracks of
                          both conditions, and the fragments of each step of the report
@@ -31,8 +33,11 @@ import numpy as np
 import pandas as pd
 import pyBigWig
 
-STEP_COLOURS = {0: '#222222', 1: '#7f7f7a', 2: '#b07f2a', 3: '#b2182b'}
-GENE_COLOUR, HIGHLIGHT_COLOUR, PATH_COLOUR = '#7f7f7a', '#d95f02', '#d95f02'
+# one colour per role, shared by the arcs, the shading across the tracks and the report track: the gene of the report
+# and its promoter (orange), step 1 (purple), step 2 (green), step 3 (pink); red / blue stay for gained / lost and
+# grey / blue for the two conditions
+STEP_COLOURS = {0: '#d95f02', 1: '#7b3294', 2: '#1b9e77', 3: '#e7298a'}
+GENE_COLOUR, HIGHLIGHT_COLOUR = '#7f7f7a', '#d95f02'
 
 
 def log2_change(data, mark, a, b):
@@ -72,7 +77,9 @@ def write_links(graph, nodes, condition, start, end, path, edges=None):
 
 
 def write_genes(gtf, chrom, start, end, path, types, highlight):
-    """Genes of the given types overlapping the region as BED9, the highlighted gene in its own colour."""
+    """Genes of the given types overlapping the region as BED9, the highlighted gene in its own colour; returns the
+    body (start, end) of the highlighted gene or None."""
+    found = None
     with gzip.open(gtf, 'rt') as handle, open(path, 'w') as out:
         for line in handle:
             if line.startswith('#'):
@@ -84,10 +91,13 @@ def write_genes(gtf, chrom, start, end, path, types, highlight):
             name = attrs['gene_name'].strip('"')
             if attrs.get('gene_type', '').strip('"') not in types and name != highlight:
                 continue
+            if name == highlight:
+                found = (int(f[3]) - 1, int(f[4]))
             colour = (HIGHLIGHT_COLOUR if name == highlight else GENE_COLOUR).lstrip('#')
             rgb = ','.join(str(int(colour[i:i + 2], 16)) for i in (0, 2, 4))
             out.write('{}\t{}\t{}\t{}\t0\t{}\t{}\t{}\t{}\n'.format(chrom, int(f[3]) - 1, f[4], name, f[6],
                                                                    int(f[3]) - 1, int(f[3]) - 1, rgb))
+    return found
 
 
 def panel_expression(counts, gene, conditions, path, gene_column, prefix, labels):
@@ -144,14 +154,27 @@ def main():
     end = max(int(graph.nodes[n]['end']) for n in nodes) + args.padding
     out_dir = os.path.dirname(os.path.abspath(args.output))
     stem = os.path.basename(args.output)
+    step_of = {n: k for k, v in by_step.items() for n in v}
+    # the interactions of the paths by the step they reach: promoter - step 1, step 1 - step 2, ...
+    edges_by_step = {}
+    for edge in path_edges:
+        edges_by_step.setdefault(max(step_of.get(n, 0) for n in edge), set()).add(edge)
     counts = {}
     for cond, key in ((a, 'a'), (b, 'b')):
-        counts[cond] = (write_links(graph, nodes, key, start, end, os.path.join(out_dir, '{}_{}.links'.format(stem, cond))),
-                        write_links(graph, nodes, key, start, end,
-                                    os.path.join(out_dir, '{}_{}_paths.links'.format(stem, cond)), path_edges))
-    write_genes(args.gtf, chrom, start, end, os.path.join(out_dir, stem + '_genes.bed'), args.geneTypes, gene)
+        counts[cond] = [write_links(graph, nodes, key, start, end, os.path.join(out_dir, '{}_{}.links'.format(stem, cond)))]
+        for k, edges in sorted(edges_by_step.items()):
+            counts[cond].append(write_links(graph, nodes, key, start, end,
+                                            os.path.join(out_dir, '{}_{}_step{}.links'.format(stem, cond, k)), edges))
+    body = write_genes(args.gtf, chrom, start, end, os.path.join(out_dir, stem + '_genes.bed'), args.geneTypes, gene)
     with open(os.path.join(out_dir, stem + '_promoter.bed'), 'w') as out:
-        out.write('{}\t{}\t{}\n'.format(chrom, graph.nodes[args.promoter]['start'], graph.nodes[args.promoter]['end']))
+        s0, e0 = body if body else (int(graph.nodes[args.promoter]['start']), int(graph.nodes[args.promoter]['end']))
+        out.write('{}\t{}\t{}\n'.format(chrom, s0, e0))
+    for k in sorted(by_step):
+        if k == 0:
+            continue
+        with open(os.path.join(out_dir, '{}_step{}.bed'.format(stem, k)), 'w') as out:
+            for n in sorted(by_step[k], key=lambda n: int(graph.nodes[n]['start'])):
+                out.write('{}\t{}\t{}\n'.format(chrom, graph.nodes[n]['start'], graph.nodes[n]['end']))
     with open(os.path.join(out_dir, stem + '_steps.bed'), 'w') as out:
         for k in sorted(by_step):
             for n in sorted(by_step[k], key=lambda n: int(graph.nodes[n]['start'])):
@@ -170,9 +193,11 @@ def main():
         common = ['links_type = arcs', 'orientation = inverted' if cond == a else '', 'compact_arcs_level = 2']
         ini += ['[links {}]'.format(cond), 'file = {}_{}.links'.format(stem, cond),
                 'title = pcHi-C {}'.format(cond), 'height = 1.8', 'color = {}'.format(colour),
-                'line_width = 0.6', 'fontsize = 8'] + common + ['',
-                '[links {} paths]'.format(cond), 'file = {}_{}_paths.links'.format(stem, cond),
-                'overlay_previous = share-y', 'color = {}'.format(PATH_COLOUR), 'line_width = 1.0'] + common + ['']
+                'line_width = 0.6', 'fontsize = 8'] + common + ['']
+        for k in sorted(edges_by_step):
+            ini += ['[links {} step {}]'.format(cond, k), 'file = {}_{}_step{}.links'.format(stem, cond, k),
+                    'overlay_previous = share-y', 'color = {}'.format(STEP_COLOURS[k]), 'line_width = 1.1'] + \
+                common + ['']
     specs = (['RNA-seq=' + args.rna] if args.rna else []) + args.tracks
     for spec in specs:
         name, files = spec.split('=')
@@ -192,7 +217,11 @@ def main():
     ini += ['[steps]', 'file = {}_steps.bed'.format(stem), 'title = report', 'height = 1.0', 'color = bed_rgb',
             'labels = false', 'display = collapsed', 'fontsize = 8', '',
             '[promoter]', 'file = {}_promoter.bed'.format(stem), 'type = vhighlight',
-            'color = {}'.format(HIGHLIGHT_COLOUR), 'alpha = 0.3', '']
+            'color = {}'.format(HIGHLIGHT_COLOUR), 'alpha = 0.25', '']
+    for k in sorted(by_step):
+        if k:
+            ini += ['[step {} fragments]'.format(k), 'file = {}_step{}.bed'.format(stem, k), 'type = vhighlight',
+                    'color = {}'.format(STEP_COLOURS[k]), 'alpha = 0.18', '']
     ini_path = os.path.join(out_dir, stem + '_tracks.ini')
     open(ini_path, 'w').write('\n'.join(ini))
     subprocess.run([args.pgt, '--tracks', ini_path, '--region', '{}:{}-{}'.format(chrom, start, end),

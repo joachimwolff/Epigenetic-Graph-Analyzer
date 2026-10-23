@@ -52,6 +52,8 @@ from figure_gene_report import log2_change, middle  # noqa: E402
 
 INK, MUTED = '#222222', '#888888'
 EDGE_COLOUR = {'gained': '#b2182b', 'lost': '#2166ac', 'shared': '#9a9a96'}
+# role colours shared with figure_gene_tracks.py: promoter (orange), step 1 (purple), step 2 (green), step 3 (pink)
+STEP_COLOURS = {0: '#d95f02', 1: '#7b3294', 2: '#1b9e77', 3: '#e7298a'}
 OBSERVED = '#b2182b'
 CONSTELLATIONS = ['promoter_enhancer', 'promoter_mediator_enhancer', 'all_units']
 CONSTELLATION_LABELS = {'promoter_enhancer': 'P+E', 'promoter_mediator_enhancer': 'P+M+E',
@@ -389,7 +391,7 @@ def panel_step1(graph, source, mark, a, b, name, path):
         mb = '{:.2f} Mb'.format(middle(graph.nodes[n]) / 1e6)
         if n == source:
             ax.text(pos[n][0], pos[n][1] + 0.17, '{}  {}  ({:+.2f})'.format(name, mb, change), ha='center',
-                    va='bottom', fontsize=7.5, fontweight='bold')
+                    va='bottom', fontsize=7.5, fontweight='bold', color=STEP_COLOURS[0])
         else:
             genes = gene_label(graph, n)
             text = '{}\n{:+.2f}'.format(mb, change) + ('\n' + genes if genes else '')
@@ -422,8 +424,8 @@ def panel_step1_dense(graph, source, contacts, mark, a, b, name, path):
             ha='center', va='top', fontsize=7, fontweight='bold', linespacing=1.1, zorder=4,
             bbox=dict(facecolor='white', edgecolor='none', pad=0.6))
     draw_group_labels(ax, graph, 1.0, heights, groups, 'right')
-    ax.text(0, 1.1, 'promoter', ha='center', va='bottom', fontsize=7.5)
-    ax.text(1, 1.1, 'step 1', ha='center', va='bottom', fontsize=7.5)
+    ax.text(0, 1.1, 'promoter', ha='center', va='bottom', fontsize=7.5, fontweight='bold', color=STEP_COLOURS[0])
+    ax.text(1, 1.1, 'step 1', ha='center', va='bottom', fontsize=7.5, fontweight='bold', color=STEP_COLOURS[1])
     ax.set_xlim(-0.35, 2.0)
     ax.set_ylim(-0.08, 1.18)
     ax.axis('off')
@@ -485,7 +487,7 @@ def panel_paths(graph, source, targets, step, mark, a, b, name, path):
         draw_group_labels(ax, graph, k, heights, groups, 'left' if k < step else 'right')
     for k in range(step + 1):
         ax.text(x0 if k == 0 else k, 1.1, 'promoter' if k == 0 else 'step {}'.format(k), ha='center', va='bottom',
-                fontsize=7.5)
+                fontsize=7.5, fontweight='bold', color=STEP_COLOURS.get(k, INK))
     ax.set_xlim(x0 - 0.45, step + 1.25)
     ax.set_ylim(-0.3, 1.18)
     ax.axis('off')
