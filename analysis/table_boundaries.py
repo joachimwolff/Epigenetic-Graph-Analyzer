@@ -5,8 +5,7 @@ Part A: every rule (a priori thresholds) against the Hi-C insulation boundaries 
 precision, recall, F1 (tolerance 1 bin) and AUPRC per resolution and cell type. Part B: the same, covered bins only.
 Part C: adding the capture dip to CTCF: change of precision, recall, F1 and AUPRC with 95 % chromosome
 block-bootstrap intervals. Part D: other Hi-C references (and the agreement of the Hi-C insulation boundaries with
-them). Part E: F1 over the threshold grid. Part F: inputs, loop orientation and domain agreement. Part G: keratinocyte
-time course.
+them). Part E: F1 over the threshold grid. Part F: inputs, loop orientation and domain agreement.
 
 Written as a longtable (LaTeX package longtable) because the table spans several pages.
 
@@ -149,42 +148,6 @@ def part_inputs(tables):
     return lines
 
 
-def part_timecourse(tables):
-    ev = pd.read_csv(os.path.join(tables, 'timecourse_eval.tsv'), sep='\t')
-    corr = pd.read_csv(os.path.join(tables, 'timecourse_change_correlation.tsv'), sep='\t')
-    ch = pd.read_csv(os.path.join(tables, 'timecourse_changes.tsv'), sep='\t')
-    ex = pd.read_csv(os.path.join(tables, 'timecourse_expression.tsv'), sep='\t')
-    lines = [r'\midrule', heading('G. Keratinocyte days 0, 3, 6 (hg19, 50 kb, chr2--22): rules against the Hi-C '
-                                  'insulation boundaries of the same day (all bins)'),
-             row(['day', 'rule', 'calls', 'P', 'R', 'F1', 'AUPRC', 'positive rate']), r'\midrule']
-    for day in ('D0', 'D3', 'D6'):
-        for i, rule in enumerate(RULES):
-            g = ev[(ev.day == day) & (ev.rule == rule) & (ev.region == 'all')]
-            if g.empty:
-                continue
-            g = g.iloc[0]
-            lines.append(row([day if i == 0 else '', tex(LABEL[rule]), int(g.n_called_tol1), f(g.precision_tol1),
-                              f(g.recall_tol1), f(g.f1_tol1), f(g.auprc, 3), f(g.positive_rate, 3)]))
-    lines += [r'\midrule', row(['pair', 'track', 'bins', r'$\rho$ vs $\Delta$Hi-C', '$P$']), r'\midrule']
-    for _, r in corr[corr.region == 'covered_both'].iterrows():
-        lines.append(row([r.pair.replace('_', '--'), tex(r.track), int(r.n_bins), f(r.spearman_vs_hic_change, 3),
-                          '{:.1e}'.format(r.p)]))
-    lines += [r'\midrule', row(['pair', 'rule', 'change', 'Hi-C changes', 'rule changes', 'matched', 'shifted',
-                                '$P$']), r'\midrule']
-    for _, r in ch.iterrows():
-        lines.append(row([r.pair.replace('_', '--'), tex(LABEL[r.rule]), r.change, int(r.n_hic_changes),
-                          int(r.n_rule_changes), f(r.fraction_hic_changes_matched), f(r.expected_shifted),
-                          '$<$0.005' if r.p_shift == 0 else f(r.p_shift, 3)]))
-    lines += [r'\midrule', row(['pair', 'boundaries', 'change', 'changed', 'genes near', 'stable',
-                                r'$|$LFC$|$ near', 'stable', 'DE near', 'stable', '$P$']), r'\midrule']
-    for _, r in ex.iterrows():
-        lines.append(row([r.pair.replace('_', '--'), tex(LABEL.get(r.boundaries, 'Hi-C')), r.change,
-                          int(r.n_changed_boundaries), int(r.n_genes_changed), int(r.n_genes_stable),
-                          f(r.median_abs_lfc_changed), f(r.median_abs_lfc_stable), f(r.de_fraction_changed),
-                          f(r.de_fraction_stable), '{:.2g}'.format(r.p_mannwhitney_greater)]))
-    return lines
-
-
 def main():
     base, out = sys.argv[1], sys.argv[2]
     tables = os.path.join(base, 'tables')
@@ -197,8 +160,6 @@ def main():
              (14, lambda: part_metrics(ev, 'covered', 'B. As A, covered bins only (>= 5 expected spanning edges)')),
              (12, lambda: part_delta(delta)), (11, lambda: part_refs(ev)), (12, lambda: part_grid(grid)),
              (12, lambda: part_inputs(tables))]
-    if os.path.exists(os.path.join(tables, 'timecourse_eval.tsv')):
-        parts.append((11, lambda: part_timecourse(tables)))
     blocks = []
     for ncol, make in parts:
         NCOL = ncol

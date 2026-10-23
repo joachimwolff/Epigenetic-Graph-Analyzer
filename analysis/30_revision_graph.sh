@@ -108,9 +108,6 @@ if [[ "$stage" == all || "$stage" == B6 ]]; then
                 printf 'H1_vs_%s_p%s\t%s\thg19\tp-value tier %s\tas published\t%s\n' "$s" "$p" "$r/differential/H1_vs_${s}_p${p}_union.graphml" "$p" "$jung"
             done
         done
-        for d in D0 D3 D6; do
-            printf 'keratinocyte_%s\t%s\thg19\tcount-derived score >= 5 (rubin_chic_to_ibed.py)\tall: both donors, score >= 5 in one\tRubin et al. 2017, GSE84660 (22_timecourse.sh)\n' "$d" "$r/timecourse_rubin2017/graphs/$d.graphml"
-        done
     } > "$o/manifest.tsv"
     run "$o/graph_comparability.tsv" "$o/graph_comparability.log" "$py" "$here/graph_comparability.py" \
         "$o/manifest.tsv" "$o/graph_comparability.tsv" &

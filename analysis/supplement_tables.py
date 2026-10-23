@@ -3,8 +3,8 @@
 S1 data sets and graphs; S2 multi-way support by graph distance and pair class; S3 per-contact confirmation;
 S4 promoter hubs; S5 communities with a coordinated expression change; S6 nested models and mirrored loci;
 S7 classification of differentially expressed genes; S8 candidates for regulation through indirect contacts;
-S9 virtual capture benchmark; S10 CRISPRi benchmark; S11 inter-chromosomal rearrangements and copy number of
-Kasumi-1; S12 chromatin assortativity (ChAseR) by graph distance; S13 promoter hubs against a polymer model.
+S9 virtual capture benchmark; S10 CRISPRi benchmark; S12 chromatin assortativity (ChAseR) by graph distance;
+S13 promoter hubs against a polymer model.
 S24 explanation levels of the differentially expressed genes, first level and any level side by side, states under
 the fragment mean and the maximum 1 kb window (analysis/16_hops_n.sh); S25 chromatin state transitions of the
 differentially expressed genes at three presence thresholds; S26 validation of the Md / PA2 bivalency calls against
@@ -510,45 +510,6 @@ def s10():
           'CRISPRi benchmark of K562 enhancer-gene pairs \\citep{fulco2019,gasperini2019,gschwind2026} with a '
           'promoter in the K562 graph: added value of each graph feature over genomic distance and enhancer degree '
           'in a logistic model (likelihood ratio test), on the training pairs and on held-out pairs.', 'tab:s10',
-          size=r'\scriptsize')
-
-
-def s11():
-    reps = {}
-    for rep in ('siMM_rep1', 'siRE_rep1'):
-        t = pd.read_csv(path('aml_kasumi1', 'sv', rep + '_trans_hotspots.tsv'), sep='\t')
-        reps[rep] = t.set_index(['chrom1', 'start1', 'chrom2', 'start2'])
-    a = reps['siMM_rep1']
-    a = a[a['pairs'] >= 100].sort_values('obs_exp', ascending=False)
-    rows = []
-    seen = set()
-    for key, r in a.iterrows():
-        region = (key[0], key[1] // 3000000, key[2], key[3] // 3000000)
-        if region in seen:
-            continue
-        seen.add(region)
-        other = reps['siRE_rep1'].loc[key] if key in reps['siRE_rep1'].index else None
-        rows.append(' & '.join(['{}:{}'.format(key[0], key[1] // 1000000), '{}:{}'.format(key[2], key[3] // 1000000),
-                                integer(r['pairs']), num(r['expected'], 1), num(r['obs_exp'], 0),
-                                integer(other['pairs']) if other is not None else '--',
-                                num(other['obs_exp'], 0) if other is not None else '--']) + r' \\')
-        if len(rows) == 10:
-            break
-    rows.append(r'\midrule')
-    cn = {rep: pd.read_csv(path('aml_kasumi1', 'sv', rep + '_copy_number_chromosomes.tsv'), sep='\t')
-          .set_index('chrom')['relative_coverage'] for rep in ('siMM_rep1', 'siRE_rep1')}
-    chroms = list(cn['siMM_rep1'].index)
-    for i in range(0, len(chroms), 4):
-        cells = []
-        for c in chroms[i:i + 4]:
-            cells.append('{} {} / {}'.format(c, num(cn['siMM_rep1'][c], 2), num(cn['siRE_rep1'][c], 2)))
-        rows.append(r'\multicolumn{7}{@{}l}{' + ';\\quad '.join(cells) + r'} \\')
-    table('table_s11.tex', 'llrrrrr',
-          'Bin 1 (chrom:Mb) & Bin 2 (chrom:Mb) & Pairs & Expected & Obs/exp & Pairs (2nd) & Obs/exp (2nd)', rows,
-          'Karyotype of Kasumi-1 in capture Hi-C. Top, the ten strongest inter-chromosomal 1\\,Mb bin pairs with at '
-          'least 100 read pairs in the control library (siMM), one per 3\\,Mb region, with read pairs and observed '
-          'over expected in the second library (siRE). Bottom, coverage of the other ends of captured '
-          'inter-chromosomal pairs per chromosome relative to the autosomal median (siMM / siRE).', 'tab:s11',
           size=r'\scriptsize')
 
 
@@ -1297,7 +1258,7 @@ def s28():
 def main():
     global R, OUT
     R, OUT = sys.argv[1:3]
-    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s11, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
+    for build in (s1, s2, s3, s4, s5, s6, s7, s8, s9, s10, s12, s13, s14, s18, s19, s20, s21, s22, s23, s24,
                   s25, s26, s27, s28):
         build()
         print(build.__name__, flush=True)

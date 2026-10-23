@@ -2,7 +2,7 @@
 # Analyses whose outputs are read by later drivers, the supplementary tables and the figures, but that have no
 # numbered driver of their own. One step per call (run_all.sh calls them in dependency order):
 #   k562_graph            K562 DMSO and PON graphs (GSE250135, GRCh38; washU 'other end' column split into
-#                         chrom,start,end), egaCreateGraph defaults, <results>/k562/          (09, 19, 25, S1)
+#                         chrom,start,end), egaCreateGraph defaults, <results>/k562/          (09, 19, S1)
 #   virtual_capture       graphs of the virtual capture calls (CHiCAGO on promoter bins of Hi-C / Micro-C, 5 kb, in
 #                         <virtual capture dir>) and their agreement with the capture calls,
 #                         <results>/virtual_capture/                                          (11, 19, S1, S9, S20)
@@ -15,8 +15,6 @@
 #   community_robustness  community_robustness.py, <results>/robustness_communities/          (S21)
 #   crispr_benchmark      K562 CRISPRi benchmark of graph features (crispr_benchmark.py), training and held-out
 #                         pairs, <results>/k562/bench_*                                         (S10)
-#   kasumi_sv_cnv         trans hotspots and copy number of Kasumi-1 rep1 per condition from the HiCUP BAMs
-#                         (capture_sv_cnv.py), <results>/aml_kasumi1/sv/                        (S11)
 #   sprite_resolution     SPRITE downsampling and pile-up on the Mifsud strong-core graph, <results>/diagnostics/
 #   figures               figure_concept.py, figure_3d_support.py, figure_virtual_capture.py,
 #                         figure_sprite_resolution.py, <results>/figures/
@@ -34,7 +32,6 @@ threads=${6:-8}
 here=$(cd "$(dirname "$0")" && pwd)
 export PYTHONPATH="$(dirname "$here")${PYTHONPATH:+:$PYTHONPATH}"
 py=${PYTHON:-python}
-samtools=${SAMTOOLS:-samtools}
 annotation="$data/annotation"
 
 case $step in
@@ -130,15 +127,6 @@ crispr_benchmark)
             "$c/github/EPCrisprBenchmark_combined_data.${set#*:}.GRCh38.tsv.gz" "$c/encode/ENCFF970QAX.bed.gz" \
             "$results/k562/bench_${set%%:*}" > "$results/k562/bench_${set%%:*}.log" 2>&1
     done
-    ;;
-kasumi_sv_cnv)
-    out="$results/aml_kasumi1/sv"
-    mkdir -p "$out"
-    for x in siMM_rep1:SRR7521620 siRE_rep1:SRR7521622; do
-        "$py" "$here/capture_sv_cnv.py" "$kasumi/hicup/${x#*:}/${x#*:}_1_2.hicup.bam" \
-            "$kasumi/design/kasumi1_hg38_promoters.baitmap" "$out/${x%%:*}" "$samtools" > "$out/${x%%:*}.log" 2>&1 &
-    done
-    wait
     ;;
 sprite_resolution)
     out="$results/diagnostics"

@@ -1,7 +1,7 @@
 """Figures of the compartment and domain analyses, one PDF per panel.
 
-Reads <results>/compartments_domains/{tables,switch} (compartments_chromatin.py, compartments_capture.py,
-domains_graph.py, compartment_switch.py) and writes <results>/compartments_domains/figures/*.pdf.
+Reads <results>/compartments_domains/{tables,switch} (compartments_chromatin.py, domains_graph.py,
+compartment_switch.py) and writes <results>/compartments_domains/figures/*.pdf.
 
 Usage: python figure_compartments.py
 """
@@ -164,9 +164,8 @@ def cell_difference_panel():
     save(fig, 'cell_differences.pdf')
 
 
-def example_track(cell='H1', set_name='H1_encode_hg38', graph='H1_jung', chrom='chr2', lo=0, hi=120000000):
+def example_track(cell='H1', set_name='H1_encode_hg38', chrom='chr2', lo=0, hi=120000000):
     path = os.path.join(cc.TABLES, 'chromatin_bins_{}.tsv.gz'.format(set_name))
-    cap = os.path.join(cc.TABLES, 'capture_bins_{}_250kb.tsv.gz'.format(graph))
     if not os.path.exists(path):
         return
     bins = pd.read_csv(path, sep='\t')
@@ -176,10 +175,6 @@ def example_track(cell='H1', set_name='H1_encode_hg38', graph='H1_jung', chrom='
     if 'access_level' in sub:
         tracks.append(('DNase level', sub.access_level.values - np.nanmedian(sub.access_level.values),
                        sub.start.values))
-    if os.path.exists(cap):
-        c = pd.read_csv(cap, sep='\t')
-        c = c[(c.chrom == chrom) & (c.start >= lo) & (c.end <= hi)]
-        tracks.append(('Capture eigenvector (250 kb)', c.capture_eig_score.values, c.start.values))
     fig, axes = plt.subplots(len(tracks), 1, figsize=(6.5, 0.75 * len(tracks)), sharex=True)
     for ax, (label, values, starts) in zip(axes, tracks):
         lo_q, hi_q = np.nanpercentile(values, [10, 90]) if np.isfinite(values).any() else (0, 1)
@@ -194,49 +189,6 @@ def example_track(cell='H1', set_name='H1_encode_hg38', graph='H1_jung', chrom='
         ax.spines['left'].set_visible(False)
     axes[-1].set_xlabel('{} position (Mb), {}; values in SD units, clipped at 3'.format(chrom, cell))
     save(fig, 'example_track_{}_{}.pdf'.format(cell, chrom))
-
-
-def capture_panels():
-    path = os.path.join(cc.TABLES, 'capture_eval_summary.tsv')
-    if not os.path.exists(path):
-        return
-    s = pd.read_csv(path, sep='\t')
-    s = s[(s.chrom == 'genome') & s.reference.str.startswith('hic')]
-    graphs = ['GM_chicago', 'GM_mifsud_counts', 'K562', 'H1_jung', 'hESC_H9']
-    colour = {'GM_chicago': CELL_COLOUR['GM12878'], 'GM_mifsud_counts': '#7fb0ea', 'K562': CELL_COLOUR['K562'],
-              'H1_jung': CELL_COLOUR['H1'], 'hESC_H9': '#7dd3b2'}
-    methods = [('capture_eig_score', 'Capture eigenvector'), ('capture_density', 'Capture contact density'),
-               ('chromatin_pc1', 'Marks PC1'), ('combined', 'Marks + capture')]
-    for scope in ('covered_bins', 'all_bins'):
-        fig, axes = plt.subplots(1, len(methods), figsize=(7.0, 2.0), sharey=True)
-        for ax, (method, title) in zip(axes, methods):
-            for g in graphs:
-                sub = s[(s.graph == g) & (s.method == method) & (s.scope == scope)].sort_values('resolution')
-                if len(sub):
-                    ax.plot(sub.resolution / 1e6, sub.auc, marker='o', ms=4, lw=1.5, color=colour[g], label=g)
-            ax.set_title(title, fontsize=8)
-            ax.set_xticks([0.25, 0.5, 1.0])
-            ax.set_xticklabels(['0.25', '0.5', '1'])
-            ax.set_xlim(0.15, 1.1)
-            ax.axhline(0.5, color=GREY, lw=0.8, ls='--')
-            ax.set_xlabel('Bin size (Mb)')
-        axes[0].set_ylabel('AUC for Hi-C compartment A')
-        axes[-1].legend(frameon=False, fontsize=6.5, loc='center left', bbox_to_anchor=(1.02, 0.5))
-        save(fig, 'capture_auc_{}.pdf'.format(scope))
-    fig, ax = plt.subplots(figsize=(2.6, 2.0))
-    for g in graphs:
-        sub = s[(s.graph == g) & (s.method == 'capture_eig_score') & (s.scope == 'covered_bins')].sort_values(
-            'resolution')
-        if len(sub):
-            ax.plot(sub.resolution / 1e6, sub.coverage, marker='o', ms=4, lw=1.5, color=colour[g], label=g)
-    ax.set_xticks([0.25, 0.5, 1.0])
-    ax.set_xticklabels(['0.25', '0.5', '1'])
-    ax.set_xlim(0.15, 1.1)
-    ax.set_ylim(0, 1)
-    ax.set_xlabel('Bin size (Mb)')
-    ax.set_ylabel('Bins with a capture estimate')
-    ax.legend(frameon=False, fontsize=6.5)
-    save(fig, 'capture_coverage.pdf')
 
 
 def domain_panels():
@@ -368,7 +320,6 @@ def main():
         chromatin_sets(summary)
     cell_difference_panel()
     example_track()
-    capture_panels()
     domain_panels()
     explanation_panel()
     switch_panels()

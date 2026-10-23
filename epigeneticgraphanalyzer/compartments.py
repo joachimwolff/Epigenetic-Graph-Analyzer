@@ -1,4 +1,5 @@
-"""A/B compartment estimates without Hi-C and domain statistics of the interaction graph.
+"""A/B compartment estimates from chromatin tracks, the Hi-C compartment eigenvector and domain statistics of the
+interaction graph.
 
 Compartment estimates per fixed genomic bin (default 100 kb):
 
@@ -6,9 +7,8 @@ Compartment estimates per fixed genomic bin (default 100 kb):
   so that the tracks with an active role load positively (`chromatin_pc1`);
 * chromatin, declared roles: mean z-score of the active tracks minus mean z-score of the repressive tracks
   (`role_score`);
-* contacts: per chromosome observed / expected matrix, Pearson correlation of its rows, first eigenvector
-  (`contact_eigenvector`); works on any binned contact matrix (Hi-C, capture Hi-C interaction scores) and leaves
-  bins without coverage as NaN;
+* Hi-C: per chromosome observed / expected matrix, Pearson correlation of its rows, first eigenvector
+  (`contact_eigenvector`; the reference eigenvector of a Hi-C or Micro-C matrix), bins without coverage NaN;
 * profiles (Fortin and Hansen 2015 style): bin-bin correlation of binned signal profiles over several tracks or
   samples, first eigenvector (`profile_eigenvector`).
 
@@ -327,18 +327,6 @@ def per_chrom(function, values_by_bin, bins, **kwargs):
         result = function(np.asarray(values_by_bin)[idx], **sub)
         out[idx] = result[0] if isinstance(result, tuple) else result
     return out
-
-
-def contacts_to_matrix(n_bins, bin_a, bin_b, values):
-    """Symmetric dense matrix of summed values for pairs of bin indices of one chromosome (diagonal kept once)."""
-    m = np.zeros((n_bins, n_bins))
-    a = np.asarray(bin_a, dtype=np.int64)
-    b = np.asarray(bin_b, dtype=np.int64)
-    v = np.asarray(values, dtype=float)
-    np.add.at(m, (a, b), v)
-    off = a != b
-    np.add.at(m, (b[off], a[off]), v[off])
-    return m
 
 
 # ----------------------------------------------------------------------------------------------------------------

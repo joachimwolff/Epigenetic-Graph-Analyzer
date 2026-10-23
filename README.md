@@ -54,12 +54,8 @@ Experimental modules (their evaluation gave weak or null results; the output is 
 
 | Tool | Purpose |
 |---|---|
-| `egaSwitching` | Enhancer switching between promoters |
-| `egaTriggers` | Motif enrichment at changing nodes |
-| `egaCompartments` | A/B compartments from chromatin tracks or capture data |
+| `egaCompartments` | A/B compartments from chromatin tracks |
 | `egaBoundaries` | Rule-based domain boundaries from capture contacts and CTCF |
-| `egaDesign` | Ranking of perturbation targets |
-| `egaTimecourse` | Order of changes in time courses |
 
 Every tool prints its options with `--help`.
 

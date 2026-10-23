@@ -3,18 +3,14 @@
 Diamond insulation (epigeneticgraphanalyzer.boundaries.diamond_insulation; square of window x window pixels
 between the bins upstream and downstream of each bin, log2 over the chromosome mean, NaN with < 50 % valid pixels):
   4DN mcool files (balanced, GRCh38) of GM12878, K562 (in situ Hi-C) and H1 (Micro-C) at 10, 25 and 50 kb with a
-  window of 200 kb (20 / 8 bins) at 10 / 25 kb and 250 kb (5 bins) at 50 kb;
-  Rubin et al. 2017 keratinocytes, per day merged 'norm' matrices (50 kb, hg19, dense text; day 0 lacks chr1, no
-  chrX), window 250 kb.
+  window of 200 kb (20 / 8 bins) at 10 / 25 kb and 250 kb (5 bins) at 50 kb.
 Example regions (--regions chrom:start-end ...): balanced matrices are written as .npz for the figure.
 
-Usage: python boundaries_hic.py <mcool dir> <rubin dir> <out dir> [threads] [--regions cell:chrom:start-end ...]
+Usage: python boundaries_hic.py <mcool dir> <out dir> [threads] [--regions cell:chrom:start-end ...]
 Output: <out>/hic_insulation_<cell>_<res>kb.tsv.gz (chrom, start, end, insulation), <out>/hic_region_*.npz
 """
 
-import glob
 import os
-import re
 import sys
 from multiprocessing import Pool
 
@@ -22,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from epigeneticgraphanalyzer.boundaries import band_from_dense, band_from_pixels, diamond_insulation  # noqa: E402
+from epigeneticgraphanalyzer.boundaries import band_from_pixels, diamond_insulation  # noqa: E402
 
 MCOOL = {'GM12878': '4DNFIIV4M7TF', 'K562': '4DNFI18UHVRO', 'H1': '4DNFI9GMP2J8'}
 CHROMS = ['chr{}'.format(c) for c in list(range(1, 23)) + ['X']]
@@ -58,34 +54,6 @@ def mcool_insulation(args):
     return target
 
 
-def rubin_insulation(args):
-    directory, day, out = args
-    target = os.path.join(out, 'hic_insulation_rubin_{}_50kb.tsv.gz'.format(day))
-    if os.path.exists(target):
-        return target
-    res = 50000
-    w = WINDOW_BP[res] // res
-    rows = []
-    files = glob.glob(os.path.join(directory, '*', 'Matrix_HiC_Merged_*_res50kb_chr*_norm.txt.gz'))
-    by_chrom = {re.search(r'_(chr[0-9XY]+)_norm', f).group(1): f for f in files}
-    for chrom in CHROMS:
-        if chrom not in by_chrom:
-            continue
-        table = pd.read_csv(by_chrom[chrom], sep='\t', header=None).values
-        starts = table[:, 1].astype(np.int64)
-        m = table[:, 3:].astype(float)
-        m = np.triu(m) + np.triu(m, 1).T if not np.allclose(m, m.T) else m
-        valid = m.sum(axis=1) > 0
-        m[~valid, :] = np.nan
-        m[:, ~valid] = np.nan
-        band = band_from_dense(m, 2 * w)
-        ins = diamond_insulation(band, w)
-        rows.append(pd.DataFrame({'chrom': chrom, 'start': starts, 'end': starts + res, 'insulation': ins}))
-        print('rubin', day, chrom, len(starts), int(np.isfinite(ins).sum()), flush=True)
-    pd.concat(rows).to_csv(target, sep='\t', index=False, float_format='%.5g')
-    return target
-
-
 def region_matrix(path, cell, res, region, out):
     import cooler
     chrom, span = region.split(':')
@@ -104,8 +72,8 @@ def main():
         k = argv.index('--regions')
         regions = argv[k + 1:]
         argv = argv[:k]
-    mcool_dir, rubin_dir, out = argv[:3]
-    threads = int(argv[3]) if len(argv) > 3 else 8
+    mcool_dir, out = argv[:2]
+    threads = int(argv[2]) if len(argv) > 2 else 8
     os.makedirs(out, exist_ok=True)
     if regions:
         for spec in regions:
@@ -114,12 +82,8 @@ def main():
         return
     jobs = [(os.path.join(mcool_dir, acc + '.mcool'), cell, res, out) for cell, acc in MCOOL.items()
             for res in (10000, 25000, 50000)]
-    rubin = [(os.path.join(rubin_dir, 'GSE84660_HiC_matrices_norm_Day{}'.format(d)), 'D{}'.format(d), out)
-             for d in (0, 3, 6)]
-    with Pool(min(threads, len(jobs) + len(rubin))) as pool:
-        a = pool.map_async(mcool_insulation, jobs)
-        b = pool.map_async(rubin_insulation, rubin)
-        print(a.get(), b.get())
+    with Pool(min(threads, len(jobs))) as pool:
+        print(pool.map(mcool_insulation, jobs))
 
 
 if __name__ == '__main__':
