@@ -68,12 +68,13 @@ def main():
                 for d in DATA_SETS:
                     row[d.replace('-', '')] = int(t[(t.data_set == d) & (t.p_empirical < 0.05)].shape[0])
             rows.append(row)
-    table = pd.DataFrame(rows).sort_values(['comparison', 'q', 'P'])
+    # one row per gene: the promoter fragment with the lowest q
+    table = pd.DataFrame(rows).sort_values(['comparison', 'q', 'P']).drop_duplicates(['comparison', 'gene'])
     table.to_csv(args.output + '.tsv', sep='\t', index=False)
     with open(args.output + '_rows.tex', 'w') as out:
         for r in table.itertuples():
             multi = '{} & {} & {} & {}'.format(int(r.present_paths), int(r.SPRITE), int(r.HiPoreC), int(r.PoreC)) \
-                if 'present_paths' in table and pd.notna(getattr(r, 'present_paths', float('nan'))) else '& & &'
+                if 'present_paths' in table and pd.notna(getattr(r, 'present_paths', float('nan'))) else '-- & -- & -- & --'
             out.write('{} & {} & {:+.2f} & {:.1e} & {} & {} & {}/{} & {:.1e} & {:.2g} & {} & {} \\\\\n'.format(
                 r.comparison, r.gene.replace('_', r'\_'), r.log2FC, r.padj, r.step, r.marks.replace(',', ', '),
                 r.concordant, r.tested, r.P, r.q, r.direct, multi))
