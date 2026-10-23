@@ -76,6 +76,17 @@ def write_links(graph, nodes, condition, start, end, path, edges=None):
     return len(rows)
 
 
+def masked_bedgraph(bigwig, chrom, fragments, path):
+    """The signal of a bigWig within the given fragments only, as bedGraph."""
+    bw = pyBigWig.open(bigwig)
+    with open(path, 'w') as out:
+        for start, end in fragments:
+            for s, e, v in bw.intervals(chrom, start, end) or []:
+                out.write('{}\t{}\t{}\t{:.4g}\n'.format(chrom, max(s, start), min(e, end), v))
+    bw.close()
+    return path
+
+
 def write_genes(gtf, chrom, start, end, path, types, highlight):
     """Genes of the given types overlapping the region as BED9, the highlighted gene in its own colour; returns the
     body (start, end) of the highlighted gene or None."""
@@ -141,6 +152,9 @@ def main():
     parser.add_argument('--pgt', default=os.path.expanduser('~/miniconda3/envs/hicexplorer/bin/pyGenomeTracks'))
     parser.add_argument('--padding', type=int, default=60000)
     parser.add_argument('--zoom', help='start-end of a second, smaller region on the same chromosome')
+    parser.add_argument('--reportOnly', action='store_true',
+                        help='Draw only the interactions of the candidate paths and the chromatin tracks only within '
+                             'the fragments of the report (the RNA-seq tracks stay complete)')
     args = parser.parse_args()
     a, b = args.conditions
     graph = nx.read_graphml(args.prefix + '_union.graphml')
@@ -191,13 +205,19 @@ def main():
            '[spacer]', 'height = 0.2', '']
     for cond, colour in ((a, '#c4c4c0'), (b, '#a9c6e3')):
         common = ['links_type = arcs', 'orientation = inverted' if cond == a else '', 'compact_arcs_level = 2']
-        ini += ['[links {}]'.format(cond), 'file = {}_{}.links'.format(stem, cond),
-                'title = pcHi-C {}'.format(cond), 'height = 1.8', 'color = {}'.format(colour),
-                'line_width = 0.6', 'fontsize = 8'] + common + ['']
+        first = True
+        if not args.reportOnly:
+            ini += ['[links {}]'.format(cond), 'file = {}_{}.links'.format(stem, cond),
+                    'title = pcHi-C {}'.format(cond), 'height = 1.8', 'color = {}'.format(colour),
+                    'line_width = 0.6', 'fontsize = 8'] + common + ['']
+            first = False
         for k in sorted(edges_by_step):
-            ini += ['[links {} step {}]'.format(cond, k), 'file = {}_{}_step{}.links'.format(stem, cond, k),
-                    'overlay_previous = share-y', 'color = {}'.format(STEP_COLOURS[k]), 'line_width = 1.1'] + \
-                common + ['']
+            head = ['title = pcHi-C {}'.format(cond), 'height = 1.8', 'fontsize = 8'] if first else \
+                ['overlay_previous = share-y']
+            ini += ['[links {} step {}]'.format(cond, k), 'file = {}_{}_step{}.links'.format(stem, cond, k)] + head + \
+                ['color = {}'.format(STEP_COLOURS[k]), 'line_width = 1.1'] + common + ['']
+            first = False
+    report_fragments = sorted((int(graph.nodes[n]['start']), int(graph.nodes[n]['end'])) for n in nodes)
     specs = (['RNA-seq=' + args.rna] if args.rna else []) + args.tracks
     for spec in specs:
         name, files = spec.split('=')
@@ -210,6 +230,9 @@ def main():
             bw.close()
             top = max(top, float(np.percentile(values, 99)))
         for cond, path, colour in ((a, fa, '#7f7f7a'), (b, fb, '#2a6fb0')):
+            if args.reportOnly and name != 'RNA-seq':
+                path = masked_bedgraph(path, chrom, report_fragments,
+                                       os.path.join(out_dir, '{}_{}_{}.bedgraph'.format(stem, name, cond)))
             ini += ['[{} {}]'.format(name, cond), 'file = {}'.format(path), 'title = {} {}'.format(name, cond),
                     'height = 1.0', 'color = {}'.format(colour), 'summary_method = mean', 'number_of_bins = 600',
                     'min_value = 0', 'max_value = {:.1f}'.format(top), 'fontsize = 8', '']
