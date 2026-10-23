@@ -487,7 +487,7 @@ def panel_paths(graph, source, targets, step, mark, a, b, name, path):
         ax.text(x0 if k == 0 else k, 1.1, 'promoter' if k == 0 else 'step {}'.format(k), ha='center', va='bottom',
                 fontsize=7.5)
     ax.set_xlim(x0 - 0.45, step + 1.25)
-    ax.set_ylim(-0.12, 1.18)
+    ax.set_ylim(-0.3, 1.18)
     ax.axis('off')
     legends(fig, ax, mark, a, b)
     ax.get_legend().set_bbox_to_anchor((0.5, 1.06))
