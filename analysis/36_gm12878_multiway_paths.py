@@ -7,8 +7,9 @@ in the direction of the expression change (active marks with the sign of the cha
 A triplet is present in the condition of the multi-way data (--condition B or A) when both of its interactions are
 called there (status shared or gained in B; shared or lost in A), and absent otherwise. For every data set (multi-way
 groups on restriction fragments, MultiwayData npz) the script counts the groups holding all three fragments and the
-same triplet shifted by --shifts random offsets along the chromosome (all three fragments by one offset, offsets
-larger than the span of the triplet, every shifted fragment covered by a group). A random sample of all step-2
+same triplet shifted by --shifts random offsets along the chromosome (all three nodes by one whole number of
+restriction fragments, so that every shifted node covers as many fragments as the node; offsets larger than the span
+of the triplet in fragments; every shifted node covered by a group). A random sample of all step-2
 triplets of the graph (--background) gives the same counts for paths that explain nothing.
 
 Outputs: <out>_triplets.tsv (one row per triplet and data set: observed, control mean, empirical P, log2 ratio) and
@@ -102,20 +103,28 @@ def count_chunk(task):
         GROUPS[chrom] = ChromGroups(DATA, chrom)
     groups = GROUPS[chrom]
     for i, spans in rows:
+        # the fragments of each node; controls shift all three by one whole number of fragments, so that every
+        # shifted node covers as many fragments as the node itself
+        units = [groups.overlapping(s + 1, e - 1) for s, e in spans]
+        if any(not u for u in units):
+            out.append((i, np.nan, np.nan, np.nan, 0))
+            continue
+
         def holding(offset):
-            sets = [groups.groups(groups.overlapping(s + offset + 1, e + offset - 1)) for s, e in spans]
+            sets = [groups.groups([f + offset for f in u]) for u in units]
             return None if any(len(x) == 0 for x in sets) else len(intersect(*sets))
 
         observed = holding(0)
         if observed is None:
             out.append((i, np.nan, np.nan, np.nan, 0))
             continue
-        span = max(e for _, e in spans) - min(s for s, _ in spans)
-        low, high = -min(s for s, _ in spans), groups.size - max(e for _, e in spans)
+        first, last = min(min(u) for u in units), max(max(u) for u in units)
+        span = last - first
+        low, high = -first, groups.n - 1 - last
         controls, tries = [], 0
-        while len(controls) < shifts and tries < shifts * 20:
+        while len(controls) < shifts and tries < shifts * 20 and high - low > 2 * span:
             tries += 1
-            offset = int(rng.integers(low, high))
+            offset = int(rng.integers(low, high + 1))
             if abs(offset) <= span:
                 continue
             value = holding(offset)
