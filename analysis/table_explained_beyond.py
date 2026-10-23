@@ -68,8 +68,12 @@ def main():
                 for d in DATA_SETS:
                     row[d.replace('-', '')] = int(t[(t.data_set == d) & (t.p_empirical < 0.05)].shape[0])
             rows.append(row)
-    # one row per gene: the promoter fragment with the lowest q
-    table = pd.DataFrame(rows).sort_values(['comparison', 'q', 'P']).drop_duplicates(['comparison', 'gene'])
+    table = pd.DataFrame(rows).sort_values(['comparison', 'q', 'P'])
+    # genes with several promoter fragments: the position (Mb) of each fragment after the name
+    repeated = table.duplicated(['comparison', 'gene'], keep=False)
+    table.loc[repeated, 'gene'] = [
+        '{} ({:.2f})'.format(g, (int(n.split(':')[1].split('-')[0]) + int(n.split('-')[1])) / 2e6)
+        for g, n in zip(table.gene[repeated], table.node[repeated])]
     table.to_csv(args.output + '.tsv', sep='\t', index=False)
     with open(args.output + '_rows.tex', 'w') as out:
         for r in table.itertuples():
