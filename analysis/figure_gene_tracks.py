@@ -76,6 +76,24 @@ def write_links(graph, nodes, condition, start, end, path, edges=None):
     return len(rows)
 
 
+def difference_bedgraph(bigwig_a, bigwig_b, chrom, start, end, bins, pseudocount, path):
+    """log2((B + pseudocount) / (A + pseudocount)) of the bin means of two bigWigs over the region, centred at its median
+    over the region (so that a global difference between the two data sets does not colour the whole track), as
+    bedGraph; returns the path and a symmetric scale (99th percentile of the absolute values, at least 1)."""
+    values = []
+    for f in (bigwig_a, bigwig_b):
+        bw = pyBigWig.open(f)
+        values.append(np.nan_to_num(np.array(bw.stats(chrom, start, end, type='mean', nBins=bins), dtype=float)))
+        bw.close()
+    ratio = np.log2((values[1] + pseudocount) / (values[0] + pseudocount))
+    ratio -= np.median(ratio)
+    edges = np.linspace(start, end, bins + 1).astype(int)
+    with open(path, 'w') as out:
+        for s, e, v in zip(edges[:-1], edges[1:], ratio):
+            out.write('{}\t{}\t{}\t{:.4g}\n'.format(chrom, s, e, v))
+    return path, max(1.0, float(np.percentile(np.abs(ratio), 99)))
+
+
 def masked_bedgraph(bigwig, chrom, fragments, path):
     """The signal of a bigWig within the given fragments only, as bedGraph."""
     bw = pyBigWig.open(bigwig)
@@ -152,6 +170,13 @@ def main():
     parser.add_argument('--pgt', default=os.path.expanduser('~/miniconda3/envs/hicexplorer/bin/pyGenomeTracks'))
     parser.add_argument('--padding', type=int, default=60000)
     parser.add_argument('--zoom', help='start-end of a second, smaller region on the same chromosome')
+    parser.add_argument('--difference', action='store_true',
+                        help='One track per data type: log2 of condition B over condition A in --differenceBins bins of '
+                             'the region, centred at its median over the region (red, higher in B; blue, higher in '
+                             'A), instead of one track per condition')
+    parser.add_argument('--differenceBins', type=int, default=1000)
+    parser.add_argument('--pseudocount', nargs='+', default=['RNA-seq=0.1'],
+                        help='NAME=value pseudocounts of the log2 ratio (default 1 for the chromatin tracks)')
     parser.add_argument('--reportOnly', action='store_true',
                         help='Draw only the interactions of the candidate paths and the chromatin tracks only within '
                              'the fragments of the report (the RNA-seq tracks stay complete)')
@@ -219,9 +244,18 @@ def main():
             first = False
     report_fragments = sorted((int(graph.nodes[n]['start']), int(graph.nodes[n]['end'])) for n in nodes)
     specs = (['RNA-seq=' + args.rna] if args.rna else []) + args.tracks
+    pseudo = {k: float(v) for k, v in (x.split('=') for x in args.pseudocount)}
     for spec in specs:
         name, files = spec.split('=')
         fa, fb = files.split(',')
+        if args.difference:
+            path, top = difference_bedgraph(fa, fb, chrom, start, end, args.differenceBins, pseudo.get(name, 1.0),
+                                            os.path.join(out_dir, '{}_{}_log2.bedgraph'.format(stem, name)))
+            ini += ['[{} log2]'.format(name), 'file = {}'.format(path), 'title = {}'.format(name),
+                    'height = 1.2', 'color = #b2182b', 'negative_color = #2166ac',
+                    'min_value = {:.2f}'.format(-top), 'max_value = {:.2f}'.format(top), 'fontsize = 8', '',
+                    '[spacer]', 'height = 0.1', '']
+            continue
         # one scale for both conditions of a mark: the larger 99th percentile of 600 bins of the region
         top = 0.0
         for path in (fa, fb):
