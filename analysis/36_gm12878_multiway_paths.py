@@ -86,17 +86,21 @@ def presence(graph, triplets, condition):
             for p, m, t in zip(triplets.promoter, triplets.mediator, triplets.target)]
 
 
-# shared with the worker processes (fork)
+# shared with the worker processes (fork); each worker builds the groups of a chromosome once
 DATA = None
+GROUPS = {}
 
 
-def count_chromosome(task):
-    chrom, rows, shifts, seed = task
-    rng = np.random.default_rng([seed, zlib.crc32(chrom.encode())])
+def count_chunk(task):
+    chrom, chunk, rows, shifts, seed = task
+    rng = np.random.default_rng([seed, zlib.crc32(chrom.encode()), chunk])
     out = []
     if chrom not in DATA.bins.offsets:
         return [(i, np.nan, np.nan, np.nan, 0) for i, _ in rows]
-    groups = ChromGroups(DATA, chrom)
+    if chrom not in GROUPS:
+        GROUPS.clear()
+        GROUPS[chrom] = ChromGroups(DATA, chrom)
+    groups = GROUPS[chrom]
     for i, spans in rows:
         def holding(offset):
             sets = [groups.groups(groups.overlapping(s + offset + 1, e + offset - 1)) for s, e in spans]
@@ -126,8 +130,8 @@ def count_chromosome(task):
     return out
 
 
-def count_triplets(graph, triplets, data, shifts, seed, threads):
-    """Observed and shifted counts per triplet, one chromosome per worker process."""
+def count_triplets(graph, triplets, data, shifts, seed, threads, chunk_size=100):
+    """Observed and shifted counts per triplet, in chunks of triplets of one chromosome per task."""
     global DATA
     DATA = data
     chroms = triplets.promoter.map(lambda n: graph.nodes[n]['chrom'])
@@ -135,10 +139,11 @@ def count_triplets(graph, triplets, data, shifts, seed, threads):
     for chrom, sub in triplets.groupby(chroms):
         rows = [(i, [(int(graph.nodes[n]['start']), int(graph.nodes[n]['end'])) for n in (p, m, t)])
                 for i, p, m, t in zip(sub.index, sub.promoter, sub.mediator, sub.target)]
-        tasks.append((chrom, rows, shifts, seed))
-    tasks.sort(key=lambda task: -len(task[1]))
+        for chunk, first in enumerate(range(0, len(rows), chunk_size)):
+            tasks.append((chrom, chunk, rows[first:first + chunk_size], shifts, seed))
+    # chunks of one chromosome in sequence, so that a worker mostly reuses the groups it built
     with multiprocessing.get_context('fork').Pool(threads) as pool:
-        out = [row for rows in pool.imap_unordered(count_chromosome, tasks) for row in rows]
+        out = [row for rows in pool.imap(count_chunk, tasks, chunksize=1) for row in rows]
     table = pd.DataFrame(out, columns=['index', 'observed', 'control_mean', 'p_empirical', 'n_controls'])
     return table.set_index('index').reindex(triplets.index)
 
