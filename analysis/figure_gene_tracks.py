@@ -9,7 +9,8 @@
 The fragments of each step are those of figure_gene_report.py: the promoter, the nodes on the shortest paths to the
 nodes at --step whose mark changes at least two-fold in the direction of the expression change, and these nodes.
 
-The arcs are the edges of the union graph of the comparison between fragments of the report. With --zoom, a second
+The arcs are the edges of the union graph of the comparison at the fragments of the report; the edges of the
+explaining paths (promoter to the concordant nodes at --step) are drawn in colour over the others. With --zoom, a second
 PDF <prefix>_zoom.pdf shows the genes, RNA-seq, chromatin tracks and fragments of the report in a smaller region.
 
 Usage: python figure_gene_tracks.py <cmp prefix> <promoter node> <mark> <genes.gtf.gz> <output prefix>
@@ -31,7 +32,7 @@ import pandas as pd
 import pyBigWig
 
 STEP_COLOURS = {0: '#222222', 1: '#7f7f7a', 2: '#b07f2a', 3: '#b2182b'}
-GENE_COLOUR, HIGHLIGHT_COLOUR = '#7f7f7a', '#d95f02'
+GENE_COLOUR, HIGHLIGHT_COLOUR, PATH_COLOUR = '#7f7f7a', '#d95f02', '#d95f02'
 
 
 def log2_change(data, mark, a, b):
@@ -41,23 +42,23 @@ def log2_change(data, mark, a, b):
 def report_nodes(graph, source, mark, a, b, step, sign):
     distance = nx.single_source_shortest_path_length(graph, source, cutoff=step)
     targets = [n for n, k in distance.items() if k == step and sign * log2_change(graph.nodes[n], mark, a, b) >= 1]
-    by_step = {0: {source}, step: set(targets)}
+    by_step, edges = {0: {source}, step: set(targets)}, set()
     for t in targets:
         for path in nx.all_shortest_paths(graph, source, t):
             for k in range(1, step):
                 by_step.setdefault(k, set()).add(path[k])
-    return by_step
+            edges.update(frozenset(e) for e in zip(path[:-1], path[1:]))
+    return by_step, edges
 
 
-def write_links(graph, nodes, condition, start, end, path):
-    """Edges of the union graph between fragments of the report (the promoter, its direct contacts on the paths and
-    the nodes of the further steps) present in one condition (shared and lost in A, shared and gained in B) with both
-    ends in the region, as pyGenomeTracks links with the interaction strength."""
+def write_links(graph, nodes, condition, start, end, path, edges=None):
+    """Edges of the union graph with at least one end on a fragment of the report (or only the given edges) present
+    in one condition (shared and lost in A, shared and gained in B) with both ends in the region, as pyGenomeTracks
+    links with the interaction strength."""
     keep = {'a': ('shared', 'lost'), 'b': ('shared', 'gained')}[condition]
     rows = []
-    nodes = set(nodes)
     for u, v, data in graph.edges(nodes, data=True):
-        if v not in nodes or data.get('status', 'shared') not in keep:
+        if data.get('status', 'shared') not in keep or (edges is not None and frozenset((u, v)) not in edges):
             continue
         (s1, e1), (s2, e2) = sorted((int(graph.nodes[x]['start']), int(graph.nodes[x]['end'])) for x in (u, v))
         if s1 < start or e2 > end or (s1, s2) in {(r[1], r[4]) for r in rows}:
@@ -136,15 +137,18 @@ def main():
     levels = pd.read_csv(args.prefix + '_explanations_all_levels.tsv', sep='\t', low_memory=False)
     sign = np.sign(float(levels.loc[levels.node == args.promoter, 'rna_log2FC'].iloc[0]))
     gene = args.gene or graph.nodes[args.promoter]['genes'].split(',')[0]
-    by_step = report_nodes(graph, args.promoter, args.mark, a, b, args.step, sign)
+    by_step, path_edges = report_nodes(graph, args.promoter, args.mark, a, b, args.step, sign)
     nodes = [n for v in by_step.values() for n in v]
     chrom = graph.nodes[args.promoter]['chrom']
     start = min(int(graph.nodes[n]['start']) for n in nodes) - args.padding
     end = max(int(graph.nodes[n]['end']) for n in nodes) + args.padding
     out_dir = os.path.dirname(os.path.abspath(args.output))
     stem = os.path.basename(args.output)
-    counts = {cond: write_links(graph, nodes, key, start, end, os.path.join(out_dir, '{}_{}.links'.format(stem, cond)))
-              for cond, key in ((a, 'a'), (b, 'b'))}
+    counts = {}
+    for cond, key in ((a, 'a'), (b, 'b')):
+        counts[cond] = (write_links(graph, nodes, key, start, end, os.path.join(out_dir, '{}_{}.links'.format(stem, cond))),
+                        write_links(graph, nodes, key, start, end,
+                                    os.path.join(out_dir, '{}_{}_paths.links'.format(stem, cond)), path_edges))
     write_genes(args.gtf, chrom, start, end, os.path.join(out_dir, stem + '_genes.bed'), args.geneTypes, gene)
     with open(os.path.join(out_dir, stem + '_promoter.bed'), 'w') as out:
         out.write('{}\t{}\t{}\n'.format(chrom, graph.nodes[args.promoter]['start'], graph.nodes[args.promoter]['end']))
@@ -162,11 +166,13 @@ def main():
            '[genes]', 'file = {}_genes.bed'.format(stem), 'title = genes', 'height = 1.6', 'fontsize = 8',
            'style = flybase', 'labels = true', 'color = bed_rgb', 'color_utr = bed_rgb', '',
            '[spacer]', 'height = 0.2', '']
-    for cond, colour in ((a, '#7f7f7a'), (b, '#2a6fb0')):
+    for cond, colour in ((a, '#c4c4c0'), (b, '#a9c6e3')):
+        common = ['links_type = arcs', 'orientation = inverted' if cond == a else '', 'compact_arcs_level = 2']
         ini += ['[links {}]'.format(cond), 'file = {}_{}.links'.format(stem, cond),
                 'title = pcHi-C {}'.format(cond), 'height = 1.8', 'color = {}'.format(colour),
-                'line_width = 0.8', 'links_type = arcs', 'orientation = inverted' if cond == a else '',
-                'compact_arcs_level = 2', 'fontsize = 8', '']
+                'line_width = 0.6', 'fontsize = 8'] + common + ['',
+                '[links {} paths]'.format(cond), 'file = {}_{}_paths.links'.format(stem, cond),
+                'overlay_previous = share-y', 'color = {}'.format(PATH_COLOUR), 'line_width = 1.0'] + common + ['']
     specs = (['RNA-seq=' + args.rna] if args.rna else []) + args.tracks
     for spec in specs:
         name, files = spec.split('=')
