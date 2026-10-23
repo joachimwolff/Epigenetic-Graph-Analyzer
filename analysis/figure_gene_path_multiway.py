@@ -6,6 +6,7 @@
                         controls shifted by whole restriction fragments; rows 'mediator > element', in two blocks:
                         paths present in the condition of the multi-way data (both interactions called there) and
                         paths present only in the other condition
+<out>_paths_matrix_supported.pdf  the same for the paths with P < 0.05 in at least one data set
 <out>_paths_groups.pdf  for the paths with P < 0.05 in at least one data set (up to --maxPaths), every multi-way group
                         that holds the three fragments, drawn along the chromosome: a line from the first to the last
                         fragment of the group within the window, ticks at its fragments, the promoter, mediator and
@@ -68,11 +69,11 @@ def panel_matrix(graph, paths, data_sets, path, condition='GM12878', other='naiv
             layout.append(('row', (m, t), y))
             y += 1
         y += 0.4
-    fig, ax = plt.subplots(figsize=(0.42 * len(data_sets) + 2.0, 0.15 * y + 0.9))
+    fig, ax = plt.subplots(figsize=(0.36 * len(data_sets) + 1.6, 0.14 * y + 0.9))
     labels, ticks = [], []
     for kind, item, yy in layout:
         if kind == 'title':
-            ax.text(-0.1, yy + 0.6, item, ha='right', va='center', fontsize=6.5, fontweight='bold')
+            ax.text(-0.1, yy + 0.6, item, ha='right', va='center', fontsize=7.5, fontweight='bold')
             continue
         m, t = item
         ticks.append(yy + 0.5)
@@ -86,10 +87,10 @@ def panel_matrix(graph, paths, data_sets, path, condition='GM12878', other='naiv
             ax.add_patch(Rectangle((j, yy), 1, 1, facecolor=CMAP(NORM(r.log2_ratio)), edgecolor='white', lw=0.5))
             if r.p_empirical < 0.05:
                 ax.add_patch(Rectangle((j + 0.06, yy + 0.06), 0.88, 0.88, fill=False, edgecolor=INK, lw=1.0))
-            ax.text(j + 0.5, yy + 0.5, '{:d}'.format(int(r.observed)), ha='center', va='center', fontsize=5.5,
+            ax.text(j + 0.5, yy + 0.5, '{:d}'.format(int(r.observed)), ha='center', va='center', fontsize=6.5,
                     color=INK)
     ax.set_yticks(ticks)
-    ax.set_yticklabels(labels, fontsize=5.5)
+    ax.set_yticklabels(labels, fontsize=6.5)
     ax.set_xticks(np.arange(len(data_sets)) + 0.5)
     ax.set_xticklabels(data_sets, fontsize=7, rotation=30, ha='right')
     ax.set_xlim(0, len(data_sets))
@@ -97,8 +98,9 @@ def panel_matrix(graph, paths, data_sets, path, condition='GM12878', other='naiv
     ax.tick_params(length=0)
     for side in ax.spines.values():
         side.set_visible(False)
-    bar = fig.colorbar(plt.cm.ScalarMappable(norm=NORM, cmap=CMAP), ax=ax, orientation='horizontal', fraction=0.03,
-                       pad=0.06, shrink=0.9, aspect=14)
+    height = fig.get_size_inches()[1]
+    bar = fig.colorbar(plt.cm.ScalarMappable(norm=NORM, cmap=CMAP), ax=ax, orientation='horizontal',
+                       fraction=0.12 / height, pad=0.55 / height, shrink=0.9, aspect=14)
     bar.set_label('log$_2$ (observed + 1) / (control + 1)', fontsize=6)
     bar.ax.tick_params(labelsize=6)
     fig.savefig(path, bbox_inches='tight')
@@ -135,11 +137,13 @@ def panel_groups(graph, chrom, selected, data, path, padding):
             if members:
                 ax.text(hi, y - 0.5 * len(members) - 0.5, '{} {}'.format(len(members), label), fontsize=6,
                         color=DATA_COLOURS[k], ha='left', va='center')
-        for (s, e), role in zip(spans, ('promoter', 'mediator', 'element')):
+        for k, ((s, e), role) in enumerate(zip(spans, ('promoter', 'mediator', 'element'))):
             ax.axvspan(s, e, color=ROLE_COLOURS[role], alpha=0.25, lw=0, zorder=0)
-            ax.text((s + e) / 2, -1.2, role, fontsize=6, ha='center', va='top', color=ROLE_COLOURS[role])
+            # labels staggered in height, so that close fragments do not overlap
+            ax.text((s + e) / 2, -0.8 - 0.9 * (k % 2), role, fontsize=6, ha='center', va='top',
+                    color=ROLE_COLOURS[role])
         ax.set_xlim(lo, hi)
-        ax.set_ylim(-2.2, max(y, 1))
+        ax.set_ylim(-2.6, max(y, 1))
         ax.set_yticks([])
         ax.set_title('via {} to {}'.format(node_label(graph, m), node_label(graph, t)), fontsize=7, loc='left')
         ticks = ax.get_xticks()
@@ -168,6 +172,8 @@ def main():
     paths = triplets[(triplets.promoter == args.promoter) & (triplets.set == 'explaining')]
     labels = [item.split('=', 1)[0] for item in args.data]
     rows = panel_matrix(graph, paths, labels, args.output + '_paths_matrix.pdf')
+    keep = paths.groupby(['mediator', 'target']).p_empirical.transform('min') < 0.05
+    panel_matrix(graph, paths[keep], labels, args.output + '_paths_matrix_supported.pdf')
     supported = paths[paths.p_empirical < 0.05].groupby(['mediator', 'target']).agg(
         n=('data_set', 'nunique'), groups=('observed', 'sum'), present=('present', 'first')).reset_index()
     supported = supported.sort_values(['n', 'present', 'groups'], ascending=False).head(args.maxPaths)
