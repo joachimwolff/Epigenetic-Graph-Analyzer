@@ -5,7 +5,8 @@
 <prefix>_level_step<k>.pdf   for k = 2 .. --maxStep: the interactions of the shortest paths to the nodes k steps away with
                              a concordant change, coloured by the step they reach; only these nodes shaded
 
-Every panel shows the genes (the gene of the report in orange, its body shaded), the interactions of the level in both
+Every panel shows the genes (the gene of the report in orange, its body lightly and the promoter fragment of the report
+strongly shaded), the interactions of the level in both
 conditions and one log2 track (condition B over A, centred at its median in the region; red, higher in B; blue, higher
 in A) per data type. Nodes are shaded only at a level that explains the gene in the egaDifferential levels table
 (explains_declared_mean of promoter_marks, step1_marks, step<k>), and only for the marks that explain it there
@@ -106,6 +107,7 @@ def main():
     stem = os.path.basename(args.output)
     body = write_genes(args.gtf, chrom, start, end, os.path.join(out_dir, stem + '_genes.bed'), args.geneTypes, gene)
     write_bed(os.path.join(out_dir, stem + '_gene.bed'), chrom, [body or span(source)])
+    write_bed(os.path.join(out_dir, stem + '_promoter.bed'), chrom, [span(source)])
     pseudo = {k: float(v) for k, v in (x.split('=') for x in args.pseudocount)}
     tracks = []
     for spec in (['RNA-seq=' + args.rna] if args.rna else []) + args.tracks:
@@ -133,8 +135,11 @@ def main():
                      'orientation = inverted' if cond == a else '', 'compact_arcs_level = 2', '']
                 first = False
         ini += tracks
+        # the gene body lightly, the promoter fragment of the report strongly
         ini += ['[gene]', 'file = {}_gene.bed'.format(stem), 'type = vhighlight',
-                'color = {}'.format(HIGHLIGHT_COLOUR), 'alpha = 0.25', '']
+                'color = {}'.format(HIGHLIGHT_COLOUR), 'alpha = 0.12', '',
+                '[promoter]', 'file = {}_promoter.bed'.format(stem), 'type = vhighlight',
+                'color = {}'.format(HIGHLIGHT_COLOUR), 'alpha = 0.45', '']
         if highlight:
             bed = os.path.join(out_dir, '{}_{}_explaining.bed'.format(stem, label))
             write_bed(bed, chrom, sorted(span(n) for n in highlight))

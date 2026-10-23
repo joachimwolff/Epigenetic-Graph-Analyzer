@@ -121,7 +121,9 @@ def write_genes(gtf, chrom, start, end, path, types, highlight):
             if attrs.get('gene_type', '').strip('"') not in types and name != highlight:
                 continue
             if name == highlight:
-                found = (int(f[3]) - 1, int(f[4]))
+                # the union of all entries of the gene
+                found = (int(f[3]) - 1, int(f[4])) if found is None else (min(found[0], int(f[3]) - 1),
+                                                                          max(found[1], int(f[4])))
             colour = (HIGHLIGHT_COLOUR if name == highlight else GENE_COLOUR).lstrip('#')
             rgb = ','.join(str(int(colour[i:i + 2], 16)) for i in (0, 2, 4))
             out.write('{}\t{}\t{}\t{}\t0\t{}\t{}\t{}\t{}\n'.format(chrom, int(f[3]) - 1, f[4], name, f[6],
