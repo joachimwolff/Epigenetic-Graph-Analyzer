@@ -444,7 +444,7 @@
     state.view = p.view || 'overview';
     if (state.view === 'gene' && state.gene) { renderGene(false); markTab(); return; }
     var views = { overview: renderOverview, genes: renderGenes, communities: renderCommunities,
-                  switching: renderSwitching, triggers: renderTriggers };
+                  switching: renderSwitching };
     (views[state.view] || renderOverview)();
     markTab();
   }
@@ -692,7 +692,7 @@
       '<li>A gene page holds the text of the gene report (egaReport): at a glance, the explanation ladder, the evidence by level, chromatin states, element classes, hub and community.</li>' +
       '<li>The arc view and the neighbourhood graph are drawn from the embedded graph for 1 to 3 steps. Hover a node or an interaction for its details; click a node to see what it explains.</li>' +
       '<li>The browse views list the differential genes, the communities and their transitions' +
-      (D.switching ? ', the enhancer switching events' : '') + (D.triggers ? ' and the candidate triggers' : '') +
+      (D.switching ? ' and the enhancer switching events' : '') +
       '; their columns sort on click and gene names open the gene.</li>'));
     section(v, 'Comparison');
     v.appendChild(el('p', null, 'Condition A: ' + esc(M.labels[0]) + (M.labels[0] !== M.names[0] ? ' (' + esc(M.names[0]) + ')' : '') +
@@ -779,7 +779,6 @@
       if (info.hub) page.appendChild(el('div', null, info.hub.h));
       if (info.community) page.appendChild(el('div', null, info.community.h));
     }
-    geneTriggers(page, gene);
     geneSwitching(page, gene);
     linkGenes(page);
     drawFigures();
@@ -1215,21 +1214,8 @@
     if (!quiet && ctx.panel && window.innerWidth <= 860) ctx.panel.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
-  // triggers and switching events of the gene -----------------------------------------------------------------------
+  // switching events of the gene ------------------------------------------------------------------------------------
   function columnIndex(table) { var out = {}; table.cols.forEach(function (c, k) { out[c] = k; }); return out; }
-
-  function geneTriggers(page, gene) {
-    if (!D.triggers) return;
-    var c = columnIndex(D.triggers);
-    var rows = D.triggers.rows.filter(function (r) { return String(r[c.gene]).split(',').indexOf(gene) >= 0; });
-    if (!rows.length) return;
-    section(page, 'Candidate triggers', 'triggers');
-    page.appendChild(el('p', { class: 'note' }, 'Transcription factors with a motif at the nodes that carry the explanation of <x-g>' + esc(gene) +
-      '</x-g> (egaTriggers), the best ' + D.triggers.maxRank + ' by rank.'));
-    var host = el('div');
-    page.appendChild(host);
-    makeTable(host, { rows: rows, columns: triggerColumns(c, false), sort: 'rank', page: 20, noun: ['factor', 'factors'] });
-  }
 
   function geneSwitching(page, gene) {
     if (!D.switching) return;
@@ -1474,59 +1460,6 @@
         if (f.type && r[c.element_type] !== f.type) return false;
         if (f.changed && !r[c.element_class_changed]) return false;
         if (f.text && (String(r[c.genes_lost]) + ',' + String(r[c.genes_gained]) + ',' + String(r[c.element_genes])).toLowerCase().indexOf(f.text) < 0) return false;
-        return true;
-      });
-    }
-  }
-
-  // ------------------------------------------------------------------------------------------------------------------
-  // browse: candidate triggers
-
-  function triggerColumns(c, withGene) {
-    var cols = [];
-    if (withGene) {
-      cols.push({ id: 'gene', label: 'Gene', value: function (r) { return r[c.gene]; }, render: function (r) { return String(r[c.gene]).split(',').map(geneTag).join(', '); } });
-      cols.push({ id: 'gene_log2FC', label: 'log2 FC', num: true, value: function (r) { return r[c.gene_log2FC]; }, render: function (r) { return log2txt(r[c.gene_log2FC]); } });
-      cols.push({ id: 'explained_at', label: 'Explained at', value: function (r) { return r[c.explained_at]; } });
-    }
-    return cols.concat([
-      { id: 'rank', label: 'Rank', num: true, value: function (r) { return r[c.rank]; } },
-      { id: 'tf', label: 'Factor', value: function (r) { return r[c.tf]; }, render: function (r) { return D.genes[r[c.tf]] ? geneTag(r[c.tf]) : esc(r[c.tf]); } },
-      { id: 'relation', label: 'Relation', value: function (r) { return r[c.relation]; } },
-      { id: 'evidence', label: 'Evidence', value: function (r) { return r[c.evidence]; } },
-      { id: 'tf_log2FC', label: 'Factor log2 FC', num: true, value: function (r) { return r[c.tf_log2FC]; }, render: function (r) { return log2txt(r[c.tf_log2FC]); } },
-      { id: 'motif', label: 'Motif', value: function (r) { return r[c.motif]; } },
-      { id: 'steps', label: 'Motif at', value: function (r) { return r[c.steps_with_motif]; }, render: function (r) { return esc(String(r[c.steps_with_motif] || '').replace(/;/g, ', ')); } },
-      { id: 'p', label: 'Motif P', num: true, value: function (r) { return r[c.gene_motif_p]; }, render: function (r) { return pq(r[c.gene_motif_p]); } },
-      { id: 'score', label: 'Score', num: true, value: function (r) { return r[c.rank_score]; }, render: function (r) { return sig(r[c.rank_score], 3); } }
-    ]);
-  }
-
-  function renderTriggers() {
-    var v = view(), T = D.triggers;
-    v.appendChild(el('h2', { text: 'Candidate triggers' }));
-    if (!T) { v.appendChild(el('p', { class: 'note', text: 'No candidate triggers for this comparison (egaTriggers output not found).' })); return; }
-    var c = columnIndex(T);
-    v.appendChild(el('p', { class: 'note' }, 'Transcription factors whose motifs occur at the nodes that carry the explanation of a gene, ranked per gene (egaTriggers, ' + esc(T.file) +
-      '); the best ' + T.maxRank + ' per gene, ' + int(T.rows.length) + ' of ' + int(T.total) + ' rows. Relation: whether the change of the factor fits its known role as activator or repressor.'));
-    var f = { gene: '', tf: '', relation: '', rank: T.maxRank };
-    var controls = controlsRow(v);
-    textControl(controls, 'Filter', 'gene name', function (x) { f.gene = x; apply(); });
-    textControl(controls, 'Factor', 'factor name', function (x) { f.tf = x; apply(); });
-    var relations = {};
-    T.rows.forEach(function (r) { relations[r[c.relation]] = 1; });
-    selectControl(controls, 'Relation', [['', 'any']].concat(Object.keys(relations).sort().map(function (t) { return [t, t]; })), '', function (x) { f.relation = x; apply(); });
-    selectControl(controls, 'Rank up to', [1, 3, 5, 10].filter(function (x) { return x <= T.maxRank; }).map(function (x) { return [x, String(x)]; }).concat([[T.maxRank, String(T.maxRank)]])
-      .filter(function (x, k, all) { return all.findIndex(function (y) { return y[0] === x[0]; }) === k; }), T.maxRank, function (x) { f.rank = parseInt(x, 10); apply(); });
-    var host = el('div');
-    v.appendChild(host);
-    var table = makeTable(host, { rows: T.rows, columns: triggerColumns(c, true), sort: 'score', sortDir: -1, page: 100, noun: ['row', 'rows'] });
-    function apply() {
-      table.filter(function (r) {
-        if (f.gene && String(r[c.gene]).toLowerCase().indexOf(f.gene) < 0) return false;
-        if (f.tf && String(r[c.tf]).toLowerCase().indexOf(f.tf) < 0) return false;
-        if (f.relation && r[c.relation] !== f.relation) return false;
-        if (r[c.rank] > f.rank) return false;
         return true;
       });
     }

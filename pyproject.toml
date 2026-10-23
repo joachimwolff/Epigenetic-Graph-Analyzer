@@ -28,14 +28,13 @@ classifiers = [
 [project.optional-dependencies]
 leiden = ["python-igraph>=0.10", "leidenalg>=0.9"]
 test = ["pytest>=7", "scikit-learn>=1.0", "h5py>=3.0"]
-triggers = ["MOODS-python>=1.9.4", "pyfaidx>=0.8"]
 # cool / mcool input (egaCreateGraph --format cool)
 cool = ["h5py>=3.0"]
 # egaEqtl regression models; partition comparison of the community robustness
 eqtl = ["statsmodels>=0.13"]
 compare = ["scikit-learn>=1.0"]
 # the analysis scripts of the manuscript (analysis/); exact versions in environment.yml
-analysis = ["python-igraph>=0.10", "leidenalg>=0.9", "MOODS-python>=1.9.4", "pyfaidx>=0.8", "h5py>=3.0",
+analysis = ["python-igraph>=0.10", "leidenalg>=0.9", "h5py>=3.0",
             "statsmodels>=0.13", "scikit-learn>=1.0", "pydeseq2>=0.4", "networkx>=3.4"]
 
 [project.urls]
@@ -57,7 +56,6 @@ egaReport = "epigeneticgraphanalyzer.egaReport:main"
 egaExplorer = "epigeneticgraphanalyzer.explorer:main"
 egaSwitching = "epigeneticgraphanalyzer.switching:main"
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
-egaTriggers = "epigeneticgraphanalyzer.egaTriggers:main"
 egaCompartments = "epigeneticgraphanalyzer.egaCompartments:main"
 egaBoundaries = "epigeneticgraphanalyzer.egaBoundaries:main"
 egaTadCrossing = "epigeneticgraphanalyzer.egaTadCrossing:main"

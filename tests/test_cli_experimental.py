@@ -1,7 +1,6 @@
 import pytest
 
-from epigeneticgraphanalyzer import (egaBoundaries, egaCompartments, egaTriggers,
-                                     switching)
+from epigeneticgraphanalyzer import (egaBoundaries, egaCompartments, switching)
 from epigeneticgraphanalyzer._cli import EXPERIMENTAL, base_parser
 
 
@@ -10,7 +9,7 @@ def test_base_parser_marks_experimental_modules():
     assert base_parser('x').description == 'x'
 
 
-@pytest.mark.parametrize('module', [switching, egaTriggers, egaCompartments, egaBoundaries])
+@pytest.mark.parametrize('module', [switching, egaCompartments, egaBoundaries])
 def test_experimental_help(module, capsys):
     with pytest.raises(SystemExit):
         module.parse_args(['--help']) if hasattr(module, 'parse_args') else module.main(['--help'])

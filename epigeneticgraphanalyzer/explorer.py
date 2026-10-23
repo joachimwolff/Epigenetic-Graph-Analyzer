@@ -2,8 +2,7 @@
 
 The explorer reads the outputs of egaDifferential (<prefix>_*: gene classes, all-level explanations, elements,
 communities, mark roles, states, the union graph) and, when present, the enhancer switching events
-(<results>/enhancer_switching/<name>_switch_events.tsv) and the candidate triggers
-(<results>/triggers/<name>_gene_triggers.tsv). It writes one HTML file with inline CSS and JavaScript and the data
+(<results>/enhancer_switching/<name>_switch_events.tsv). It writes one HTML file with inline CSS and JavaScript and the data
 embedded as gzip-compressed JSON (base64), decompressed in the browser; the page makes no network request.
 
 The text of every gene ('At a glance', evidence by level, chromatin states, element classes, hub and community) is
@@ -11,7 +10,7 @@ written by the generators of egaReport, so that the explorer and the reports rea
 neighbourhood graph, explanation ladder) are drawn in the browser as SVG from the embedded graph.
 
 A gene opens directly with the URL hash '#gene=NAME' (optionally '&k=2' for the steps of the neighbourhood);
-'#view=genes', '#view=communities', '#view=switching' and '#view=triggers' open the browse views.
+'#view=genes', '#view=communities' and '#view=switching' open the browse views.
 """
 
 import argparse
@@ -44,9 +43,6 @@ TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'templat
 SWITCH_COLUMNS = ('rank', 'element', 'element_type', 'element_genes', 'element_class_changed', 'genes_lost',
                   'rna_log2FC_lost', 'distance_lost', 'promoter_lost', 'genes_gained', 'rna_log2FC_gained',
                   'distance_gained', 'promoter_gained', 'concordant', 'evidence')
-TRIGGER_COLUMNS = ('gene', 'gene_log2FC', 'explained_at', 'promoter_transition', 'rank', 'n_candidates', 'tf',
-                   'evidence', 'relation', 'tf_log2FC', 'tf_padj', 'tf_in_graph', 'motif', 'steps_with_motif',
-                   'gene_motif_p', 'group_q', 'rank_score')
 STATUS_CODE = {'shared': 0, 'gained': 1, 'lost': 2}
 # support class of an edge (egaDifferential attribute support): stable, threshold-sensitive, not testable
 SUPPORT_CODE = {'stable': 0, 'threshold-sensitive': 1, 'not testable': 2}
@@ -58,7 +54,7 @@ SUPPORT_CODE = {'stable': 0, 'threshold-sensitive': 1, 'not testable': 2}
 def parse_arguments(args=None):
     parser = base_parser('Self-contained offline HTML explorer of a differential run of egaDifferential: gene search '
                          'with the text of egaReport, interactive arc view and neighbourhood graph, and browse views '
-                         'of the differential genes, communities, enhancer switching events and candidate triggers.')
+                         'of the differential genes, communities and enhancer switching events.')
     parser.add_argument('--prefix', '-p', required=True, help='Output prefix of egaDifferential')
     parser.add_argument('--explainPrefix', default=None,
                         help='Output prefix of egaExplain (default: <prefix dir>/explain/<prefix name> if present)')
@@ -70,12 +66,8 @@ def parse_arguments(args=None):
     parser.add_argument('--switching', default=None,
                         help='Enhancer switching events (default: <results>/enhancer_switching/<name>_switch_events'
                              '.tsv if present; "none" to leave out)')
-    parser.add_argument('--triggers', default=None,
-                        help='Candidate triggers (default: <results>/triggers/<name>_gene_triggers.tsv if present; '
-                             '"none" to leave out)')
     parser.add_argument('--maxSwitchEvents', type=int, default=10000,
                         help='Switching events embedded, by rank (the concordant ones first)')
-    parser.add_argument('--maxTriggers', type=int, default=10, help='Candidate triggers embedded per gene, by rank')
     parser.add_argument('--differentialOnly', action='store_true',
                         help='Search index of the differential genes only (default: every baited gene of the graph)')
     parser.add_argument('--maxNodes', type=int, default=80,
@@ -445,31 +437,6 @@ class Builder:
                                                                                    'class_b') for c in columns],
                 'rows': rows, 'total': total, 'file': os.path.basename(path)}
 
-    def triggers(self, path):
-        if not path or not os.path.exists(path):
-            return None
-        table = pd.read_csv(path, sep='\t', low_memory=False)
-        total = len(table)
-        if 'rank' in table:
-            table = table[table['rank'] <= self.args.maxTriggers]
-        columns = [c for c in TRIGGER_COLUMNS if c in table]
-        rows = []
-        for r in table[columns].itertuples(index=False):
-            row = []
-            for v in r:
-                if isinstance(v, (bool, np.bool_)):
-                    row.append(1 if v else 0)
-                elif isinstance(v, (float, np.floating)):
-                    row.append(number(v, 3))
-                elif isinstance(v, (int, np.integer)):
-                    row.append(int(v))
-                else:
-                    row.append('' if isnan(v) else str(v))
-            rows.append(row)
-        log.info('triggers: %d of %d rows (rank <= %d) from %s', len(rows), total, self.args.maxTriggers, path)
-        return {'cols': columns, 'rows': rows, 'total': total, 'maxRank': self.args.maxTriggers,
-                'file': os.path.basename(path)}
-
     def tads(self):
         """Boundaries counted as crossed (--tads), per chromosome: [position, strength rank, strong (top decile)]."""
         analysis = self.run.tad_analysis
@@ -570,8 +537,7 @@ def build(args):
     data = {'graph': builder.graph_data(), 'genes': genes, 'table': builder.gene_table(),
             'communities': builder.communities(),
             'switching': builder.switching(default_path(args.prefix, 'enhancer_switching', '_switch_events.tsv',
-                                                        args.switching)),
-            'triggers': builder.triggers(default_path(args.prefix, 'triggers', '_gene_triggers.tsv', args.triggers))}
+                                                        args.switching))}
     tads = builder.tads()
     if tads is not None:
         data['tads'] = tads
