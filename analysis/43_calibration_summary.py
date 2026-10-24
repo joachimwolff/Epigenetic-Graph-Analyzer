@@ -6,7 +6,8 @@ share with a candidate explanation at step 2 or, failing that, at step 3 (explai
 P < 0.05 beyond the mirrored loci, and with q < 0.05. Rows: real, then each null run (<out>/<null>_<seed> or
 <out>/bin<width>/rewired_<seed>), with the rewiring statistics where present.
 
-Usage: python 43_calibration_summary.py <real run prefix> <calibration dir>
+Usage: python 43_calibration_summary.py <real run prefix> <calibration dir> [run name, default naiveB_vs_GM12878]
+           [run directory pattern, default *]
 """
 
 import glob
@@ -42,9 +43,11 @@ def summary(prefix):
 
 def main():
     real, out = sys.argv[1], sys.argv[2]
+    name = sys.argv[3] if len(sys.argv) > 3 else 'naiveB_vs_GM12878'
+    pattern = sys.argv[4] if len(sys.argv) > 4 else '*'
     rows = [dict(run='real', **summary(real))]
-    for prefix in sorted(glob.glob(os.path.join(out, '*', 'naiveB_vs_GM12878_explanations_all_levels.tsv')) +
-                         glob.glob(os.path.join(out, 'bin*', '*', 'naiveB_vs_GM12878_explanations_all_levels.tsv'))):
+    for prefix in sorted(glob.glob(os.path.join(out, pattern, name + '_explanations_all_levels.tsv')) +
+                         glob.glob(os.path.join(out, 'bin*', pattern, name + '_explanations_all_levels.tsv'))):
         prefix = prefix[:-len('_explanations_all_levels.tsv')]
         run = os.path.relpath(os.path.dirname(prefix), out)
         row = dict(run=run, **summary(prefix))
@@ -58,7 +61,7 @@ def main():
     pd.set_option('display.width', 250)
     pd.set_option('display.max_columns', 40)
     print(table.to_string(index=False, float_format=lambda x: '{:.3f}'.format(x)))
-    table.to_csv(os.path.join(out, 'calibration_summary.tsv'), sep='\t', index=False)
+    table.to_csv(os.path.join(out, 'calibration_summary_{}.tsv'.format(name)), sep='\t', index=False)
 
 
 if __name__ == '__main__':

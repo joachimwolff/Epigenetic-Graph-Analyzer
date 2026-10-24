@@ -17,7 +17,10 @@ An element (or a control fragment) holds an eQTL when a significant variant of o
 fragment (gene_ids) lies inside it. Only elements within --maxDistance of the promoter are evaluated (the cis window of
 the eQTL mapping). Reported: the share of explaining elements with an eQTL and, per control, the expected share (mean
 over elements of the share among its controls) and the difference to the explaining elements (over the elements with
-controls), with a bootstrap over genes.
+controls), with a bootstrap over genes. Per gene (<out>_genes.tsv), the explaining elements within --maxDistance are
+set against all window fragments within --maxDistance (not within three steps, concordant change of an explaining
+mark): their numbers and how many of each hold a link to the gene; the summary adds the pooled shares and the median
+number of window fragments per explaining element.
 
 Usage: python 44_explaining_elements_eqtl.py <run prefix> <rmap> <eQTL significant tsv(.gz)> <out prefix>
            --tracksA mark=bw ... --tracksB mark=bw ... [--maxP 1] [--minChange 1] [--distanceFactor 1.25]
@@ -105,7 +108,7 @@ def main():
                 return True
         return False
 
-    rows = []
+    rows, gene_rows = [], []
     for row in later.itertuples():
         node = row.node
         attrs = graph.nodes[node]
@@ -125,6 +128,23 @@ def main():
         near = {(graph.nodes[n]['chrom'], int(graph.nodes[n]['start'])) for n in distance}
         same_step = [n for n, d in distance.items() if d == step and n not in elements]
         table = fragments[chrom]
+
+        def concordant(f):
+            return any(float(signs[m]) * sign * signal.change(m, chrom, int(f.start), int(f.end)) >= args.minChange
+                       for m in marks)
+        kept = [n for n in elements if graph.nodes[n]['chrom'] == chrom and
+                abs((int(graph.nodes[n]['start']) + int(graph.nodes[n]['end'])) // 2 - centre) <= args.maxDistance]
+        if kept:
+            i = bisect.bisect_left(table.mid.values, centre - args.maxDistance)
+            j = bisect.bisect_right(table.mid.values, centre + args.maxDistance)
+            around = table.iloc[i:j]
+            around = [f for f in around.itertuples() if (chrom, int(f.start)) not in near and concordant(f)]
+            gene_rows.append(dict(
+                gene_node=node, genes=row.genes, step=step, p=row.p_declared, elements=len(kept),
+                elements_linked=sum(holds(gene_ids, chrom, int(graph.nodes[n]['start']), int(graph.nodes[n]['end']))
+                                    for n in kept),
+                window=len(around), window_linked=sum(holds(gene_ids, chrom, int(f.start), int(f.end))
+                                                      for f in around)))
         for element in elements:
             e = graph.nodes[element]
             d = abs((int(e['start']) + int(e['end'])) // 2 - centre)
@@ -137,10 +157,6 @@ def main():
                 candidates.append(table.iloc[i:j])
             candidates = pd.concat(candidates)
             candidates = candidates[[(chrom, int(s)) not in near for s in candidates.start]]
-
-            def concordant(f):
-                return any(float(signs[m]) * sign * signal.change(m, chrom, int(f.start), int(f.end)) >= args.minChange
-                           for m in marks)
             window = [f for f in candidates.itertuples() if concordant(f)]
             graph_controls = [graph.nodes[n] for n in same_step
                               if low <= abs((int(graph.nodes[n]['start']) + int(graph.nodes[n]['end'])) // 2 -
@@ -178,6 +194,15 @@ def main():
             boot[c].append(sample[c])
     summary = pd.DataFrame([dict(set=c, share=point[c], low=np.nanpercentile(boot[c], 2.5),
                                  high=np.nanpercentile(boot[c], 97.5)) for c in point])
+    per_gene = pd.DataFrame(gene_rows)
+    per_gene.to_csv(args.output + '_genes.tsv', sep='\t', index=False)
+    extra = [dict(set='pooled_elements_linked', share=per_gene.elements_linked.sum() / per_gene.elements.sum()),
+             dict(set='pooled_window_linked', share=per_gene.window_linked.sum() / max(1, per_gene.window.sum())),
+             dict(set='median_elements_per_gene', share=per_gene.elements.median()),
+             dict(set='median_window_per_gene', share=per_gene.window.median()),
+             dict(set='genes_with_linked_element', share=(per_gene.elements_linked > 0).mean()),
+             dict(set='genes_with_linked_window', share=(per_gene.window_linked > 0).mean())]
+    summary = pd.concat([summary, pd.DataFrame(extra)], ignore_index=True)
     summary.insert(0, 'elements', len(table))
     summary.insert(0, 'genes', len(genes))
     summary.to_csv(args.output + '_summary.tsv', sep='\t', index=False)
