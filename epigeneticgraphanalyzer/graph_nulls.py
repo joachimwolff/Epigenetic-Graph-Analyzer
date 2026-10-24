@@ -72,7 +72,8 @@ def _length_bin(distance, width):
     return np.floor(np.log10(np.maximum(np.asarray(distance, dtype=float), 1.0)) / width).astype(np.int64)
 
 
-def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_attempts_factor=20, max_length=None):
+def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_attempts_factor=20, max_length=None,
+                       keep_attributes=False):
     """Degree-preserving rewiring by double-edge swaps restricted to one chromosome and similar edge length.
 
     Every edge is oriented bait -> other end (bait-bait edges from the upstream node); two edges (a1, b1), (a2, b2)
@@ -82,7 +83,9 @@ def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_
     chromosome and kind, and the number of edges per length bin are kept. For an edge (a1, b1), the partner edge is
     drawn among the edges of its group whose other end b2 lies at a distance from a1 within the length bin, which
     keeps the acceptance rate high. With max_length, new edges longer than max_length bp are rejected as well (for
-    wide length bins). Trans edges are left unchanged. Returns (rewired graph, statistics dict)."""
+    wide length bins). Trans edges are left unchanged. With keep_attributes, every rewired edge carries the attributes
+    of the edge its anchor (the bait end) had before (for example the scores of both conditions of a union graph).
+    Returns (rewired graph, statistics dict)."""
     rng = np.random.default_rng(seed)
     middle = node_midpoints(graph)
     nodes = list(graph.nodes)
@@ -184,11 +187,17 @@ def rewire_by_distance(graph, swaps_per_edge=10, log_bin_width=0.1, seed=0, max_
         edge_slot[e1], edge_slot[e2] = s2, s1
         slot_edge[g][s1], slot_edge[g][s2] = e2, e1
         accepted += 1
+    before = partner
     partner = np.array(partner_list, dtype=np.int64)
     rewired = nx.Graph()
     rewired.add_nodes_from(graph.nodes(data=True))
-    rewired.add_edges_from((nodes[i], nodes[j]) for i, j in zip(anchor, partner))
-    rewired.add_edges_from((nodes[i], nodes[j]) for i, j in fixed)
+    if keep_attributes:
+        rewired.add_edges_from((nodes[i], nodes[j], dict(graph.edges[nodes[i], nodes[k]]))
+                               for i, j, k in zip(anchor, partner, before))
+        rewired.add_edges_from((nodes[i], nodes[j], dict(graph.edges[nodes[i], nodes[j]])) for i, j in fixed)
+    else:
+        rewired.add_edges_from((nodes[i], nodes[j]) for i, j in zip(anchor, partner))
+        rewired.add_edges_from((nodes[i], nodes[j]) for i, j in fixed)
     final = set(zip(np.minimum(anchor, partner).tolist(), np.maximum(anchor, partner).tolist()))
     statistics = dict(edges=n_edges + len(fixed), swappable_edges=n_edges, attempts=attempts, accepted=accepted,
                       fraction_edges_changed=float(len(final - original) / max(1, n_edges)))

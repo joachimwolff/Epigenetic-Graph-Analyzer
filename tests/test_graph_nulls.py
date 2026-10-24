@@ -180,3 +180,22 @@ def test_graph_statistics():
     assert (stats['nodes'], stats['baits'], stats['edges'], stats['cis_edges']) == (5, 2, 3, 2)
     assert stats['cis_edges_within_limit'] == 1 and stats['median_edge_length'] == 0.5 * (100000 + 3000000)
     assert stats['mean_bait_degree'] == 1.5 and stats['largest_component_fraction'] == 3 / 5
+
+
+def test_rewiring_keeps_edge_attributes_with_the_anchor():
+    graph = random_capture_graph(seed=2)
+    for k, (u, v) in enumerate(graph.edges()):
+        graph.edges[u, v]['score'] = float(k)
+    plain, _ = rewire_by_distance(graph, swaps_per_edge=5, log_bin_width=0.2, seed=4)
+    rewired, _ = rewire_by_distance(graph, swaps_per_edge=5, log_bin_width=0.2, seed=4, keep_attributes=True)
+    assert set(map(frozenset, plain.edges())) == set(map(frozenset, rewired.edges()))
+    assert sorted(d['score'] for _, _, d in rewired.edges(data=True)) == \
+        sorted(d['score'] for _, _, d in graph.edges(data=True))
+    # per bait, the scores of its edges to other ends move with it
+    for node in graph.nodes:
+        if not graph.nodes[node]['bait']:
+            continue
+
+        def scores(g):
+            return sorted(g.edges[node, n]['score'] for n in g.neighbors(node) if not g.nodes[n]['bait'])
+        assert scores(rewired) == scores(graph)
