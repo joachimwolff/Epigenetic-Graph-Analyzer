@@ -24,7 +24,8 @@ python "$here/star_counts_deseq2.py" "$data/h1_npc_rna/fastq/samples.tsv" "$coun
     "$data/annotation/gencode.v19.annotation.gtf.gz" H1 NPC "$out/deseq2_NPC_vs_H1.tsv"
 # sensitivity: the strongest H1 calls in the number of NPC calls
 n_npc=$(($(wc -l < "$npc") - 1))
-{ head -1 "$h1"; tail -n +2 "$h1" | sort -t$'\t' -k10,10gr | head -n "$n_npc"; } > "$out/H1_matched_top.ibed"
+# head ends the pipe early (SIGPIPE under pipefail), hence || true
+{ head -1 "$h1"; tail -n +2 "$h1" | sort -t$'\t' -k10,10gr | head -n "$n_npc" || true; } > "$out/H1_matched_top.ibed"
 roadmap() { for mark in H3K27ac H3K4me1 H3K4me3 H3K27me3; do printf '%s=%s ' "$mark" "$data/roadmap/$1-$mark.fc.signal.bigwig"; done; }
 for run in matched top; do
     calls=$h1
