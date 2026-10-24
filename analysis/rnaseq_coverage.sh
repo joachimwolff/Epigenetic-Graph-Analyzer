@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # RNA-seq coverage per condition for the genome-browser panels: every run (row of samples.tsv) is mapped with STAR,
 # the runs of a condition are merged, and the unique alignments give one coverage track per condition in reads per
-# million (bigWig, unstranded), <out_dir>/<name prefix><condition>_RNA-seq.rpm.bw.
+# million (bigWig, unstranded), <out_dir>/<name prefix><condition>_RNA-seq.rpm.bw. With a STAR index built with
+# gene annotation, STAR also counts the reads per gene of every run (<condition>.<row>.ReadsPerGene.out.tab).
 # Used for the mouse E10.5 Md and PA2 (Minoux et al. 2017, GSE89434; prefix E10.5_, mm10), for hESC and hNEC
 # (Freire-Pritchett et al. 2017, GSE86821; hg19 with GENCODE v19 junctions) and for naive B cells and GM12878 (ENCODE;
 # hg19 with GENCODE v19 junctions).
@@ -42,7 +43,7 @@ while IFS=$'\t' read -r condition _ _ _ _ files _; do
     if [[ ! -s "${prefix}Aligned.sortedByCoord.out.bam" ]]; then
         "$star" --runThreadN "$threads" --genomeDir "$index" --readFilesIn "${reads[@]}" \
             --readFilesCommand zcat --clip3pNbases "${clips[@]}" --outSAMtype BAM SortedByCoordinate \
-            --outFilterMultimapNmax 1 \
+            --outFilterMultimapNmax 1 --quantMode GeneCounts \
             --limitBAMsortRAM 20000000000 --outFileNamePrefix "$prefix" \
             --outTmpDir "${TMPDIR:-/tmp}/star_${condition}_${row}_$$"
     fi
