@@ -65,5 +65,11 @@ def main(args=None):
     return analysis
 
 
+
+def cli(args=None):
+    """Console entry point: runs main() and exits with status 0 (main returns its outputs for programmatic use)."""
+    main(args)
+
+
 if __name__ == '__main__':
     main()

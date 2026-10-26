@@ -52,12 +52,12 @@ egaPlotLocus = "epigeneticgraphanalyzer.egaPlotLocus:main"
 egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
 egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
 egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
-egaReport = "epigeneticgraphanalyzer.egaReport:main"
-egaExplorer = "epigeneticgraphanalyzer.explorer:main"
+egaReport = "epigeneticgraphanalyzer.egaReport:cli"
+egaExplorer = "epigeneticgraphanalyzer.explorer:cli"
 egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
 egaCompartments = "epigeneticgraphanalyzer.egaCompartments:main"
 egaBoundaries = "epigeneticgraphanalyzer.egaBoundaries:main"
-egaTadCrossing = "epigeneticgraphanalyzer.egaTadCrossing:main"
+egaTadCrossing = "epigeneticgraphanalyzer.egaTadCrossing:cli"
 
 [tool.setuptools.dynamic]
 version = {attr = "epigeneticgraphanalyzer._version.__version__"}
