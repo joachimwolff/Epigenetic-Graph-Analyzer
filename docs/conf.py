@@ -12,7 +12,6 @@ templates_path = ['_templates']
 exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'sphinx_rtd_theme'
-html_static_path = ['_static']
 
 source_suffix = {
     '.rst': 'restructuredtext',
@@ -20,3 +19,14 @@ source_suffix = {
 }
 
 master_doc = 'index'
+
+# keep '--option' as written (no en dash)
+smartquotes = False
+
+# $...$ in the Markdown pages
+myst_enable_extensions = ['dollarmath']
+# anchors for the section headings, so that links of the form page.md#heading resolve
+myst_heading_anchors = 3
+
+html_static_path = ['_static']
+html_css_files = ['wrap_tables.css']
