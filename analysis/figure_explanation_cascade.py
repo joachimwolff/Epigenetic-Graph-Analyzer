@@ -20,7 +20,7 @@ and the genes explained at no level once per presence statistic (fragment mean, 
 split into a concordant transition and poised in both conditions; the hatched part of a step bar are the genes beyond
 the mirrored loci with a per-gene permutation P < 0.05 at that step; the 3D support of each step is written next to it.
 
-The x axis names the comparison (the name with '_' read as ' / ').
+The title names the comparison (the name with '_' read as an arrow, hESC_hNEC as hESC -> hNEC).
 
 Usage: python figure_explanation_cascade.py <results dir> <figure dir> [name=prefix ...]
        (default: the four comparisons of analysis/16_hops_n.sh under <results dir>/hops_n)
@@ -38,12 +38,14 @@ import pandas as pd  # noqa: E402
 COMPARISONS = (('hESC_vs_hNEC', 'hops_n/hESC_vs_hNEC'), ('Md_vs_PA2', 'hops_n/Md_vs_PA2'),
                ('Kasumi1_siMM_vs_siRE', 'hops_n/siMM_vs_siRE'), ('AML_t821_vs_FLT3ITD', 'hops_n/t821_vs_FLT3ITD'))
 # categorical slots 1-5 of the reference palette, stacked in slot order
-TYPES = (('marks', '#2a78d6', 'marks'), ('interactions', '#eb6834', 'own interactions'),
-         ('both', '#1baf7a', 'marks and interactions'), ('state', '#eda100', 'bivalent or poised state resolved'),
-         ('poised_unresolved', '#e87ba4', 'poised in both conditions'))
+TYPES = (('marks', '#2a78d6', 'mark change'), ('interactions', '#eb6834', 'interaction change'),
+         ('both', '#1baf7a', 'mark and interaction change'), ('state', '#eda100', 'change to or from bivalent'),
+         ('poised_unresolved', '#e87ba4', 'bivalent in both conditions'))
 ROWS = {'gene': {'marks': 'gene_marks_only', 'interactions': 'gene_interactions_only', 'both': 'gene_both',
                  'state': 'gene_state', 'poised_unresolved': 'gene_poised_unresolved'},
         'step1': {'marks': 'step1_marks', 'state': 'step1_state', 'poised_unresolved': 'step1_poised_unresolved'}}
+# panel titles of the comparisons of the manuscript; other names are shown with '_' read as an arrow
+TITLES = {'hESC_hNEC': 'hESC \u2192 hNEC (neural induction)', 'Md_PA2': 'Md \u2192 PA2 (mouse pharyngeal arches)'}
 UNEXPLAINED = '#7f7f7a'
 INK = '#1f1f1e'
 MUTED = '#6b6a66'
@@ -51,11 +53,10 @@ MUTED = '#6b6a66'
 
 def label(level):
     if level == 'gene':
-        return 'gene (step 0)'
+        return 'promoter'
     if level == 'unexplained':
-        return 'unexplained'
-    k = int(level[4:])
-    return '{} step{}'.format(k, '' if k == 1 else 's')
+        return 'no explanation'
+    return 'step {}'.format(int(level[4:]))
 
 
 def value(table, row, column, default=0):
@@ -99,21 +100,14 @@ def draw(table, path, subject=None):
             dark = value(table, level, 'beyond_mirror_p_lt_0.05', float('nan'))
             if not pd.isna(dark):
                 text += ' ({:,})'.format(int(dark))
-            support = value(table, level, 'proximity_support', float('nan'))
-            interval = value(table, level, 'proximity_ci', '')
-            if not pd.isna(support):
-                text += ', 3D {:.2f}'.format(support)
-                if isinstance(interval, str) and interval:
-                    text += ' ({})'.format(interval)
         ax.text(n + 0.02 * largest, y, text, va='center', ha='left', fontsize=8.5, color=INK)
     ax.set_yticks(range(len(levels)))
     ax.set_yticklabels([label(lv) for lv in levels], fontsize=9.5)
     ax.invert_yaxis()
     ax.set_xlim(0, largest * 1.8)
-    xlabel = 'differentially expressed promoter fragments'
+    ax.set_xlabel('promoter fragments of differentially expressed genes', fontsize=9.5)
     if subject:
-        xlabel += ' ({})'.format(subject)
-    ax.set_xlabel(xlabel, fontsize=9.5)
+        ax.set_title(subject, loc='left', fontsize=10.5, color=INK)
     ax.tick_params(axis='x', labelsize=8.5)
     for side in ('top', 'right'):
         ax.spines[side].set_visible(False)
@@ -121,7 +115,7 @@ def draw(table, path, subject=None):
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _, c, _ in kinds]
     names = [name for _, _, name in kinds]
     handles.append(plt.Rectangle((0, 0), 1, 1, facecolor=TYPES[0][1], hatch='//////', edgecolor='white', lw=0))
-    names.append('marks beyond mirror, P < 0.05')
+    names.append('mark change beyond mirrored loci, P < 0.05 (in parentheses)')
     ax.legend(handles, names, fontsize=8, frameon=False, loc='upper center', bbox_to_anchor=(0.4, -0.24), ncol=2)
     if not_callable:
         ax.text(0.99, 0.99, 'states not callable (no repressive mark)', transform=ax.transAxes, ha='right',
@@ -221,7 +215,7 @@ def main():
             target = os.path.join(figures, 'explanation_cascade_{}{}.pdf'.format(name, suffix))
             # the comparison in the axis label, as 'hESC / hNEC' for the name hESC_hNEC
             draw(pd.read_csv(source, sep='\t', keep_default_na=False, na_values=['']), target,
-                 subject=name.replace('_', ' / '))
+                 subject=TITLES.get(name, name.replace('_', ' \u2192 ')))
             print(target)
         # genes explained at each level regardless of earlier levels
         source = os.path.join(results, prefix + '_explanation_levels.tsv')
