@@ -29,7 +29,9 @@ from concurrent.futures import ThreadPoolExecutor
 EGA = '/mnt/processed/wolffjoa/ega'
 HOME_DATA = os.path.expanduser('~/data')
 
+# raw data and mapping intermediates stay out of every record: reads, alignments, STAR logs, contact matrices
 EXCLUDE = ['*.fa', '*.fa.fai', '*.Rds', '*.rds', '*.chinput', '*.bam', '*.bai', '*_scores.txt', 'hicx_scores.txt',
+           '*.fastq.gz', '*.fq.gz', '*.sam', '*.mcool', '*.hic', '*Log.out', '*Log.progress.out', '*SJ.out.tab',
            '*.scaled.bw', '*/reviewer_controls_killed_run/*', '*/porec/*_clusters.txt.gz', '*/multiway/*.npz',
            '*.pyc', '*/__pycache__/*', '*/salmon_index*/*']
 
@@ -38,30 +40,50 @@ RECORDS = {
         'title': 'Results of all analyses',
         'sources': [(EGA + '/results_final', 'results_final'),
                     (EGA + '/results/revision_bioinf', 'revision_analyses'),
-                    (EGA + '/results/absolute_rates', 'revision_analyses/absolute_rates')],
+                    (EGA + '/results/absolute_rates', 'revision_analyses/absolute_rates'),
+                    (EGA + '/results/gm12878_naiveB', 'revision_analyses/gm12878_naiveB'),
+                    (EGA + '/results/calibration', 'revision_analyses/calibration'),
+                    (EGA + '/results/calibration_hesc_md', 'revision_analyses/calibration_hesc_md'),
+                    (EGA + '/results/explaining_eqtl', 'revision_analyses/explaining_eqtl'),
+                    (EGA + '/results/re2g', 'revision_analyses/re2g')],
+        # stopped runs of the rewiring null, and outputs of the modules removed after evaluation (not in the
+        # manuscript; kept on the branch side-modules-parked)
+        'exclude': ['*/calibration/bin0.5/*', '*/calibration/bin1.0/*', '*/calibration/rewired_*',
+                    '*/results_final/design/*', '*/results_final/enhancer_switching/*', '*/results_final/sv/*',
+                    '*/results_final/timecourse_rubin2017/*', '*/results_final/triggers/*'],
         'description': 'Output of analysis/run_all.sh (results_final: graphs, multi-way evaluation, differential '
                        'comparisons, explanation levels, reports, boundary crossing, further modules, supplementary '
                        'tables, figures and number_check.md) and of the revision analyses (revision_analyses: '
                        'decomposed step features, weighting variants, held-out roles, expression baselines, graph '
-                       'sensitivity, Hoxa2 Hi-C test, runtime).',
+                       'sensitivity, Hoxa2 Hi-C test, runtime, naive B cells against GM12878 with the multi-way '
+                       'test of the explaining paths and the RNA-seq coverage of the figures, calibration with '
+                       'unchanged genes, ENCODE-rE2G and eQTL links of the explaining elements).',
     },
     '03_processed_inputs': {
-        'title': 'Inputs processed from public raw data',
+        'title': 'Inputs of EGA processed by us from public data',
         'sources': [(EGA + '/raw/chicago_calls/H1_jung2019_reprocessed', 'H1_jung2019_chicago'),
                     (HOME_DATA + '/ega_aml/kasumi1/design', 'kasumi1/capture_design'),
                     (HOME_DATA + '/ega_aml/kasumi1/chicago', 'kasumi1/chicago'),
-                    (HOME_DATA + '/ega_aml/kasumi1/rna_salmon', 'kasumi1/rna_salmon'),
-                    (HOME_DATA + '/ega_aml/kasumi1/call_chicago.sh', 'kasumi1/call_chicago.sh'),
-                    (HOME_DATA + '/ega_aml/kasumi1/map_runs.sh', 'kasumi1/map_runs.sh'),
+                    (HOME_DATA + '/ega_aml/kasumi1/rna_salmon', 'kasumi1/expression'),
                     (HOME_DATA + '/ega_virtual_capture/GM12878', 'virtual_capture/GM12878'),
                     (HOME_DATA + '/ega_virtual_capture/H1', 'virtual_capture/H1'),
                     (HOME_DATA + '/ega_virtual_capture/K562', 'virtual_capture/K562'),
-                    (HOME_DATA + '/ega_virtual_capture/run_vc.sh', 'virtual_capture/run_vc.sh')],
-        'description': 'Promoter capture Hi-C of H1-hESC (Jung et al. 2019, GSE86189) mapped with HiCUP and called '
-                       'with CHiCAGO; Kasumi-1 after RUNX1-ETO knockdown (Ptasinska et al. 2019, GSE117108): capture '
-                       'design of HindIII fragments with a transcription start site, CHiCAGO calls per replicate '
-                       'down to a score of 1, and salmon quantification of the RNA-seq (GSE54478); virtual promoter '
-                       'capture called from the Hi-C and Micro-C of GM12878, K562 and H1-hESC (4DN).',
+                    (EGA + '/raw/naiveB/javierre2016/naiveB_nB_washU.txt.gz', 'naiveB_javierre2016/naiveB_nB_washU.txt.gz'),
+                    (EGA + '/results/gm12878_naiveB/deseq2_GM12878_vs_naiveB.tsv',
+                     'expression/deseq2_GM12878_vs_naiveB.tsv'),
+                    (EGA + '/results/differential/deseq2_hNEC_vs_hESC.tsv', 'expression/deseq2_hNEC_vs_hESC.tsv'),
+                    (EGA + '/results/revision_bioinf/decomposed/deseq2_PA2_vs_Md.tsv',
+                     'expression/deseq2_PA2_vs_Md.tsv'),
+                    (EGA + '/results/minoux_fold', 'mouse_fold_enrichment')],
+        # only what EGA reads: interaction calls, capture design, expression tables, signal tracks
+        'include_only': ['*.ibed', '*.ibed.gz', '*washU*', '*.baitmap', '*.rmap', 'deseq2_*.tsv', '*.fold.bw'],
+        'description': 'Inputs of EGA that we processed from public data: CHiCAGO calls of H1-hESC (Jung et al. '
+                       '2019, GSE86189) and of Kasumi-1 after RUNX1-ETO knockdown (Ptasinska et al. 2019, '
+                       'GSE117108, per replicate down to a score of 1) with their capture designs (.rmap, .baitmap); '
+                       'virtual promoter capture calls from the Hi-C and Micro-C of GM12878, K562 and H1-hESC; the '
+                       'naive B cell calls of Javierre et al. 2016 in WashU format; the DESeq2 tables of all '
+                       'comparisons; the fold enrichment over input of the mouse ChIP-seq (Minoux et al. 2017). '
+                       'Raw reads, alignments and CHiCAGO-internal files are not included.',
     },
     '04_multiway_intermediates': {
         'title': 'Multi-way intermediates',
@@ -92,10 +114,13 @@ def collect(record):
             for name in sorted(files):
                 path = os.path.join(root, name)
                 rel = os.path.relpath(path, source)
+                # an include list replaces the global exclusions; exclusions of the record always apply
                 if only:
                     if not any(fnmatch.fnmatch(name, r) for r in only):
                         continue
                 elif excluded(path, EXCLUDE):
+                    continue
+                if excluded(path, record.get('exclude', [])):
                     continue
                 items.append((path, os.path.join(target, rel)))
     return items
