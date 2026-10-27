@@ -39,8 +39,8 @@ COMPARISONS = (('hESC_vs_hNEC', 'hops_n/hESC_vs_hNEC'), ('Md_vs_PA2', 'hops_n/Md
                ('Kasumi1_siMM_vs_siRE', 'hops_n/siMM_vs_siRE'), ('AML_t821_vs_FLT3ITD', 'hops_n/t821_vs_FLT3ITD'))
 # categorical slots 1-5 of the reference palette, stacked in slot order
 TYPES = (('marks', '#2a78d6', 'mark change'), ('interactions', '#eb6834', 'interaction change'),
-         ('both', '#1baf7a', 'mark and interaction change'), ('state', '#eda100', 'change to or from bivalent'),
-         ('poised_unresolved', '#e87ba4', 'bivalent in both conditions'))
+         ('both', '#1baf7a', 'mark and interaction'), ('state', '#eda100', 'to or from bivalent'),
+         ('poised_unresolved', '#e87ba4', 'bivalent in both'))
 ROWS = {'gene': {'marks': 'gene_marks_only', 'interactions': 'gene_interactions_only', 'both': 'gene_both',
                  'state': 'gene_state', 'poised_unresolved': 'gene_poised_unresolved'},
         'step1': {'marks': 'step1_marks', 'state': 'step1_state', 'poised_unresolved': 'step1_poised_unresolved'}}
@@ -115,8 +115,9 @@ def draw(table, path, subject=None):
     handles = [plt.Rectangle((0, 0), 1, 1, color=c) for _, c, _ in kinds]
     names = [name for _, _, name in kinds]
     handles.append(plt.Rectangle((0, 0), 1, 1, facecolor=TYPES[0][1], hatch='//////', edgecolor='white', lw=0))
-    names.append('mark change beyond mirrored loci, P < 0.05 (in parentheses)')
-    ax.legend(handles, names, fontsize=8, frameon=False, loc='upper center', bbox_to_anchor=(0.4, -0.24), ncol=2)
+    names.append('beyond mirrored loci, P < 0.05')
+    ax.legend(handles, names, fontsize=7.5, frameon=False, loc='upper center', bbox_to_anchor=(0.35, -0.24), ncol=2,
+              handlelength=1.2, columnspacing=0.8)
     if not_callable:
         ax.text(0.99, 0.99, 'states not callable (no repressive mark)', transform=ax.transAxes, ha='right',
                 va='top', fontsize=8, color=MUTED)
