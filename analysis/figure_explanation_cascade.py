@@ -20,6 +20,8 @@ and the genes explained at no level once per presence statistic (fragment mean, 
 split into a concordant transition and poised in both conditions; the hatched part of a step bar are the genes beyond
 the mirrored loci with a per-gene permutation P < 0.05 at that step; the 3D support of each step is written next to it.
 
+The x axis names the comparison (the name with '_' read as ' / ').
+
 Usage: python figure_explanation_cascade.py <results dir> <figure dir> [name=prefix ...]
        (default: the four comparisons of analysis/16_hops_n.sh under <results dir>/hops_n)
 """
@@ -63,7 +65,7 @@ def value(table, row, column, default=0):
     return default if pd.isna(v) else v
 
 
-def draw(table, path):
+def draw(table, path, subject=None):
     table = table.set_index('level')
     steps = [lv for lv in table.index if lv.startswith('step') and lv[4:].isdigit()]
     levels = ['gene'] + steps + ['unexplained']
@@ -108,7 +110,10 @@ def draw(table, path):
     ax.set_yticklabels([label(lv) for lv in levels], fontsize=9.5)
     ax.invert_yaxis()
     ax.set_xlim(0, largest * 1.8)
-    ax.set_xlabel('differentially expressed promoter fragments', fontsize=9.5)
+    xlabel = 'differentially expressed promoter fragments'
+    if subject:
+        xlabel += ' ({})'.format(subject)
+    ax.set_xlabel(xlabel, fontsize=9.5)
     ax.tick_params(axis='x', labelsize=8.5)
     for side in ('top', 'right'):
         ax.spines[side].set_visible(False)
@@ -214,7 +219,9 @@ def main():
                 print('missing', source)
                 continue
             target = os.path.join(figures, 'explanation_cascade_{}{}.pdf'.format(name, suffix))
-            draw(pd.read_csv(source, sep='\t', keep_default_na=False, na_values=['']), target)
+            # the comparison in the axis label, as 'hESC / hNEC' for the name hESC_hNEC
+            draw(pd.read_csv(source, sep='\t', keep_default_na=False, na_values=['']), target,
+                 subject=name.replace('_', ' / '))
             print(target)
         # genes explained at each level regardless of earlier levels
         source = os.path.join(results, prefix + '_explanation_levels.tsv')
