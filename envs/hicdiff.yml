@@ -1,0 +1,12 @@
+# pyGenomeTracks of the locus figures (06_loci.sh; run_all.sh PGT, default <this env>/bin/pyGenomeTracks)
+name: hicdiff
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  - python=3.12.13
+  - matplotlib=3.11.0
+  - cooler=0.10.4
+  - pip
+  - pip:
+      - pyGenomeTracks==3.9

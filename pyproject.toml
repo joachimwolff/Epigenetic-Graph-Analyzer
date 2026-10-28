@@ -1,0 +1,74 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "epigeneticgraphanalyzer"
+dynamic = ["version"]
+description = "Graph analysis of promoter capture Hi-C with chromatin and expression data, validated with multi-way contact data"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [{name = "Joachim Wolff", email = "wolff.joachim@mh-hannover.de"}]
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.22",
+    "scipy>=1.8",
+    "pandas>=1.4",
+    "networkx>=2.8",
+    "pyBigWig>=0.3.18",
+    "matplotlib>=3.5",
+    "pyliftover>=0.4",
+]
+classifiers = [
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "License :: OSI Approved :: MIT License",
+]
+
+[project.optional-dependencies]
+leiden = ["python-igraph>=0.10", "leidenalg>=0.9"]
+test = ["pytest>=7", "scikit-learn>=1.0", "h5py>=3.0"]
+# cool / mcool input (egaCreateGraph --format cool)
+cool = ["h5py>=3.0"]
+# egaEqtl regression models; partition comparison of the community robustness
+eqtl = ["statsmodels>=0.13"]
+compare = ["scikit-learn>=1.0"]
+# the analysis scripts of the manuscript (analysis/); exact versions in environment.yml
+analysis = ["python-igraph>=0.10", "leidenalg>=0.9", "h5py>=3.0",
+            "statsmodels>=0.13", "scikit-learn>=1.0", "pydeseq2>=0.4", "networkx>=3.4"]
+
+[project.urls]
+Homepage = "https://github.com/joachimwolff/Epigenetic-Graph-Analyzer"
+
+[project.scripts]
+egaCreateGraph = "epigeneticgraphanalyzer.egaCreateGraph:main"
+egaIndirectContacts = "epigeneticgraphanalyzer.egaIndirectContacts:main"
+egaAnnotateGraph = "epigeneticgraphanalyzer.egaAnnotateGraph:main"
+egaBuildMultiway = "epigeneticgraphanalyzer.egaBuildMultiway:main"
+egaValidateMultiway = "epigeneticgraphanalyzer.egaValidateMultiway:main"
+egaDifferential = "epigeneticgraphanalyzer.egaDifferential:main"
+egaPlotNeighbourhood = "epigeneticgraphanalyzer.egaPlotNeighbourhood:main"
+egaPlotLocus = "epigeneticgraphanalyzer.egaPlotLocus:main"
+egaPlotRegion = "epigeneticgraphanalyzer.egaPlotRegion:main"
+egaPlotDifferential = "epigeneticgraphanalyzer.egaPlotDifferential:main"
+egaExplain = "epigeneticgraphanalyzer.egaExplain:main"
+egaReport = "epigeneticgraphanalyzer.egaReport:cli"
+egaExplorer = "epigeneticgraphanalyzer.explorer:cli"
+egaEqtl = "epigeneticgraphanalyzer.egaEqtl:main"
+egaCompartments = "epigeneticgraphanalyzer.egaCompartments:main"
+egaBoundaries = "epigeneticgraphanalyzer.egaBoundaries:main"
+egaTadCrossing = "epigeneticgraphanalyzer.egaTadCrossing:cli"
+
+[tool.setuptools.dynamic]
+version = {attr = "epigeneticgraphanalyzer._version.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["epigeneticgraphanalyzer*"]
+
+[tool.setuptools.package-data]
+epigeneticgraphanalyzer = ["templates/*.html", "templates/*.css", "templates/explorer/*.html",
+                           "templates/explorer/*.css", "templates/explorer/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["slow: runs about a minute or longer (the example of example/run_example.sh); deselect with -m 'not slow'"]

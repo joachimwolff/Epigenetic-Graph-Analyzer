@@ -1,0 +1,240 @@
+"""Figure 2: evaluation of the interaction graph with ligation-free multi-way data.
+
+(a) SPRITE: crosslinked complexes are barcoded by split-pool rounds, so all fragments of one complex share a barcode
+and are read out together as one cluster, without ligation. (b) GAM: thin slices of single nuclei; loci that are close
+in three dimensions are found in the same slice (tube) more often than distant loci. (c) How the multi-way groups test
+the graph: an indirect contact (E1-E2, two steps in the graph) is observed directly when both loci occur in one group,
+and is compared with a matched pair at the same genomic offset; a community is compared with its loci shifted along
+the chromosome. (d) Probability that a pair at graph distance k co-occurs more than matched pairs without graph
+connection (analysis/hop_distance.py) for three graph / assay combinations. (e) Fraction of promoter hubs with at
+least one SPRITE cluster holding the promoter and two of its partners, for the hubs and for the same hubs shifted
+along the chromosome (analysis/hub_multiway.py).
+
+Usage: python figure_3d_support.py <results dir> <output prefix>   (writes <prefix>a.pdf to <prefix>e.pdf)
+"""
+
+import os
+import sys
+
+import matplotlib
+
+matplotlib.use('Agg')
+import matplotlib.patches as mpatches  # noqa: E402
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
+import pandas as pd  # noqa: E402
+
+from figure_concept import (AQUA, BLUE, DASH, EDGES, GRID, INK, LAYOUT, MUTED, ORANGE, YELLOW, other_end,  # noqa: E402
+                            promoter)
+
+SERIES = (('GM12878 graph, GM12878 SPRITE', 'reviewer_controls/GM_chicago_sprite_hops_coverage.tsv', '#1f5f8b', 'o'),
+          ('H9 hESC graph, H1-hESC GAM', 'reviewer_controls/hESC_gam_hops_coverage.tsv', '#c0504d', 's'),
+          ('H1-hESC graph, H1-hESC GAM', 'reviewer_controls/H1_gam_hops_coverage.tsv', '#d99a4e', '^'))
+BARCODE = ('#7b5ea7', '#2a9d8f', '#e9c46a')
+ASSEMBLY = {'P': (0.0, 0.0), 'E1': (-0.32, 0.22), 'E2': (0.3, 0.26), 'E3': (0.05, -0.3)}
+
+
+def label(ax, letter, title=None):
+    """Panel title; the panel letter is set by LaTeX when the panels are assembled."""
+    if title:
+        ax.annotate(title, xy=(0.0, 1.0), xycoords='axes fraction', xytext=(2, 4), textcoords='offset points',
+                    fontsize=8, color=INK, va='bottom')
+
+
+def assembly(ax, cx, cy, scale=1.0, names=True, links=True):
+    points = {n: (cx + scale * x, cy + scale * y) for n, (x, y) in ASSEMBLY.items()}
+    if links:
+        for name in ('E1', 'E2', 'E3'):
+            ax.plot(*zip(points['P'], points[name]), color=MUTED, lw=0.6, zorder=2)
+    promoter(ax, *points['P'], 'P', size=45 * scale, label=False)
+    for name in ('E1', 'E2', 'E3'):
+        other_end(ax, *points[name], name, size=38 * scale, label=False)
+    if names:
+        placement = {'P': (-0.1, 0.0, 'right', 'center'), 'E1': (0.0, 0.1, 'center', 'bottom'),
+                     'E2': (0.0, 0.1, 'center', 'bottom'), 'E3': (0.1, 0.0, 'left', 'center')}
+        for name, (dx, dy, ha, va) in placement.items():
+            ax.text(points[name][0] + dx * scale, points[name][1] + dy * scale, name, fontsize=6, color=INK,
+                    zorder=5, ha=ha, va=va, bbox=dict(facecolor='white', edgecolor='none', pad=0.3, alpha=0.8))
+    return points
+
+
+def barcode(ax, x, y, width=0.12):
+    for i, color in enumerate(BARCODE):
+        ax.add_patch(mpatches.Rectangle((x + i * width, y - 0.05), width, 0.1, color=color, lw=0, zorder=5))
+
+
+def panel_sprite(ax):
+    # crosslinked complex in a nucleus
+    ax.add_patch(mpatches.Ellipse((0.75, 0.95), 1.35, 1.45, facecolor='#f4f3ef', edgecolor=MUTED, lw=0.8))
+    ax.add_patch(mpatches.Circle((0.75, 0.95), 0.48, facecolor=AQUA, alpha=0.15, lw=0))
+    points = assembly(ax, 0.75, 0.95)
+    for a, b in (('E1', 'E2'), ('E2', 'E3'), ('E3', 'E1')):
+        (x1, y1), (x2, y2) = points[a], points[b]
+        ax.plot([x1, x2], [y1, y2], color=MUTED, lw=0.5, ls=(0, (1, 1.5)), zorder=1)
+    ax.text(0.75, 0.08, 'crosslinked complex', ha='center', fontsize=6.5, color=INK)
+    ax.annotate('', xy=(2.38, 0.95), xytext=(1.6, 0.95), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
+    ax.text(1.99, 0.85, 'split-pool\nbarcoding', ha='center', va='top', fontsize=6.5, color=INK)
+    # every fragment of the complex carries the same barcode
+    for i, name in enumerate(('P', 'E1', 'E2', 'E3')):
+        y = 1.55 - 0.28 * i
+        if name == 'P':
+            ax.add_patch(mpatches.Rectangle((2.5, y - 0.07), 0.32, 0.14, color=INK, lw=0))
+        else:
+            ax.add_patch(mpatches.Rectangle((2.5, y - 0.07), 0.32, 0.14, facecolor='white', edgecolor=INK, lw=1.0))
+        barcode(ax, 2.85, y)
+        ax.text(3.27, y, name, va='center', fontsize=6.5, color=INK)
+    ax.text(2.5, 0.38, 'one barcode =\none cluster', ha='left', va='center', fontsize=6.5, color=INK)
+    ax.text(0.0, -0.25, 'E1 and E2 are read out together, without ligation', fontsize=6.5, color=ORANGE)
+    ax.set_xlim(0.0, 3.6)
+    ax.set_ylim(-0.35, 1.75)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    label(ax, 'a', 'SPRITE: split-pool barcoding of complexes')
+
+
+def panel_gam(ax):
+    # three nuclei, sliced; the slice of the first one cuts through the assembly
+    slices = ((0.6, 0.67, 1.22, 'slice: P, E1, E2, E3'), (1.72, 0.65, 0.8, 'slice: E3'),
+              (2.84, 1.06, 1.22, 'slice: E1, E2'))
+    for k, (cx, low, high, text) in enumerate(slices):
+        inside = k == 0
+        nucleus = mpatches.Ellipse((cx, 0.95), 1.05, 1.35, facecolor='#f4f3ef', edgecolor=MUTED, lw=0.8)
+        ax.add_patch(nucleus)
+        band = mpatches.Rectangle((cx - 0.55, low), 1.1, high - low, facecolor=YELLOW, alpha=0.3, lw=0)
+        ax.add_patch(band)
+        band.set_clip_path(nucleus)
+        assembly(ax, cx, 0.95, scale=0.75, names=(k == 0))
+        ax.text(cx, 0.08, text, ha='center', fontsize=6, color=INK if inside else MUTED)
+    ax.text(0.0, -0.25, 'close loci share a slice more often than distant loci', fontsize=6.5, color=ORANGE)
+    ax.set_xlim(0.0, 3.4)
+    ax.set_ylim(-0.35, 1.75)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    label(ax, 'b', 'GAM: thin nuclear slices')
+
+
+def panel_test(ax, communities=True):
+    """Schematic of the multi-way test; communities=False draws the pair test only."""
+    # left: graph with grey edges, the indirect contact E1-E2 and community 1
+    ox, oy = 0.0, 0.25
+    pos = {n: (x + ox, y + oy) for n, (x, y) in LAYOUT.items()}
+    if communities:
+        ax.add_patch(mpatches.FancyBboxPatch((ox + 0.3, oy + 0.0), 2.2, 1.4,
+                                             boxstyle='round,pad=0.02,rounding_size=0.25', facecolor=AQUA, alpha=0.13,
+                                             lw=0))
+        ax.text(ox + 0.35, oy - 0.2, 'community 1', fontsize=6.5, color=AQUA)
+    for u, v in EDGES:
+        ax.plot(*zip(pos[u], pos[v]), color=GRID, lw=1.3, zorder=2)
+    t = np.linspace(0, 1, 60)[:, None]
+    (x1, y1), (x2, y2) = pos['E1'], pos['E2']
+    control = np.array([(x1 + x2) / 2 - 0.25 * (y2 - y1) / np.hypot(x2 - x1, y2 - y1),
+                        (y1 + y2) / 2 + 0.25 * (x2 - x1) / np.hypot(x2 - x1, y2 - y1)])
+    curve = (1 - t) ** 2 * np.array([x1, y1]) + 2 * (1 - t) * t * control + t ** 2 * np.array([x2, y2])
+    ax.plot(curve[:, 0], curve[:, 1], color=ORANGE, lw=1.6, ls=DASH, zorder=3)
+    for name, (x, y) in pos.items():
+        if name.startswith('P'):
+            promoter(ax, x, y, name, size=45, label=False)
+        else:
+            other_end(ax, x, y, name, size=38, label=False,
+                      color='#fde3d6' if name in ('E1', 'E2') else 'white')
+        above = name in ('E2', 'P3')
+        ax.text(x, y + (0.15 if above else -0.15), name, fontsize=6, color=INK, zorder=5, ha='center',
+                va='bottom' if above else 'top')
+    ax.text(ox + 1.1, oy + 1.55, 'graph: E1-E2 is an indirect contact', ha='center', fontsize=6.5, color=ORANGE)
+    ax.annotate('', xy=(4.5, 0.85), xytext=(3.95, 0.85), arrowprops=dict(arrowstyle='->', color=INK, lw=1.0))
+    ax.text(4.22, 0.97, 'test', ha='center', fontsize=6.5, color=INK)
+    # right: multi-way groups (clusters or tubes) over loci in genomic order and a matched control pair
+    loci = ['E1', 'P1', 'E2', 'E3', 'P2', 'E4', 'E5', 'P3', '', 'c1', 'c2']
+    groups = [{'E1', 'P1', 'E2', 'P2'}, {'E1', 'E2', 'E3'}, {'P1', 'E3', 'P2', 'E4'},
+              {'E1', 'P1', 'E2', 'E3', 'P2'}, {'E4', 'P3', 'E5', 'c1'}, {'E2', 'c2', 'E5'}]
+    x0, y0, w, h = 5.6, 0.05, 0.3, 0.24
+    for j, name in enumerate(loci):
+        if name:
+            ax.text(x0 + j * w + w / 2, y0 + len(groups) * h + 0.05, name, ha='center', va='bottom', fontsize=6,
+                    color=ORANGE if name in ('E1', 'E2') else (MUTED if name.startswith('c') else INK))
+    for i, members in enumerate(groups):
+        y = y0 + (len(groups) - 1 - i) * h
+        ax.text(x0 - 0.08, y + h / 2, 'group {}'.format(i + 1), ha='right', va='center', fontsize=6, color=MUTED)
+        both = {'E1', 'E2'} <= members
+        community = communities and {'E1', 'P1', 'E2', 'E3', 'P2'} <= members
+        if community:
+            ax.add_patch(mpatches.Rectangle((x0 - 0.02, y - 0.01), 5 * w + 0.04, h + 0.02, facecolor='none',
+                                            edgecolor=AQUA, lw=1.4, zorder=4))
+        for j, name in enumerate(loci):
+            if name in members:
+                color = ORANGE if (both and name in ('E1', 'E2')) else (MUTED if name.startswith('c') else '#9fa3a8')
+                ax.add_patch(mpatches.FancyBboxPatch((x0 + j * w + 0.04, y + 0.03), w - 0.08, h - 0.06,
+                                                     boxstyle='round,pad=0.0,rounding_size=0.04', color=color, lw=0,
+                                                     zorder=3))
+    right = x0 + len(loci) * w + 0.3
+    ax.text(right, 1.78, 'E1 with E2: 3 groups', fontsize=6.5, color=ORANGE, va='center')
+    ax.text(right, 1.33, 'matched pair c1 with c2\n(same offset, no edge): 0 groups', fontsize=6.5, color=MUTED,
+            va='center')
+    if communities:
+        ax.text(right, 0.78, 'community 1 complete\nin one group', fontsize=6.5, color=AQUA, va='center')
+        ax.text(right, 0.22, 'compared with shifted\ncommunities', fontsize=6.5, color=INK, va='center')
+    ax.set_xlim(-0.05, 12.3)
+    ax.set_ylim(-0.1, 2.05)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    label(ax, 'c', 'Multi-way groups observe indirect contacts and communities directly' if communities else
+          'Multi-way groups observe indirect contacts directly')
+
+
+def panel_steps(ax, results):
+    ax.axhline(0.5, color='#999999', lw=0.8, ls='--')
+    for name, path, color, marker in SERIES:
+        table = pd.read_csv(os.path.join(results, path), sep='\t')
+        ax.fill_between(table['steps'], table['ci_low'], table['ci_high'], color=color, alpha=0.15, lw=0)
+        ax.plot(table['steps'], table['concordance'], marker=marker, color=color, lw=1.5, ms=5, label=name)
+    ax.set_xticks(range(1, 6))
+    ax.set_xlabel('graph distance (steps)')
+    ax.set_ylabel('P(graph pair > matched pair)')
+    ax.set_ylim(0.44, 0.69)
+    ax.legend(frameon=False, fontsize=7, loc='upper right')
+    label(ax, 'd')
+
+
+def panel_hubs(ax, results):
+    hubs = pd.read_csv(os.path.join(results, 'hubs/GM_chicago_sprite_hub_summary.tsv'), sep='\t')
+    names = ['3' if s == '3-3' else s.replace('>=', '≥') for s in hubs['hub_size']]
+    x = np.arange(len(hubs))
+    width = 0.38
+    ax.bar(x - width / 2, hubs['hubs_with_promoter_plus2_in_one_group'] * 100, width, color='#1f5f8b',
+           label='promoter hubs')
+    ax.bar(x + width / 2, hubs['shifted'] * 100, width, color='#b8c7d6', label='shifted hubs')
+    for i, n in enumerate(hubs['hubs']):
+        ax.text(i, 102, 'n={:,}'.format(n), ha='center', fontsize=6.5, color='#555555')
+    ax.set_xticks(x)
+    ax.set_xticklabels(names)
+    ax.set_xlabel('hub size (promoter and partners)')
+    ax.set_ylabel('hubs with promoter + 2 partners\nin one SPRITE cluster (%)')
+    ax.set_ylim(0, 110)
+    ax.legend(frameon=False, fontsize=7, loc='upper left', bbox_to_anchor=(0.0, 0.93))
+    label(ax, 'e')
+
+
+def save(fig, path):
+    fig.savefig(path, bbox_inches='tight', pad_inches=0.03)
+    plt.close(fig)
+    print(path)
+
+
+def main():
+    results, prefix = sys.argv[1:3]
+    plt.rcParams.update({'font.size': 8})
+    for letter, panel, size in (('a', panel_sprite, (3.5, 2.3)), ('b', panel_gam, (3.5, 2.3)),
+                                ('c', panel_test, (7.2, 1.6))):
+        fig, ax = plt.subplots(figsize=size)
+        panel(ax)
+        save(fig, '{}{}.pdf'.format(prefix, letter))
+    for letter, panel in (('d', panel_steps), ('e', panel_hubs)):
+        fig, ax = plt.subplots(figsize=(3.4, 2.6))
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        panel(ax, results)
+        save(fig, '{}{}.pdf'.format(prefix, letter))
+
+
+if __name__ == '__main__':
+    main()
