@@ -2,28 +2,6 @@
 
 Every command prints the same information with `--help`. These pages are generated from the argument parsers by `docs/generate_reference.py`.
 
-```{toctree}
-:hidden:
-
-egaCreateGraph
-egaIndirectContacts
-egaAnnotateGraph
-egaBuildMultiway
-egaValidateMultiway
-egaDifferential
-egaExplain
-egaReport
-egaExplorer
-egaPlotNeighbourhood
-egaPlotLocus
-egaPlotRegion
-egaPlotDifferential
-egaCompartments
-egaBoundaries
-egaTadCrossing
-egaEqtl
-```
-
 ## Graphs
 
 * [egaCreateGraph](egaCreateGraph.md): Build the promoter capture Hi-C interaction graph, annotate baited promoters with genes and partition the graph into communities

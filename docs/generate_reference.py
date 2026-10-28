@@ -105,7 +105,6 @@ def main():
     index = ['# Command reference', '',
              'Every command prints the same information with `--help`. These pages are generated from the argument '
              'parsers by `docs/generate_reference.py`.', '']
-    index += ['```{toctree}', ':hidden:', ''] + [c for _, commands in GROUPS for c in commands] + ['```', '']
     for group, commands in GROUPS:
         index += ['## {}'.format(group), '']
         for command in commands:
