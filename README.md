@@ -128,6 +128,12 @@ pytest
 The tests run every module and every command line tool on synthetic data with planted interactions,
 hubs and expression effects.
 
+## Archive
+
+Version 1.0.0, with the results and processed data of the manuscript, is archived on Zenodo:
+<https://doi.org/10.5281/zenodo.23725671>. `REPRODUCE.md` maps every figure and table of the manuscript to its script,
+and `CITATION.cff` gives the citation.
+
 ## License
 
 MIT
