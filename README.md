@@ -13,6 +13,9 @@ space, so promoter-promoter interactions connect the neighbourhoods of different
   changes at the promoter, at direct and at indirect (two-hop) neighbours, and their relation to gene
   expression changes.
 
+Documentation, with a tutorial, a case study from A to Z and the command reference:
+<https://epigenetic-graph-analyzer.readthedocs.io/>
+
 ## Installation
 
 ```bash
