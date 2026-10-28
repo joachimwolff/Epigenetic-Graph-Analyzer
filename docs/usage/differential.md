@@ -46,8 +46,8 @@ egaDifferential ... --maxHops 3 --stepFeature decomposed --genePermutations 2000
 
 | File | Content |
 |---|---|
-| `<prefix>_explanation_levels.tsv` | per level: genes with a concordant observation (any, first), with $P<0.05$ beyond the mirrored loci, with $q<0.05$, threshold flags |
-| `<prefix>_explanations_all_levels.tsv` | every promoter fragment at every level: result, strongest node, concordant marks, $P$, $q$, `beyond_mirror`, a text |
+| `<prefix>_explanation_levels.tsv` | per level: genes with a concordant observation (any, first), with *P* < 0.05 beyond the mirrored loci, with *q* < 0.05, threshold flags |
+| `<prefix>_explanations_all_levels.tsv` | every promoter fragment at every level: result, strongest node, concordant marks, *P*, *q*, `beyond_mirror`, a text |
 | `<prefix>_explanation_cascade.tsv` | first explaining level per gene |
 | `<prefix>_indirect_only_genes.tsv` | genes explained only beyond step 1, with the explaining nodes |
 | `<prefix>_edges.tsv.gz` | union edges: status (gained, lost, shared), strengths, threshold support |

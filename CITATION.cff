@@ -4,8 +4,9 @@ title: "Epigenetic Graph Analyzer (EGA)"
 abstract: "Graph-based analysis of promoter capture Hi-C with chromatin states and gene expression: indirect contacts and promoter hubs evaluated against multi-way chromatin data, and gene-centred reports that offer candidate explanations of expression changes at the promoter, its direct contacts and its graph neighbours."
 type: software
 version: 1.0.0
-date-released: 2026-10-22
+date-released: 2026-10-28
 license: MIT
+doi: 10.5281/zenodo.23725671
 repository-code: "https://github.com/joachimwolff/Epigenetic-Graph-Analyzer"
 authors:
   - family-names: Wolff

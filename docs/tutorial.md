@@ -80,7 +80,7 @@ The union graph of both conditions has 198 fragments and 417 interactions. The m
 | File | Content |
 |---|---|
 | `Md_vs_PA2_explanation_levels.tsv` | per level, how many differentially expressed genes have a concordant observation |
-| `Md_vs_PA2_explanations_all_levels.tsv` | every promoter fragment at every level, with the strongest node, $P$, $q$ and a text |
+| `Md_vs_PA2_explanations_all_levels.tsv` | every promoter fragment at every level, with the strongest node, *P*, *q* and a text |
 | `Md_vs_PA2_explanation_cascade.tsv` | the first explaining level of every gene |
 | `Md_vs_PA2_edges.tsv.gz` | the union edges, gained, lost or shared, with their threshold support |
 | `Md_vs_PA2_union.graphml` | the annotated union graph |
@@ -107,19 +107,48 @@ egaReport -p output/Md_vs_PA2 --gene Hoxa3 Hoxa2 $tads --annotation data/mm10.nc
 The first command writes the main report `Md_vs_PA2_report.html`, the second one report per gene
 (`Md_vs_PA2_gene_Hoxa3.html`, `Md_vs_PA2_gene_Hoxa2.html`). Open them in a browser; they are self-contained.
 
-## 5. Reading the result
+![Main report of the comparison](images/report_main.png)
+
+*The main report: summary of the comparison, the explanation cascade and the genes explained at each level.*
+
+![Gene report of Hoxa3](images/report_gene_hoxa3.png)
+
+*The gene report of Hoxa3: the text at the top says what changed at which level; the explanation ladder on the right
+shows the levels from the promoter outwards (filled: explains; blue ring: beyond the mirrored loci with q < 0.05);
+below, the interactions of both conditions and their change.*
+
+## 5. Explorer and figures
+
+```bash
+egaExplorer -p output/Md_vs_PA2 --annotation data/mm10.ncbiRefSeq.chr6_hoxa.gtf.gz -o output/explorer/
+egaPlotDifferential -g output/Md_vs_PA2_union.graphml --gene Hoxa3 --steps 2 \
+    --candidates output/Md_vs_PA2_indirect_only_genes.tsv --mark H3K27ac -o output/hoxa3_differential.png
+```
+
+The explorer is one HTML file with a gene search; the address of a gene, for example `#gene=Hoxa3`, opens it
+directly.
+
+![Explorer, gene view of Hoxa3](images/explorer_gene.png)
+
+`egaPlotDifferential` draws the gained, lost and shared interactions around a gene as arcs and as a graph, with the
+change of expression (squares) and of a mark (circles). Hoxa3 is outlined as a gene explained only beyond step 1, and
+the Hoxa2 promoter, which gains H3K27ac, is ringed as an explaining node.
+
+![Differential graph of Hoxa3](images/hoxa3_differential.png)
+
+## 6. Reading the result
 
 `Md_vs_PA2_explanations_all_levels.tsv` holds the levels of the two promoter fragments of Hoxa3 (log2 fold change
 10.6 in PA2). Neither fragment changes its marks or its own interactions beyond the thresholds; the first is
 repressed in both arches, the second bivalent in both arches (reported as poised). Two steps away, the Hoxa2 promoter gains H3K27ac (log2 change 5.2), and the step-2 level is concordant
-beyond the mirrored loci ($P=0.004$, $q=0.008$). The report of Hoxa3 therefore names the Hoxa2 promoter region as
+beyond the mirrored loci (*P*=0.004, *q*=0.008). The report of Hoxa3 therefore names the Hoxa2 promoter region as
 a candidate explanation, reached through the shared contacts of the cluster. Hoxa2 is itself induced in PA2, so an
 activation of both genes by one programme accounts for the same observation; the report offers the path, and an
 experiment decides.
 
 The report of Hoxa2 shows the gained contacts across the domain boundary into the HIRE1 region.
 
-## 6. Check against the expected results
+## 7. Check against the expected results
 
 ```bash
 python summarize_example.py output output/summary

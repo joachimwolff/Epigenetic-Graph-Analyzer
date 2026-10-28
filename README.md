@@ -13,6 +13,9 @@ space, so promoter-promoter interactions connect the neighbourhoods of different
   changes at the promoter, at direct and at indirect (two-hop) neighbours, and their relation to gene
   expression changes.
 
+Documentation, with a tutorial, a case study from A to Z and the command reference:
+<https://epigenetic-graph-analyzer.readthedocs.io/>
+
 ## Installation
 
 ```bash
@@ -127,6 +130,12 @@ pytest
 
 The tests run every module and every command line tool on synthetic data with planted interactions,
 hubs and expression effects.
+
+## Archive
+
+Version 1.0.0, with the results and processed data of the manuscript, is archived on Zenodo:
+<https://doi.org/10.5281/zenodo.23725671>. `REPRODUCE.md` maps every figure and table of the manuscript to its script,
+and `CITATION.cff` gives the citation.
 
 ## License
 

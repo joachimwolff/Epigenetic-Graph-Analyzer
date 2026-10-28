@@ -16,8 +16,12 @@ egaReport -p differential/A_vs_B --community 12 --communitySide B -o reports
 ```
 
 A gene report shows, level by level, what changed at the promoter, at its direct contacts and two and three steps
-away, with the strongest nodes, $P$, $q$, the mirror control, the threshold flags and a drawing of the neighbourhood
-in both conditions. Options:
+away, with the strongest nodes, *P*, *q*, the mirror control, the threshold flags and a drawing of the neighbourhood
+in both conditions.
+
+![Gene report](../images/report_gene_hoxa3.png)
+
+Options:
 
 * `--overlay` adds the inputs as tracks (interactions per condition, mark tracks, expression) for the region of the
   gene.
@@ -35,6 +39,8 @@ One self-contained HTML file that works offline: gene search with the text of th
 graph per gene, and lists of the differentially expressed genes and communities. `--differentialOnly` limits the
 search to the differentially expressed genes.
 
+![Explorer, overview](../images/explorer.png)
+
 ## Figures of a comparison
 
 ```bash
@@ -48,3 +54,5 @@ egaPlotDifferential -g differential/A_vs_B_union.graphml --region chr6:51000000-
 ```
 
 The format follows the file extension (pdf, svg, eps or png, jpg, tif with `--dpi`).
+
+![egaPlotDifferential](../images/hoxa3_differential.png)

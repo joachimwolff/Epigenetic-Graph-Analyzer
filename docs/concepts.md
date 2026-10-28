@@ -2,6 +2,8 @@
 
 ## Graph
 
+![Proximity ligation records pairs](images/concept_a.png)
+
 Promoter capture Hi-C measures contacts between a baited promoter fragment and any other fragment. EGA turns the
 called interactions into an undirected graph:
 
@@ -15,6 +17,8 @@ Graphs of different conditions built on the same fragments share their nodes and
 
 ## Indirect contacts and steps
 
+![Indirect contact](images/concept_b.png){ width="220" }
+
 The **step** of a pair of nodes is the number of edges on the shortest path between them. One step is a measured
 interaction; two steps are a pair connected through a shared neighbour, such as an enhancer E1 and an enhancer E2 that
 both contact a promoter P (E1-P-E2). Promoter capture never measures such a pair of two other ends.
@@ -22,7 +26,7 @@ both contact a promoter P (E1-P-E2). Promoter capture never measures such a pair
 `egaIndirectContacts` lists the pairs at two steps with their mediators, the Adamic-Adar index and a path score, and
 the two-step paths (triplets). A promoter together with all its direct partners is a **promoter hub**.
 
-```{mermaid}
+```mermaid
 flowchart LR
 A[called interactions] --> C[egaCreateGraph]
 C --> D[egaIndirectContacts]
@@ -38,6 +42,8 @@ K --> L
 ```
 
 ## Validation with multi-way data
+
+![Test of an indirect contact with multi-way data](images/concept_d_test.png)
 
 SPRITE clusters, GAM tubes and Pore-C or HiPore-C concatemers record several loci of one nucleus together.
 `egaValidateMultiway` compares every tested pair of graph nodes with control pairs at the identical offset, whose
@@ -73,7 +79,7 @@ mark term.
 ## Controls of a single gene
 
 * **Per-gene permutation test** (`--genePermutations`): the observed change against permuted signals on the same
-  graph; $P$ per gene and level, adjusted by Benjamini-Hochberg within the level ($q$).
+  graph; *P* per gene and level, adjusted by Benjamini-Hochberg within the level (*q*).
 * **Mirror control**: every node at the step is replaced by the interval at the same distance on the other side of
   the promoter. A change found at any locus of this distance is thereby recognised; `beyond_mirror` marks a change
   that exceeds the mirrored loci.

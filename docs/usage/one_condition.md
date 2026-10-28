@@ -47,6 +47,10 @@ egaPlotNeighbourhood -g output/one/Md_annotated.graphml --gene Hoxa2 --steps 2 -
 egaPlotRegion -g output/one/Md.graphml --region chr6:51000000-52500000 -o output/one/hoxa_region
 ```
 
+![Neighbourhood of Hoxa2 in Md, nodes coloured by H3K27ac](../images/hoxa2_neighbourhood.png)
+
+![The Hoxa region as a promoter-centred graph](../images/hoxa_region_graph.png)
+
 `egaPlotRegion` writes `<prefix>_tracks.ini` for `pyGenomeTracks --tracks <prefix>_tracks.ini --region ...` and
 `<prefix>_graph.pdf`. With `--multiway`, it adds the SPRITE clusters or GAM tubes that hold several loci of the
 region (see [Multi-way data](multiway.md)).

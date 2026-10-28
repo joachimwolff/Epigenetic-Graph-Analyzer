@@ -1,0 +1,85 @@
+site_name: Epigenetic Graph Analyzer
+site_description: Graph-based analysis of promoter capture Hi-C with chromatin states and gene expression
+site_author: Joachim Wolff
+site_url: https://epigenetic-graph-analyzer.readthedocs.io/
+repo_url: https://github.com/joachimwolff/Epigenetic-Graph-Analyzer
+repo_name: joachimwolff/Epigenetic-Graph-Analyzer
+edit_uri: edit/main/docs/
+copyright: MIT License
+
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - toc.integrate
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+# generate_reference.py is the generator of the command reference, not a page
+exclude_docs: |
+  generate_reference.py
+
+markdown_extensions:
+  - admonition
+  - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.details
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Tutorial: tutorial.md
+  - "Case study from A to Z": case_study.md
+  - Concepts: concepts.md
+  - Input formats: inputs.md
+  - Use cases:
+      - One condition: usage/one_condition.md
+      - Two conditions: usage/differential.md
+      - Validation with multi-way data: usage/multiway.md
+      - Reports, explorer and plots: usage/reports.md
+      - Calibration with unchanged genes: usage/calibration.md
+      - Virtual promoter capture: usage/virtual_capture.md
+      - Further modules: usage/modules.md
+      - Commands from start to end: running_ega.md
+  - Command reference:
+      - Overview: reference/index.md
+      - egaCreateGraph: reference/egaCreateGraph.md
+      - egaIndirectContacts: reference/egaIndirectContacts.md
+      - egaAnnotateGraph: reference/egaAnnotateGraph.md
+      - egaBuildMultiway: reference/egaBuildMultiway.md
+      - egaValidateMultiway: reference/egaValidateMultiway.md
+      - egaDifferential: reference/egaDifferential.md
+      - egaExplain: reference/egaExplain.md
+      - egaReport: reference/egaReport.md
+      - egaExplorer: reference/egaExplorer.md
+      - egaPlotNeighbourhood: reference/egaPlotNeighbourhood.md
+      - egaPlotLocus: reference/egaPlotLocus.md
+      - egaPlotRegion: reference/egaPlotRegion.md
+      - egaPlotDifferential: reference/egaPlotDifferential.md
+      - egaCompartments: reference/egaCompartments.md
+      - egaBoundaries: reference/egaBoundaries.md
+      - egaTadCrossing: reference/egaTadCrossing.md
+      - egaEqtl: reference/egaEqtl.md
+  - Support and citation: support.md

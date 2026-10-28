@@ -18,7 +18,7 @@ for seed in 0 1 2; do
 done
 ```
 
-The genes passing `--padj` (0.05) and `--minLog2FC` (1) are set to unchanged; genes with an adjusted $P$ of at least
+The genes passing `--padj` (0.05) and `--minLog2FC` (1) are set to unchanged; genes with an adjusted *P* of at least
 `--unchangedPadj` (0.2) and an absolute log2 fold change of at most `--unchangedLog2FC` (0.5) receive the real fold
 changes, drawn at random without replacement.
 
@@ -40,8 +40,8 @@ python analysis/43_calibration_summary.py differential/A_vs_B calibration A_vs_B
 ```
 
 The table gives, for the real run and every unchanged run, the promoter fragments without an explanation at the
-promoter or step 1 and the share of them with a candidate at step 2 or 3 (any, with $P<0.05$ beyond the mirrored
-loci, with $q<0.05$). The share of genes per level is in `<prefix>_explanation_levels.tsv` of each run (column
+promoter or step 1 and the share of them with a candidate at step 2 or 3 (any, with *P* < 0.05 beyond the mirrored
+loci, with *q* < 0.05). The share of genes per level is in `<prefix>_explanation_levels.tsv` of each run (column
 `fraction_any`).
 
 Report the rate of unchanged genes next to the candidates: a candidate explanation at a level whose rate is close to

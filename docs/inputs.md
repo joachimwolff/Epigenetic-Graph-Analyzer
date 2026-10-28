@@ -46,7 +46,7 @@ needed for RefSeq GTFs without a gene type).
 A table with one row per gene:
 
 * a log2 fold change of B against A (`--log2FCColumn`, for example DESeq2 `log2FoldChange`) and optionally an
-  adjusted $P$ (`--padjColumn`, with `--alpha`), or
+  adjusted *P* (`--padjColumn`, with `--alpha`), or
 * two expression columns of A and B (`--expressionColumns`, for example TPM), with `--minExpression`.
 
 `--geneKey genes` matches the table by gene name, `gene_ids` by gene identifier (versions are ignored).
