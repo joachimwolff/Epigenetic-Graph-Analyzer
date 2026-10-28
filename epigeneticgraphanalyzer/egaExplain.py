@@ -55,7 +55,9 @@ _gene_community_changes.tsv, _community_expression.tsv). Output:
                             change and the mean mark changes at its promoters and at their partners, with a summary.
 """
 
+import json
 import logging
+import os
 
 import numpy as np
 import pandas as pd
@@ -84,14 +86,25 @@ def parse_arguments(args=None):
     return parser.parse_args(args)
 
 
-def condition_names(graph):
-    """Condition names from the node attributes <mark>_<condition>."""
-    keys = set()
+def condition_names(graph, prefix=None):
+    """Condition names A and B of a run of egaDifferential: from <prefix>_support.json, which holds them in the order
+    of the run, else from the node attributes <mark>_<condition> in the order egaDifferential wrote them (the mark of
+    A before the mark of B), without the expression attributes (rna_*)."""
+    if prefix and os.path.exists(prefix + '_support.json'):
+        with open(prefix + '_support.json') as handle:
+            names = json.load(handle).get('names')
+        if names and len(names) == 2:
+            return list(names)
+    names = []
     for _, data in graph.nodes(data=True):
-        keys |= {k for k in data if '_' in k and k not in ('gene_ids',)}
-        break
-    suffixes = sorted({k.rsplit('_', 1)[1] for k in keys})
-    return suffixes[:2]
+        for key in data:
+            if '_' in key and key != 'gene_ids' and not key.startswith('rna'):
+                name = key.rsplit('_', 1)[1]
+                if name not in names:
+                    names.append(name)
+        if len(names) >= 2:
+            break
+    return names[:2]
 
 
 def mark_changes(graph, names, pseudo):
@@ -439,7 +452,7 @@ def main(args=None):
     args = parse_arguments(args)
     setup_logging(args.verbose)
     graph = read_graph(args.prefix + '_union.graphml')
-    names = args.names or condition_names(graph)
+    names = args.names or condition_names(graph, args.prefix)
     changes, marks = mark_changes(graph, names, args.pseudo)
     log.info('conditions %s, marks %s', names, marks)
     edges = edge_table(graph, changes)
